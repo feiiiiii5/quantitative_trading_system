@@ -79,7 +79,7 @@ def render_quant_metrics(symbol: str, data: pd.DataFrame, market: str):
                   delta=f"{excess:.2%}", delta_color="normal")
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, hash_funcs={pd.DataFrame: lambda df: str(df.shape) + str(df.index[-1]) + str(df['close'].iloc[-1])})
 def _run_backtest(symbol: str, data: pd.DataFrame, market: str):
     """运行MA交叉回测"""
     try:

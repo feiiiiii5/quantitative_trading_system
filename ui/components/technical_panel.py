@@ -48,6 +48,9 @@ def _calc_all_indicators(data: pd.DataFrame) -> dict:
         ind[f'ma{p}'] = close.rolling(p).mean()
         ind[f'ema{p}'] = close.ewm(span=p, adjust=False).mean()
 
+    ind['ema12'] = close.ewm(span=12, adjust=False).mean()
+    ind['ema26'] = close.ewm(span=26, adjust=False).mean()
+
     bb_ma = close.rolling(20).mean()
     bb_std = close.rolling(20).std()
     ind['boll_upper'] = bb_ma + 2 * bb_std
@@ -123,13 +126,15 @@ def _render_trend_tab(data, ind):
 
     cols2 = st.columns(3)
     with cols2[0]:
-        _indicator_card("EMA12", f"{ind['ema12'].iloc[-1]:.2f}",
-                        _trend_signal(close, ind['ema12'].iloc[-1]),
-                        _signal_strength(close, ind['ema12'].iloc[-1]))
+        ema12_val = ind.get('ema12', close)
+        _indicator_card("EMA12", f"{ema12_val.iloc[-1]:.2f}",
+                        _trend_signal(close, ema12_val.iloc[-1]),
+                        _signal_strength(close, ema12_val.iloc[-1]))
     with cols2[1]:
-        _indicator_card("EMA26", f"{ind['ema26'].iloc[-1]:.2f}",
-                        _trend_signal(close, ind['ema26'].iloc[-1]),
-                        _signal_strength(close, ind['ema26'].iloc[-1]))
+        ema26_val = ind.get('ema26', close)
+        _indicator_card("EMA26", f"{ema26_val.iloc[-1]:.2f}",
+                        _trend_signal(close, ema26_val.iloc[-1]),
+                        _signal_strength(close, ema26_val.iloc[-1]))
 
     # 布林带
     with cols2[2]:

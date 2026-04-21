@@ -3,8 +3,11 @@
 """模块导入测试脚本"""
 
 import sys
+import os
 from pathlib import Path
-sys.path.insert(0, str(Path.cwd()))
+
+os.environ['STREAMLIT_TESTING'] = '1'
+sys.path.insert(0, str(Path(__file__).parent))
 
 print('=== 测试核心模块导入 ===')
 
@@ -33,7 +36,7 @@ except Exception as e:
     print(f'data.market_detector FAIL: {e}')
 
 try:
-    from utils.metrics import calculate_metrics
+    from utils.metrics import performance_attribution
     print('utils.metrics OK')
 except Exception as e:
     print(f'utils.metrics FAIL: {e}')
@@ -55,6 +58,18 @@ try:
     print('strategies.advanced_strategies OK')
 except Exception as e:
     print(f'strategies.advanced_strategies FAIL: {e}')
+
+try:
+    from reports.report_generator import ReportGenerator
+    print('reports.report_generator OK')
+except Exception as e:
+    print(f'reports.report_generator FAIL: {e}')
+
+try:
+    from data.index_data import IndexData
+    print('data.index_data OK')
+except Exception as e:
+    print(f'data.index_data FAIL (可选): {e}')
 
 print('\n=== 测试UI组件导入 ===')
 
@@ -101,10 +116,10 @@ except Exception as e:
     print(f'ui.components.backtest_ui FAIL: {e}')
 
 try:
-    from ui.components.comparison import render_stock_comparison
-    print('ui.components.comparison OK')
+    from ui.components.export import render_export
+    print('ui.components.export OK')
 except Exception as e:
-    print(f'ui.components.comparison FAIL: {e}')
+    print(f'ui.components.export FAIL: {e}')
 
 try:
     from ui.components.market_heatmap import render_market_heatmap

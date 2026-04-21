@@ -64,7 +64,7 @@ def _get_sector_data(market: str) -> pd.DataFrame:
         result = pd.DataFrame()
         result['name'] = df['板块名称']
         result['change_pct'] = pd.to_numeric(df['涨跌幅'], errors='coerce').fillna(0)
-        result['value'] = pd.to_numeric(df.get('总市值', df.get('成交额', 1)), errors='coerce').fillna(1)
+        result['value'] = pd.to_numeric(df.get('总市值', df.get('成交额', pd.Series(1, index=df.index))), errors='coerce').fillna(1)
 
         return result
     except Exception as e:

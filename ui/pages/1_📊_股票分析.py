@@ -6,7 +6,12 @@
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+root = Path(__file__).resolve()
+while not (root / 'app.py').exists() and root != root.parent:
+    root = root.parent
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
 
 import streamlit as st
 from datetime import datetime, timedelta
@@ -31,8 +36,15 @@ if symbol:
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
 
+    data = None
     with st.spinner("正在获取数据..."):
-        data, market = dm.get_data_sync(symbol, start_date, end_date, source='akshare', market=market), market
+        for source in ['akshare', 'baostock']:
+            try:
+                data = dm.get_data_sync(symbol, start_date, end_date, source=source, market=market)
+                if data is not None and not data.empty:
+                    break
+            except Exception:
+                pass
 
     if data is not None and not data.empty:
         render_overview_cards(symbol, market, data)
@@ -40,3 +52,5 @@ if symbol:
         render_technical_indicators(data)
         render_quant_metrics(symbol, data, market)
         render_prediction_panel(symbol, data)
+    else:
+        st.error(f"无法获取 {symbol} 的数据，请检查代码是否正确")

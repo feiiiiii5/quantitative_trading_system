@@ -12,9 +12,82 @@ import sys
 import os
 import subprocess
 from pathlib import Path
+from datetime import datetime, timedelta
+
+import pandas as pd
+import numpy as np
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+
+from core.engine import Cerebro, Broker, ExecutionMode, BaseStrategy, Order
+from data.async_data_manager import AsyncDataManager
+from data.market_detector import MarketDetector
+from strategies.ma_cross import MACrossStrategy
+from strategies.advanced_strategies import (
+    MultiFactorStrategy,
+    AdaptiveMarketRegimeStrategy,
+    MachineLearningStrategy
+)
+from strategies.market_strategies.cn_strategies import DragonHeadStrategy, NorthBoundFlowStrategy
+from strategies.market_strategies.hk_strategies import AHPremiumStrategy, SouthBoundFlowStrategy
+from strategies.market_strategies.us_strategies import EarningsMomentumStrategy, PutCallSentimentStrategy
+from risk.advanced_risk_manager import AdvancedRiskManager, RiskConfig
+from utils.metrics import performance_attribution
+from utils.logger import get_logger
+
+try:
+    from reports.report_generator import ReportGenerator
+    HAS_REPORT = True
+except ImportError:
+    HAS_REPORT = False
+
+try:
+    from data.index_data import IndexData
+    HAS_INDEX = True
+except ImportError:
+    HAS_INDEX = False
+
+logger = get_logger(__name__)
+
+_import_errors = []
+
+STRATEGIES = {
+    'ma_cross': MACrossStrategy,
+    'multi_factor': MultiFactorStrategy,
+    'adaptive': AdaptiveMarketRegimeStrategy,
+    'ml': MachineLearningStrategy,
+    'dragon_head': DragonHeadStrategy,
+    'north_bound': NorthBoundFlowStrategy,
+    'ah_premium': AHPremiumStrategy,
+    'south_bound': SouthBoundFlowStrategy,
+    'earnings_mom': EarningsMomentumStrategy,
+    'put_call': PutCallSentimentStrategy,
+}
+
+
+class QuantSystem:
+    """系统主类"""
+
+    def __init__(self):
+        self.data_manager = AsyncDataManager()
+        self.risk_manager = AdvancedRiskManager()
+        self.strategies = STRATEGIES.copy()
+
+    def _fetch_data(self, symbol, start_date, end_date, market=None):
+        """统一数据获取（多源重试）"""
+        if market is None:
+            market = MarketDetector.detect(symbol)
+        data_sources = ['akshare', 'baostock']
+        for source in data_sources:
+            logger.info(f"尝试从 {source} 获取数据")
+            data = self.data_manager.get_data_sync(
+                symbol, start_date, end_date, source=source, market=market)
+            if data is not None and not data.empty:
+                logger.info(f"成功从 {source} 获取数据")
+                return data, market
+        logger.error("所有数据源都获取失败")
+        return None, market
 
 
 def _launch_streamlit():
@@ -48,64 +121,8 @@ def run_web():
         print("请先安装streamlit: pip install streamlit")
         return
 
-    from datetime import datetime, timedelta
-    import pandas as pd
-    import numpy as np
+    qs = QuantSystem()
 
-    from core.engine import Cerebro, Broker, ExecutionMode, BaseStrategy, Order
-    from data.async_data_manager import AsyncDataManager
-    from data.market_detector import MarketDetector
-    from data.index_data import IndexData
-    from strategies.ma_cross import MACrossStrategy
-    from strategies.advanced_strategies import (
-        MultiFactorStrategy,
-        AdaptiveMarketRegimeStrategy,
-        MachineLearningStrategy
-    )
-    from strategies.market_strategies.cn_strategies import DragonHeadStrategy, NorthBoundFlowStrategy
-    from strategies.market_strategies.hk_strategies import AHPremiumStrategy, SouthBoundFlowStrategy
-    from strategies.market_strategies.us_strategies import EarningsMomentumStrategy, PutCallSentimentStrategy
-    from risk.advanced_risk_manager import AdvancedRiskManager, RiskConfig
-    from reports.report_generator import ReportGenerator
-    from utils.metrics import performance_attribution
-    from utils.logger import get_logger
-
-    logger = get_logger(__name__)
-
-    class QuantSystem:
-        """系统主类"""
-        def __init__(self):
-            self.data_manager = AsyncDataManager()
-            self.risk_manager = AdvancedRiskManager()
-            self.strategies = {
-                'ma_cross': MACrossStrategy,
-                'multi_factor': MultiFactorStrategy,
-                'adaptive': AdaptiveMarketRegimeStrategy,
-                'ml': MachineLearningStrategy,
-                'dragon_head': DragonHeadStrategy,
-                'north_bound': NorthBoundFlowStrategy,
-                'ah_premium': AHPremiumStrategy,
-                'south_bound': SouthBoundFlowStrategy,
-                'earnings_mom': EarningsMomentumStrategy,
-                'put_call': PutCallSentimentStrategy,
-            }
-
-        def _fetch_data(self, symbol, start_date, end_date, market=None):
-            """统一数据获取（多源重试）"""
-            if market is None:
-                market = MarketDetector.detect(symbol)
-            data_sources = ['akshare', 'baostock']
-            for source in data_sources:
-                logger.info(f"尝试从 {source} 获取数据")
-                data = self.data_manager.get_data_sync(
-                    symbol, start_date, end_date, source=source, market=market)
-                if data is not None and not data.empty:
-                    logger.info(f"成功从 {source} 获取数据")
-                    return data, market
-            logger.error("所有数据源都获取失败")
-            return None, market
-
-    # 页面配置
     st.set_page_config(
         page_title="QuantSystem Pro",
         page_icon="📈",
@@ -113,15 +130,12 @@ def run_web():
         initial_sidebar_state="expanded",
     )
 
-    # 注入Apple风格CSS
     from ui.styles import APPLE_CSS
     st.markdown(APPLE_CSS, unsafe_allow_html=True)
 
-    # 暗色模式
     if 'dark_mode' not in st.session_state:
         st.session_state.dark_mode = False
 
-    # 侧边栏
     with st.sidebar:
         dark_toggle = st.toggle("🌙 暗色模式", value=st.session_state.dark_mode)
         if dark_toggle != st.session_state.dark_mode:
@@ -134,7 +148,6 @@ def run_web():
         from ui.components.watchlist import render_watchlist
         render_watchlist()
 
-    # ===== Header =====
     st.markdown("""
     <div class="hero-section">
         <div class="hero-title">QuantSystem Pro</div>
@@ -148,7 +161,6 @@ def run_web():
     </div>
     """, unsafe_allow_html=True)
 
-    # ===== Hero Section - 股票输入 =====
     col_input1, col_input2 = st.columns([3, 1])
     with col_input1:
         symbol = st.text_input(
@@ -170,12 +182,13 @@ def run_web():
             <div style="font-size:15px; margin-top:8px">支持A股、港股、美股市场</div>
         </div>
         """, unsafe_allow_html=True)
+        _show_debug_info(st)
         return
 
     if not symbol:
+        _show_debug_info(st)
         return
 
-    # ===== 获取数据 =====
     market = MarketDetector.detect(symbol)
     dm = AsyncDataManager()
 
@@ -196,34 +209,29 @@ def run_web():
 
     if data is None or data.empty:
         st.error(f"无法获取 {symbol} 的数据，请检查代码是否正确")
+        _show_debug_info(st)
         return
 
-    # ===== Section 1: 股票概览 =====
     st.markdown('<div class="section-title">📊 股票概览</div>', unsafe_allow_html=True)
     from ui.components.stock_overview import render_overview_cards
     render_overview_cards(symbol, market, data)
 
-    # ===== Section 2: K线图 =====
     st.markdown('<div class="section-title">🕯️ K线图</div>', unsafe_allow_html=True)
     from ui.components.kline_chart import render_kline_chart
-    render_kline_chart(data)
+    render_kline_chart(data, market=market)
 
-    # ===== Section 3: 技术指标 =====
     st.markdown('<div class="section-title">📐 技术指标</div>', unsafe_allow_html=True)
     from ui.components.technical_panel import render_technical_indicators
     render_technical_indicators(data)
 
-    # ===== Section 4: 量化指标 =====
     st.markdown('<div class="section-title">🎯 量化系统指标</div>', unsafe_allow_html=True)
     from ui.components.quant_metrics import render_quant_metrics
     render_quant_metrics(symbol, data, market)
 
-    # ===== Section 5: 涨跌预测 =====
     st.markdown('<div class="section-title">🔮 涨跌概率预测</div>', unsafe_allow_html=True)
     from ui.components.prediction import render_prediction_panel
     render_prediction_panel(symbol, data)
 
-    # ===== Section 6: 更多功能 =====
     with st.expander("📦 更多功能", expanded=False):
         tab_bt, tab_cmp, tab_heat, tab_news = st.tabs([
             "🔄 策略回测", "📊 多股对比", "🗺️ 板块热力图", "📰 新闻情绪"
@@ -245,7 +253,6 @@ def run_web():
             from ui.components.news_sentiment import render_sentiment
             render_sentiment(symbol)
 
-    # 自动刷新（交易时间）
     try:
         from utils.trading_hours import is_trading_hours
         if is_trading_hours(market):
@@ -254,46 +261,20 @@ def run_web():
     except ImportError:
         pass
 
+    _show_debug_info(st)
+
+
+def _show_debug_info(st):
+    """调试模式：显示import错误"""
+    if _import_errors:
+        with st.expander("🔧 调试信息", expanded=False):
+            for err in _import_errors:
+                st.warning(err)
+
 
 def run_cli():
     """命令行模式"""
     import argparse
-    from datetime import datetime, timedelta
-    import pandas as pd
-    import numpy as np
-
-    from core.engine import Cerebro, Broker, ExecutionMode, BaseStrategy, Order
-    from data.async_data_manager import AsyncDataManager
-    from data.market_detector import MarketDetector
-    from data.index_data import IndexData
-    from strategies.ma_cross import MACrossStrategy
-    from strategies.advanced_strategies import (
-        MultiFactorStrategy,
-        AdaptiveMarketRegimeStrategy,
-        MachineLearningStrategy
-    )
-    from strategies.market_strategies.cn_strategies import DragonHeadStrategy, NorthBoundFlowStrategy
-    from strategies.market_strategies.hk_strategies import AHPremiumStrategy, SouthBoundFlowStrategy
-    from strategies.market_strategies.us_strategies import EarningsMomentumStrategy, PutCallSentimentStrategy
-    from risk.advanced_risk_manager import AdvancedRiskManager, RiskConfig
-    from reports.report_generator import ReportGenerator
-    from utils.metrics import performance_attribution
-    from utils.logger import get_logger
-
-    logger = get_logger(__name__)
-
-    STRATEGIES = {
-        'ma_cross': MACrossStrategy,
-        'multi_factor': MultiFactorStrategy,
-        'adaptive': AdaptiveMarketRegimeStrategy,
-        'ml': MachineLearningStrategy,
-        'dragon_head': DragonHeadStrategy,
-        'north_bound': NorthBoundFlowStrategy,
-        'ah_premium': AHPremiumStrategy,
-        'south_bound': SouthBoundFlowStrategy,
-        'earnings_mom': EarningsMomentumStrategy,
-        'put_call': PutCallSentimentStrategy,
-    }
 
     def fetch_data(symbol, start_date, end_date, market=None):
         if market is None:
@@ -398,15 +379,16 @@ def run_cli():
         metrics = cerebro.run()
         metrics.print_summary()
 
-        benchmark_name = "沪深300" if market == "CN" else ("恒生指数" if market == "HK" else "标普500")
-        benchmark_data = IndexData.get_index_data(benchmark_name, start_date, end_date)
-        if benchmark_data is not None:
-            bench_result = cerebro.compare_benchmark(benchmark_data)
-            print("\n" + "=" * 60)
-            print("基准比较")
-            print("=" * 60)
-            for k, v in bench_result.items():
-                print(f"{k}: {v:.4f}")
+        if HAS_INDEX:
+            benchmark_name = "沪深300" if market == "CN" else ("恒生指数" if market == "HK" else "标普500")
+            benchmark_data = IndexData.get_index_data(benchmark_name, start_date, end_date)
+            if benchmark_data is not None:
+                bench_result = cerebro.compare_benchmark(benchmark_data)
+                print("\n" + "=" * 60)
+                print("基准比较")
+                print("=" * 60)
+                for k, v in bench_result.items():
+                    print(f"{k}: {v:.4f}")
 
     elif args.command == 'optimize':
         end_date = args.end or datetime.now().strftime('%Y-%m-%d')
@@ -454,13 +436,12 @@ def run_cli():
                   f"收益={result.total_return:.2%}, 回撤={result.max_drawdown:.2%}")
 
 
+if __name__ != '__main__':
+    run_web()
+
 if __name__ == '__main__':
     if '--cli' in sys.argv:
+        sys.argv.remove('--cli')
         run_cli()
     else:
-        # 检查是否直接运行（非Streamlit模式）
-        import __main__
-        if __main__.__file__ == __file__ and 'streamlit' not in ' '.join(sys.argv).lower():
-            _launch_streamlit()
-        else:
-            run_web()
+        _launch_streamlit()

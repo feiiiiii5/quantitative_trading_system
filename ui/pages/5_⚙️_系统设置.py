@@ -6,7 +6,12 @@
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+root = Path(__file__).resolve()
+while not (root / 'app.py').exists() and root != root.parent:
+    root = root.parent
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
 
 import streamlit as st
 
@@ -17,7 +22,6 @@ st.markdown(APPLE_CSS, unsafe_allow_html=True)
 
 st.markdown("# ⚙️ 系统设置")
 
-# 主题切换
 st.markdown("### 🎨 主题")
 dark_mode = st.toggle("暗色模式", value=st.session_state.get('dark_mode', False))
 st.session_state.dark_mode = dark_mode
@@ -26,7 +30,6 @@ if dark_mode:
     from ui.styles import DARK_CSS
     st.markdown(DARK_CSS, unsafe_allow_html=True)
 
-# 缓存管理
 st.markdown("### 🗄️ 缓存管理")
 from data.async_data_manager import AsyncDataManager
 dm = AsyncDataManager()
@@ -41,16 +44,13 @@ with col2:
         dm.cache.clear_disk_cache()
         st.success("磁盘缓存已清理")
 
-# 缓存统计
 stats = dm.cache.cache_stats()
 st.markdown("#### 缓存统计")
 st.json(stats)
 
-# 数据源配置
 st.markdown("### 📡 数据源")
 st.info("当前支持：akshare（免费）、baostock（免费）、yfinance（美股/港股）")
 
-# 关于
 st.markdown("### ℹ️ 关于")
 st.markdown("""
 **QuantSystem Pro** - 完全免费开源的量化交易工具

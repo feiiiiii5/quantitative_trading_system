@@ -12,7 +12,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 
-def render_kline_chart(data: pd.DataFrame, indicators_config: dict = None):
+def render_kline_chart(data: pd.DataFrame, indicators_config: dict = None, market: str = None):
     """
     渲染K线图 + 技术指标
 
@@ -156,11 +156,17 @@ def render_kline_chart(data: pd.DataFrame, indicators_config: dict = None):
     )
 
     # 隐藏非交易时间空隙
-    fig.update_xaxes(
-        rangebreaks=[dict(bounds=["sat", "mon"])],
-        showgrid=True,
-        gridcolor='rgba(0,0,0,0.05)',
-    )
+    if market in ("CN", "HK", "US"):
+        fig.update_xaxes(
+            rangebreaks=[dict(bounds=["sat", "mon"])],
+            showgrid=True,
+            gridcolor='rgba(0,0,0,0.05)',
+        )
+    else:
+        fig.update_xaxes(
+            showgrid=True,
+            gridcolor='rgba(0,0,0,0.05)',
+        )
 
     fig.update_yaxes(showgrid=True, gridcolor='rgba(0,0,0,0.05)')
 

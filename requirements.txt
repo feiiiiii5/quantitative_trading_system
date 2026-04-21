@@ -8,6 +8,7 @@ scipy>=1.10.0
 
 # 数据源
 akshare>=1.10.0
+baostock>=0.8.8
 yfinance>=0.2.18
 
 # 可视化
@@ -23,4 +24,4 @@ python-dateutil>=2.8.0
 streamlit>=1.20.0
 
 # 可选依赖
-streamlit_autorefresh>=0.0.19  # 自动刷新
+streamlit_autorefresh>=0.0.19

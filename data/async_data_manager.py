@@ -574,18 +574,19 @@ class AsyncDataManager:
                 }
             elif market == "HK":
                 df = ak.stock_hk_spot_em()
-                row = df[df['代码'] == symbol]
+                hk_code_col = '代码' if '代码' in df.columns else 'symbol'
+                row = df[df[hk_code_col] == symbol]
                 if row.empty:
                     return None
                 r = row.iloc[0]
                 return {
-                    'price': float(r.get('最新价', 0)),
-                    'change': float(r.get('涨跌额', 0)),
-                    'change_pct': float(r.get('涨跌幅', 0)),
-                    'volume': float(r.get('成交量', 0)),
-                    'high': float(r.get('最高', 0)),
-                    'low': float(r.get('最低', 0)),
-                    'open': float(r.get('今开', 0)),
+                    'price': float(r.get('最新价', r.get('last_price', 0))),
+                    'change': float(r.get('涨跌额', r.get('change', 0))),
+                    'change_pct': float(r.get('涨跌幅', r.get('change_pct', 0))),
+                    'volume': float(r.get('成交量', r.get('volume', 0))),
+                    'high': float(r.get('最高', r.get('high', 0))),
+                    'low': float(r.get('最低', r.get('low', 0))),
+                    'open': float(r.get('今开', r.get('open', 0))),
                 }
             elif market == "US":
                 try:

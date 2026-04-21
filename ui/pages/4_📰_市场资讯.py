@@ -6,7 +6,12 @@
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+
+root = Path(__file__).resolve()
+while not (root / 'app.py').exists() and root != root.parent:
+    root = root.parent
+if str(root) not in sys.path:
+    sys.path.insert(0, str(root))
 
 import streamlit as st
 

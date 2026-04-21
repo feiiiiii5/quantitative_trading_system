@@ -15,8 +15,10 @@ logs/
 # Backtest results
 backtest_results/
 
-# Reports
-reports/
+# Reports (output only)
+reports/output/
+reports/__pycache__/
+reports/*.png
 
 # Virtual environments
 venv/
@@ -33,8 +35,8 @@ env/
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/
+# Streamlit cache
+.streamlit/cache/
 
 # Environment variables
 .env
