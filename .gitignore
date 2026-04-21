@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data directories
+data/daily/
+data/minute/
+data/cache/
+
+# Logs
+logs/
+*.log
+
+# Backtest results
+backtest_results/
+
+# Reports
+reports/
+
+# Virtual environments
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# Environment variables
+.env
+
+# Jupyter
+.ipynb_checkpoints/
