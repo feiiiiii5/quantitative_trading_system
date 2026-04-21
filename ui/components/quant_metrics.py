@@ -83,7 +83,7 @@ def render_quant_metrics(symbol: str, data: pd.DataFrame, market: str):
 def _run_backtest(symbol: str, data: pd.DataFrame, market: str):
     """运行MA交叉回测"""
     try:
-        from app import MACrossStrategy
+        from strategies.ma_cross import MACrossStrategy
 
         cerebro = Cerebro(mode=ExecutionMode.VECTORIZED)
         cerebro.add_data(data, symbol)

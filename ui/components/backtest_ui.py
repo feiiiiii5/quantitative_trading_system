@@ -99,7 +99,7 @@ def render_backtest_panel(symbol: str, data: pd.DataFrame):
 def _run_backtest(symbol, data, strategy_name, params, initial_cash):
     """运行回测"""
     try:
-        from app import MACrossStrategy
+        from strategies.ma_cross import MACrossStrategy
         from strategies.advanced_strategies import (
             MultiFactorStrategy, AdaptiveMarketRegimeStrategy
         )
