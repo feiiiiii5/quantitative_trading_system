@@ -130,19 +130,19 @@ def run_web():
         initial_sidebar_state="expanded",
     )
 
-    from ui.styles import APPLE_CSS
-    st.markdown(APPLE_CSS, unsafe_allow_html=True)
-
     if 'dark_mode' not in st.session_state:
         st.session_state.dark_mode = False
 
+    from ui.styles import APPLE_CSS, DARK_CSS
+    if st.session_state.dark_mode:
+        st.markdown(DARK_CSS, unsafe_allow_html=True)
+    else:
+        st.markdown(APPLE_CSS, unsafe_allow_html=True)
+
     with st.sidebar:
-        dark_toggle = st.toggle("🌙 暗色模式", value=st.session_state.dark_mode)
+        dark_toggle = st.toggle("🌙 暗色模式", value=st.session_state.dark_mode, key="dark_toggle_key")
         if dark_toggle != st.session_state.dark_mode:
             st.session_state.dark_mode = dark_toggle
-            if dark_toggle:
-                from ui.styles import DARK_CSS
-                st.markdown(DARK_CSS, unsafe_allow_html=True)
             st.rerun()
 
         from ui.components.watchlist import render_watchlist
