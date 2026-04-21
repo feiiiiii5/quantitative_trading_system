@@ -25,3 +25,4 @@ streamlit>=1.20.0
 
 # 可选依赖
 streamlit_autorefresh>=0.0.19
+aiohttp>=3.9.0
