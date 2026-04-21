@@ -42,12 +42,6 @@ def _launch_streamlit():
 
 def run_web():
     """Streamlit Web界面"""
-    # 检查是否直接运行（非Streamlit模式）
-    import __main__
-    if __main__.__file__ == __file__ and 'streamlit' not in ' '.join(sys.argv).lower():
-        _launch_streamlit()
-        return
-
     try:
         import streamlit as st
     except ImportError:
@@ -464,4 +458,9 @@ if __name__ == '__main__':
     if '--cli' in sys.argv:
         run_cli()
     else:
-        run_web()
+        # 检查是否直接运行（非Streamlit模式）
+        import __main__
+        if __main__.__file__ == __file__ and 'streamlit' not in ' '.join(sys.argv).lower():
+            _launch_streamlit()
+        else:
+            run_web()
