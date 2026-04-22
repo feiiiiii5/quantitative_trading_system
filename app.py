@@ -4,78 +4,160 @@
 QuantSystem Pro - 完全免费开源的量化交易工具
 
 启动方式：
-  Web界面（默认）：python app.py
-  命令行模式：     python app.py --cli backtest --symbol 000001
+  双击运行：python app.py（自动启动Web界面）
+  命令行：  python app.py --cli backtest --symbol 000001
 """
 
 import sys
 import os
 import subprocess
+import webbrowser
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
-
-import pandas as pd
-import numpy as np
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from core.engine import Cerebro, Broker, ExecutionMode, BaseStrategy, Order
-from data.async_data_manager import AsyncDataManager
-from data.market_detector import MarketDetector
-from strategies.ma_cross import MACrossStrategy
-from strategies.advanced_strategies import (
-    MultiFactorStrategy,
-    AdaptiveMarketRegimeStrategy,
-    MachineLearningStrategy
-)
-from strategies.market_strategies.cn_strategies import DragonHeadStrategy, NorthBoundFlowStrategy
-from strategies.market_strategies.hk_strategies import AHPremiumStrategy, SouthBoundFlowStrategy
-from strategies.market_strategies.us_strategies import EarningsMomentumStrategy, PutCallSentimentStrategy
-from risk.advanced_risk_manager import AdvancedRiskManager, RiskConfig
-from utils.metrics import performance_attribution
-from utils.logger import get_logger
 
-try:
-    from reports.report_generator import ReportGenerator
-    HAS_REPORT = True
-except ImportError:
-    HAS_REPORT = False
+def _detect_system_dark_mode():
+    try:
+        if sys.platform == 'darwin':
+            result = subprocess.run(
+                ['defaults', 'read', '-g', 'AppleInterfaceStyle'],
+                capture_output=True, text=True, timeout=3
+            )
+            return result.returncode == 0 and 'dark' in result.stdout.lower()
+        elif sys.platform == 'win32':
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+            )
+            value, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+            return value == 0
+        elif sys.platform == 'linux':
+            result = subprocess.run(
+                ['gsettings', 'get', 'org.gnome.desktop.interface', 'color-scheme'],
+                capture_output=True, text=True, timeout=3
+            )
+            return 'dark' in result.stdout.lower()
+    except Exception:
+        pass
+    return False
 
-try:
-    from data.index_data import IndexData
-    HAS_INDEX = True
-except ImportError:
-    HAS_INDEX = False
 
-logger = get_logger(__name__)
+def _check_dependencies():
+    missing = []
+    try:
+        import streamlit
+    except ImportError:
+        missing.append('streamlit')
+    try:
+        import pandas
+    except ImportError:
+        missing.append('pandas')
+    try:
+        import numpy
+    except ImportError:
+        missing.append('numpy')
+    try:
+        import plotly
+    except ImportError:
+        missing.append('plotly')
+    if missing:
+        print("=" * 50)
+        print("缺少必要依赖，正在自动安装...")
+        print(f"需要安装: {', '.join(missing)}")
+        print("=" * 50)
+        try:
+            subprocess.check_call(
+                [sys.executable, '-m', 'pip', 'install'] + missing,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            print("依赖安装完成！")
+        except Exception as e:
+            print(f"自动安装失败: {e}")
+            print(f"请手动运行: pip install {' '.join(missing)}")
+            sys.exit(1)
 
-_import_errors = []
 
-STRATEGIES = {
-    'ma_cross': MACrossStrategy,
-    'multi_factor': MultiFactorStrategy,
-    'adaptive': AdaptiveMarketRegimeStrategy,
-    'ml': MachineLearningStrategy,
-    'dragon_head': DragonHeadStrategy,
-    'north_bound': NorthBoundFlowStrategy,
-    'ah_premium': AHPremiumStrategy,
-    'south_bound': SouthBoundFlowStrategy,
-    'earnings_mom': EarningsMomentumStrategy,
-    'put_call': PutCallSentimentStrategy,
-}
+def _open_browser(url, delay=3):
+    def _open():
+        import time
+        time.sleep(delay)
+        webbrowser.open(url)
+    threading.Thread(target=_open, daemon=True).start()
+
+
+def _is_running_in_streamlit():
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        return get_script_run_ctx() is not None
+    except Exception:
+        try:
+            import streamlit as st
+            if hasattr(st, 'runtime'):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+if _is_running_in_streamlit():
+    from core.engine import Cerebro, Broker, ExecutionMode, BaseStrategy, Order
+    from data.async_data_manager import AsyncDataManager
+    from data.market_detector import MarketDetector
+    from strategies.ma_cross import MACrossStrategy
+    from strategies.advanced_strategies import (
+        MultiFactorStrategy,
+        AdaptiveMarketRegimeStrategy,
+        MachineLearningStrategy
+    )
+    from strategies.market_strategies.cn_strategies import DragonHeadStrategy, NorthBoundFlowStrategy
+    from strategies.market_strategies.hk_strategies import AHPremiumStrategy, SouthBoundFlowStrategy
+    from strategies.market_strategies.us_strategies import EarningsMomentumStrategy, PutCallSentimentStrategy
+    from risk.advanced_risk_manager import AdvancedRiskManager, RiskConfig
+    from utils.metrics import performance_attribution
+    from utils.logger import get_logger
+
+    try:
+        from reports.report_generator import ReportGenerator
+        HAS_REPORT = True
+    except ImportError:
+        HAS_REPORT = False
+
+    try:
+        from data.index_data import IndexData
+        HAS_INDEX = True
+    except ImportError:
+        HAS_INDEX = False
+
+    logger = get_logger(__name__)
+
+    _import_errors = []
+
+    STRATEGIES = {
+        'ma_cross': MACrossStrategy,
+        'multi_factor': MultiFactorStrategy,
+        'adaptive': AdaptiveMarketRegimeStrategy,
+        'ml': MachineLearningStrategy,
+        'dragon_head': DragonHeadStrategy,
+        'north_bound': NorthBoundFlowStrategy,
+        'ah_premium': AHPremiumStrategy,
+        'south_bound': SouthBoundFlowStrategy,
+        'earnings_mom': EarningsMomentumStrategy,
+        'put_call': PutCallSentimentStrategy,
+    }
 
 
 class QuantSystem:
-    """系统主类"""
-
     def __init__(self):
         self.data_manager = AsyncDataManager()
         self.risk_manager = AdvancedRiskManager()
-        self.strategies = STRATEGIES.copy()
+        self.strategies = STRATEGIES.copy() if 'STRATEGIES' in dir() else {}
 
     def _fetch_data(self, symbol, start_date, end_date, market=None):
-        """统一数据获取（多源重试）"""
         if market is None:
             market = MarketDetector.detect(symbol)
         data_sources = ['akshare', 'baostock']
@@ -90,31 +172,7 @@ class QuantSystem:
         return None, market
 
 
-def _launch_streamlit():
-    """通过subprocess启动Streamlit服务器"""
-    port = 8501
-    cmd = [
-        sys.executable, "-m", "streamlit", "run",
-        str(Path(__file__).resolve()),
-        "--server.port", str(port),
-        "--server.headless", "false",
-        "--browser.gatherUsageStats", "false",
-        "--server.runOnSave", "false",
-    ]
-    print(f"🚀 QuantSystem Pro 启动中...")
-    print(f"📍 浏览器访问: http://localhost:{port}")
-    print(f"⏹  按 Ctrl+C 停止服务")
-    print("-" * 50)
-    try:
-        subprocess.run(cmd, cwd=str(project_root))
-    except KeyboardInterrupt:
-        print("\n服务已停止")
-    except FileNotFoundError:
-        print("❌ 未找到streamlit，请运行: pip install streamlit")
-
-
 def run_web():
-    """Streamlit Web界面"""
     try:
         import streamlit as st
     except ImportError:
@@ -131,7 +189,7 @@ def run_web():
     )
 
     if 'dark_mode' not in st.session_state:
-        st.session_state.dark_mode = False
+        st.session_state.dark_mode = _detect_system_dark_mode()
 
     from ui.styles import APPLE_CSS, DARK_CSS
     if st.session_state.dark_mode:
@@ -265,16 +323,42 @@ def run_web():
 
 
 def _show_debug_info(st):
-    """调试模式：显示import错误"""
-    if _import_errors:
+    if '_import_errors' in dir() and _import_errors:
         with st.expander("🔧 调试信息", expanded=False):
             for err in _import_errors:
                 st.warning(err)
 
 
 def run_cli():
-    """命令行模式"""
     import argparse
+
+    from core.engine import Cerebro, Broker, ExecutionMode, BaseStrategy, Order
+    from data.async_data_manager import AsyncDataManager
+    from data.market_detector import MarketDetector
+    from strategies.ma_cross import MACrossStrategy
+    from strategies.advanced_strategies import (
+        MultiFactorStrategy, AdaptiveMarketRegimeStrategy, MachineLearningStrategy
+    )
+    from strategies.market_strategies.cn_strategies import DragonHeadStrategy, NorthBoundFlowStrategy
+    from strategies.market_strategies.hk_strategies import AHPremiumStrategy, SouthBoundFlowStrategy
+    from strategies.market_strategies.us_strategies import EarningsMomentumStrategy, PutCallSentimentStrategy
+    from risk.advanced_risk_manager import AdvancedRiskManager, RiskConfig
+    from utils.logger import get_logger
+
+    logger = get_logger(__name__)
+
+    STRATEGIES = {
+        'ma_cross': MACrossStrategy,
+        'multi_factor': MultiFactorStrategy,
+        'adaptive': AdaptiveMarketRegimeStrategy,
+        'ml': MachineLearningStrategy,
+        'dragon_head': DragonHeadStrategy,
+        'north_bound': NorthBoundFlowStrategy,
+        'ah_premium': AHPremiumStrategy,
+        'south_bound': SouthBoundFlowStrategy,
+        'earnings_mom': EarningsMomentumStrategy,
+        'put_call': PutCallSentimentStrategy,
+    }
 
     def fetch_data(symbol, start_date, end_date, market=None):
         if market is None:
@@ -436,12 +520,26 @@ def run_cli():
                   f"收益={result.total_return:.2%}, 回撤={result.max_drawdown:.2%}")
 
 
-if __name__ != '__main__':
-    run_web()
-
 if __name__ == '__main__':
     if '--cli' in sys.argv:
         sys.argv.remove('--cli')
         run_cli()
     else:
-        _launch_streamlit()
+        _check_dependencies()
+        print("🚀 QuantSystem Pro 启动中...")
+        print("📍 浏览器访问: http://localhost:8501")
+        print("⏹  按 Ctrl+C 停止服务")
+        print("-" * 50)
+        _open_browser("http://localhost:8501")
+        try:
+            subprocess.run(
+                [sys.executable, '-m', 'streamlit', 'run', str(__file__),
+                 '--server.port=8501', '--server.headless=true',
+                 '--browser.gatherUsageStats=false'],
+                cwd=str(project_root)
+            )
+        except KeyboardInterrupt:
+            print("\n服务已停止")
+else:
+    if _is_running_in_streamlit():
+        run_web()

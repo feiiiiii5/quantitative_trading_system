@@ -1,72 +1,111 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-市场热力图组件
-使用Plotly treemap展示行业板块涨跌
+板块热力图组件 - Apple Design Style
 """
 
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
+import numpy as np
 
 
 def render_market_heatmap(market: str = "CN"):
-    """
-    渲染行业板块涨跌热力图
+    is_dark = st.session_state.get('dark_mode', False)
 
-    Args:
-        market: 市场代码
-    """
-    st.markdown("### 🗺️ 行业板块热力图")
-
-    with st.spinner("正在获取板块数据..."):
-        df = _get_sector_data(market)
-
-    if df is None or df.empty:
-        st.warning("暂无板块数据")
-        return
-
-    # A股习惯：红涨绿跌
-    fig = go.Figure(go.Treemap(
-        labels=df['name'],
-        parents=[''] * len(df),
-        values=df['value'],
-        marker=dict(
-            colors=df['change_pct'],
-            colorscale=[
-                [0, '#34c759'],
-                [0.5, '#f5f5f7'],
-                [1, '#ff3b30']
-            ],
-            cmid=0,
-        ),
-        textinfo="label+text",
-        text=df.apply(lambda r: f"{r['change_pct']:+.2f}%", axis=1),
-        hovertemplate="<b>%{label}</b><br>涨跌幅: %{customdata:+.2f}%<extra></extra>",
-        customdata=df['change_pct'],
-    ))
-
-    fig.update_layout(
-        height=500,
-        margin=dict(l=10, r=10, t=10, b=10),
-        font=dict(family="-apple-system, BlinkMacSystemFont, sans-serif"),
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-
-def _get_sector_data(market: str) -> pd.DataFrame:
-    """获取行业板块数据"""
     try:
         import akshare as ak
-        df = ak.stock_board_industry_name_em()
 
-        result = pd.DataFrame()
-        result['name'] = df['板块名称']
-        result['change_pct'] = pd.to_numeric(df['涨跌幅'], errors='coerce').fillna(0)
-        result['value'] = pd.to_numeric(df.get('总市值', df.get('成交额', pd.Series(1, index=df.index))), errors='coerce').fillna(1)
+        if market == "CN":
+            df = ak.stock_board_industry_name_em()
+            if df is not None and not df.empty:
+                df = df.head(30)
+                _render_heatmap_grid(df, '板块名称', '涨跌幅', is_dark)
+            else:
+                st.warning("暂无板块数据")
+        elif market == "HK":
+            st.info("港股板块热力图开发中...")
+        elif market == "US":
+            st.info("美股板块热力图开发中...")
+        else:
+            st.info("暂不支持该市场")
 
-        return result
     except Exception as e:
-        st.error(f"获取板块数据失败: {e}")
-        return None
+        st.warning(f"获取板块数据失败: {e}")
+        _render_demo_heatmap(is_dark)
+
+
+def _render_heatmap_grid(df, name_col, change_col, is_dark):
+    items = []
+    for _, row in df.iterrows():
+        name = str(row[name_col])
+        change = float(row[change_col]) if pd.notna(row[change_col]) else 0
+        items.append((name, change))
+
+    if not items:
+        return
+
+    max_abs = max(abs(c) for _, c in items) if items else 1
+    if max_abs == 0:
+        max_abs = 1
+
+    cells = ""
+    for name, change in items:
+        intensity = abs(change) / max_abs
+
+        if change > 0:
+            if is_dark:
+                r, g, b = 48, int(209 * (0.3 + 0.7 * intensity)), 88
+            else:
+                r, g, b = 52, int(199 * (0.3 + 0.7 * intensity)), 89
+        elif change < 0:
+            if is_dark:
+                r, g, b = int(255 * (0.3 + 0.7 * intensity)), 69, 58
+            else:
+                r, g, b = int(255 * (0.3 + 0.7 * intensity)), 59, 48
+        else:
+            r, g, b = (99, 99, 102) if is_dark else (142, 142, 147)
+
+        bg_color = f"rgba({r}, {g}, {b}, 0.85)"
+        text_color = "white" if intensity > 0.4 else ("#f5f5f7" if is_dark else "#1d1d1f")
+
+        cells += f"""
+        <div style="
+            background: {bg_color};
+            border-radius: 12px;
+            padding: 12px 8px;
+            text-align: center;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        ">
+            <div style="font-size:12px; font-weight:600; color:{text_color}; margin-bottom:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                {name}
+            </div>
+            <div style="font-size:16px; font-weight:800; color:{text_color}; letter-spacing:-0.02em;">
+                {change:+.2f}%
+            </div>
+        </div>
+        """
+
+    st.markdown(f"""
+    <div style="
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+        gap: 8px;
+        padding: 8px;
+    ">
+        {cells}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def _render_demo_heatmap(is_dark):
+    demo_items = [
+        ("银行", 1.2), ("证券", -0.8), ("保险", 0.5),
+        ("房地产", -2.1), ("医药", 1.8), ("科技", 2.5),
+        ("消费", -0.3), ("能源", 0.9), ("材料", -1.5),
+        ("工业", 0.7), ("通信", 1.1), ("公用", -0.2),
+    ]
+    _render_heatmap_grid(
+        pd.DataFrame(demo_items, columns=['板块名称', '涨跌幅']),
+        '板块名称', '涨跌幅', is_dark
+    )

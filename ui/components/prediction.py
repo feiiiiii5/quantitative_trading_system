@@ -1,244 +1,301 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-涨跌概率预测组件
-调用MachineLearningStrategy生成预测
+涨跌概率预测模块 - Apple Design Style
+集成多种预测方法：技术指标综合、动量分析、波动率分析
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
+from datetime import datetime
 
 
 def render_prediction_panel(symbol: str, data: pd.DataFrame):
-    """
-    渲染涨跌概率预测面板
-
-    Args:
-        symbol: 股票代码
-        data: 历史数据
-    """
-    if data is None or data.empty:
-        st.warning("暂无数据")
+    if data is None or data.empty or len(data) < 60:
+        st.warning("数据不足，至少需要60个交易日")
         return
 
-    st.markdown("### 🔮 涨跌概率预测")
+    is_dark = st.session_state.get('dark_mode', False)
 
-    # 预测维度切换
-    period = st.radio(
-        "预测周期",
-        ["明日", "3日", "5日", "10日"],
-        horizontal=True,
-        key="pred_period"
-    )
-    period_map = {"明日": 1, "3日": 3, "5日": 5, "10日": 10}
-    forward = period_map[period]
+    pred_result = _comprehensive_predict(data)
 
-    with st.spinner("正在计算预测..."):
-        prediction = _calc_prediction(data, forward)
+    up_prob = pred_result['up_prob']
+    down_prob = 100 - up_prob
+    signal = pred_result['signal']
+    confidence = pred_result['confidence']
 
-    if prediction is None:
-        st.error("预测计算失败")
-        return
+    if signal == "看多":
+        signal_class = "badge-up"
+        signal_icon = "📈"
+    elif signal == "看空":
+        signal_class = "badge-down"
+        signal_icon = "📉"
+    else:
+        signal_class = "badge-neutral"
+        signal_icon = "➡️"
 
-    up_prob = prediction['up_prob']
-    down_prob = prediction['down_prob']
-    neutral_prob = 1 - up_prob - down_prob
+    up_bar_color = 'var(--accent-green)'
+    down_bar_color = 'var(--accent-red)'
 
-    # Gauge仪表盘
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=up_prob * 100,
-            domain={'x': [0, 1], 'y': [0, 1]},
-            title={'text': f"上涨概率 ({period})", 'font': {'size': 18}},
-            delta={'reference': 50, 'increasing': {'color': "#34c759"},
-                   'decreasing': {'color': "#ff3b30"}},
-            gauge={
-                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "rgba(0,0,0,0.1)"},
-                'bar': {'color': "#34c759" if up_prob > 0.5 else "#ff3b30"},
-                'bgcolor': "white",
-                'borderwidth': 0,
-                'steps': [
-                    {'range': [0, 30], 'color': 'rgba(255, 59, 48, 0.15)'},
-                    {'range': [30, 50], 'color': 'rgba(255, 149, 0, 0.1)'},
-                    {'range': [50, 70], 'color': 'rgba(0, 113, 227, 0.1)'},
-                    {'range': [70, 100], 'color': 'rgba(52, 199, 89, 0.15)'},
-                ],
-                'threshold': {
-                    'line': {'color': "rgba(0,0,0,0.3)", 'width': 2},
-                    'thickness': 0.8,
-                    'value': 50
-                }
-            }
-        ))
-        fig.update_layout(height=280, margin=dict(l=20, r=20, t=40, b=20))
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        # 概率分布
-        st.markdown(f"""
-        <div class="apple-card" style="text-align:center">
-            <div style="margin:12px 0">
-                <span class="badge-up">上涨 {up_prob:.1%}</span>
+    st.markdown(f"""
+    <div class="apple-card" style="text-align:center; padding:32px 24px;">
+        <div style="font-size:14px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:20px;">
+            涨跌概率预测
+        </div>
+        <div style="display:flex; justify-content:center; align-items:center; gap:24px; margin-bottom:24px;">
+            <div>
+                <div style="font-size:48px; font-weight:800; color:var(--accent-green); letter-spacing:-0.03em;">
+                    {up_prob:.0f}%
+                </div>
+                <div style="font-size:13px; color:var(--text-secondary); font-weight:500;">上涨概率</div>
             </div>
-            <div style="margin:12px 0">
-                <span class="badge-neutral">震荡 {neutral_prob:.1%}</span>
-            </div>
-            <div style="margin:12px 0">
-                <span class="badge-down">下跌 {down_prob:.1%}</span>
+            <div style="font-size:32px; color:var(--text-tertiary);">vs</div>
+            <div>
+                <div style="font-size:48px; font-weight:800; color:var(--accent-red); letter-spacing:-0.03em;">
+                    {down_prob:.0f}%
+                </div>
+                <div style="font-size:13px; color:var(--text-secondary); font-weight:500;">下跌概率</div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
-
-    # Top3触发信号
-    st.markdown("#### 📋 触发信号")
-    signals = prediction.get('signals', [])
-    if signals:
-        for i, sig in enumerate(signals[:3]):
-            sig_color = "var(--accent-green)" if sig['direction'] == '看多' else (
-                "var(--accent-red)" if sig['direction'] == '看空' else "var(--accent-blue)")
-            st.markdown(f"""
-            <div class="apple-card" style="margin-bottom:8px; padding:12px 16px">
-                <div style="display:flex; justify-content:space-between; align-items:center">
-                    <span style="font-weight:600">{sig['name']}</span>
-                    <span style="color:{sig_color}; font-weight:600; font-size:14px">{sig['direction']}</span>
-                </div>
-                <div style="font-size:13px; color:var(--text-secondary); margin-top:4px">{sig['desc']}</div>
+        <div style="max-width:400px; margin:0 auto 20px;">
+            <div style="display:flex; height:8px; border-radius:4px; overflow:hidden; background:rgba(0,0,0,0.06);">
+                <div style="width:{up_prob}%; background:var(--accent-green); border-radius:4px 0 0 4px;"></div>
+                <div style="width:{down_prob}%; background:var(--accent-red); border-radius:0 4px 4px 0;"></div>
             </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.info("暂无明确信号")
+        </div>
+        <div style="margin-bottom:12px;">
+            <span class="{signal_class}" style="font-size:16px; padding:8px 24px;">
+                {signal_icon} {signal}
+            </span>
+        </div>
+        <div style="font-size:13px; color:var(--text-tertiary);">
+            置信度: {confidence:.0f}% · 基于多因子综合分析
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # 免责声明
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown('<div class="section-subtitle">因子贡献分析</div>', unsafe_allow_html=True)
+        _render_factor_analysis(pred_result)
+
+    with col2:
+        st.markdown('<div class="section-subtitle">近期趋势</div>', unsafe_allow_html=True)
+        _render_trend_analysis(data)
+
     st.markdown("""
     <div class="disclaimer">
-        ⚠️ 以上预测基于历史数据和技术指标，仅供参考，不构成任何投资建议。
-        市场有风险，投资需谨慎。
+        ⚠️ 以上预测仅基于技术分析，不构成投资建议。股市有风险，投资需谨慎。
+        预测结果仅供参考，实际走势可能受政策、消息、资金面等多种因素影响。
     </div>
     """, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=1800)
-def _calc_prediction(data: pd.DataFrame, forward: int) -> dict:
-    """
-    计算涨跌概率预测
+def _comprehensive_predict(data: pd.DataFrame) -> dict:
+    close = data['close']
+    high = data['high']
+    low = data['low']
+    volume = data['volume']
 
-    基于技术指标综合评分，不依赖外部ML库
-    """
-    try:
-        close = data['close']
-        high = data['high']
-        low = data['low']
-        volume = data['volume']
+    factors = {}
 
-        signals = []
-        scores = []
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / (loss + 1e-8)
+    rsi = (100 - (100 / (1 + rs))).iloc[-1]
 
-        # 1. MA趋势评分
-        ma5 = close.rolling(5).mean().iloc[-1]
-        ma20 = close.rolling(20).mean().iloc[-1]
-        ma60 = close.rolling(60).mean().iloc[-1] if len(data) > 60 else ma20
-        curr = close.iloc[-1]
+    if rsi < 30:
+        factors['RSI'] = {'score': 75, 'direction': 'up', 'weight': 0.15}
+    elif rsi > 70:
+        factors['RSI'] = {'score': 25, 'direction': 'down', 'weight': 0.15}
+    else:
+        rsi_score = 50 + (50 - rsi) * 0.5
+        factors['RSI'] = {'score': rsi_score, 'direction': 'neutral', 'weight': 0.15}
 
-        if ma5 > ma20 > ma60:
-            scores.append(0.3)
-            signals.append({"name": "均线多头排列", "direction": "看多",
-                          "desc": f"MA5({ma5:.2f}) > MA20({ma20:.2f}) > MA60({ma60:.2f})"})
-        elif ma5 < ma20 < ma60:
-            scores.append(-0.3)
-            signals.append({"name": "均线空头排列", "direction": "看空",
-                          "desc": f"MA5({ma5:.2f}) < MA20({ma20:.2f}) < MA60({ma60:.2f})"})
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    macd_hist = macd - macd_signal
+
+    if macd.iloc[-1] > macd_signal.iloc[-1] and macd_hist.iloc[-1] > 0:
+        factors['MACD'] = {'score': 70, 'direction': 'up', 'weight': 0.15}
+    elif macd.iloc[-1] < macd_signal.iloc[-1] and macd_hist.iloc[-1] < 0:
+        factors['MACD'] = {'score': 30, 'direction': 'down', 'weight': 0.15}
+    else:
+        factors['MACD'] = {'score': 50, 'direction': 'neutral', 'weight': 0.15}
+
+    ma5 = close.rolling(5).mean()
+    ma20 = close.rolling(20).mean()
+    ma60 = close.rolling(60).mean()
+
+    if ma5.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1]:
+        factors['均线'] = {'score': 80, 'direction': 'up', 'weight': 0.15}
+    elif ma5.iloc[-1] < ma20.iloc[-1] < ma60.iloc[-1]:
+        factors['均线'] = {'score': 20, 'direction': 'down', 'weight': 0.15}
+    else:
+        factors['均线'] = {'score': 50, 'direction': 'neutral', 'weight': 0.15}
+
+    ret_5 = (close.iloc[-1] / close.iloc[-6] - 1) * 100 if len(close) > 5 else 0
+    ret_20 = (close.iloc[-1] / close.iloc[-21] - 1) * 100 if len(close) > 20 else 0
+
+    if ret_5 > 3 and ret_20 > 5:
+        factors['动量'] = {'score': 70, 'direction': 'up', 'weight': 0.12}
+    elif ret_5 < -3 and ret_20 < -5:
+        factors['动量'] = {'score': 30, 'direction': 'down', 'weight': 0.12}
+    else:
+        factors['动量'] = {'score': 50, 'direction': 'neutral', 'weight': 0.12}
+
+    vol_5 = close.iloc[-5:].pct_change().std() * np.sqrt(252)
+    vol_20 = close.iloc[-20:].pct_change().std() * np.sqrt(252)
+
+    if vol_5 < vol_20 * 0.8:
+        factors['波动率'] = {'score': 60, 'direction': 'up', 'weight': 0.10}
+    elif vol_5 > vol_20 * 1.3:
+        factors['波动率'] = {'score': 35, 'direction': 'down', 'weight': 0.10}
+    else:
+        factors['波动率'] = {'score': 50, 'direction': 'neutral', 'weight': 0.10}
+
+    vol_ma5 = volume.iloc[-5:].mean()
+    vol_ma20 = volume.iloc[-20:].mean()
+    if vol_ma5 > vol_ma20 * 1.3 and close.iloc[-1] > close.iloc[-2]:
+        factors['量价'] = {'score': 72, 'direction': 'up', 'weight': 0.12}
+    elif vol_ma5 > vol_ma20 * 1.3 and close.iloc[-1] < close.iloc[-2]:
+        factors['量价'] = {'score': 28, 'direction': 'down', 'weight': 0.12}
+    else:
+        factors['量价'] = {'score': 50, 'direction': 'neutral', 'weight': 0.12}
+
+    boll_mid = close.rolling(20).mean()
+    std20 = close.rolling(20).std()
+    boll_upper = boll_mid + 2 * std20
+    boll_lower = boll_mid - 2 * std20
+
+    if close.iloc[-1] < boll_lower.iloc[-1]:
+        factors['布林带'] = {'score': 72, 'direction': 'up', 'weight': 0.10}
+    elif close.iloc[-1] > boll_upper.iloc[-1]:
+        factors['布林带'] = {'score': 28, 'direction': 'down', 'weight': 0.10}
+    else:
+        factors['布林带'] = {'score': 50, 'direction': 'neutral', 'weight': 0.10}
+
+    recent_high = high.iloc[-20:].max()
+    recent_low = low.iloc[-20:].min()
+    price_pos = (close.iloc[-1] - recent_low) / (recent_high - recent_low + 1e-8)
+
+    if price_pos < 0.2:
+        factors['支撑阻力'] = {'score': 68, 'direction': 'up', 'weight': 0.11}
+    elif price_pos > 0.8:
+        factors['支撑阻力'] = {'score': 32, 'direction': 'down', 'weight': 0.11}
+    else:
+        factors['支撑阻力'] = {'score': 50, 'direction': 'neutral', 'weight': 0.11}
+
+    weighted_score = sum(
+        f['score'] * f['weight'] for f in factors.values()
+    )
+
+    up_prob = np.clip(weighted_score, 5, 95)
+
+    up_factors = sum(1 for f in factors.values() if f['direction'] == 'up')
+    down_factors = sum(1 for f in factors.values() if f['direction'] == 'down')
+    total = len(factors)
+
+    if up_factors > down_factors + 2:
+        signal = "看多"
+    elif down_factors > up_factors + 2:
+        signal = "看空"
+    elif up_prob > 60:
+        signal = "偏多"
+    elif up_prob < 40:
+        signal = "偏空"
+    else:
+        signal = "中性"
+
+    max_weight = max(f['weight'] for f in factors.values())
+    confidence = min(95, abs(up_prob - 50) * 1.5 + 30)
+
+    return {
+        'up_prob': up_prob,
+        'signal': signal,
+        'confidence': confidence,
+        'factors': factors,
+    }
+
+
+def _render_factor_analysis(pred_result: dict):
+    factors = pred_result['factors']
+
+    rows = ""
+    for name, info in factors.items():
+        score = info['score']
+        direction = info['direction']
+        weight = info['weight']
+
+        if direction == 'up':
+            bar_color = 'var(--accent-green)'
+            dir_text = '↑'
+        elif direction == 'down':
+            bar_color = 'var(--accent-red)'
+            dir_text = '↓'
         else:
-            scores.append(0.0)
+            bar_color = 'var(--text-tertiary)'
+            dir_text = '→'
 
-        # 2. RSI评分
-        delta = close.diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / (loss + 1e-8)
-        rsi = (100 - (100 / (1 + rs))).iloc[-1]
+        rows += f"""
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:10px;">
+            <div style="width:60px; font-size:13px; font-weight:600; color:var(--text-primary);">{name}</div>
+            <div style="flex:1;">
+                <div class="signal-bar">
+                    <div class="signal-bar-fill" style="width:{score}%; background:{bar_color};"></div>
+                </div>
+            </div>
+            <div style="width:30px; text-align:right; font-size:13px; font-weight:600; color:{bar_color};">
+                {dir_text}
+            </div>
+            <div style="width:35px; text-align:right; font-size:11px; color:var(--text-tertiary);">
+                {weight*100:.0f}%
+            </div>
+        </div>
+        """
 
-        if rsi < 30:
-            scores.append(0.25)
-            signals.append({"name": "RSI超卖", "direction": "看多",
-                          "desc": f"RSI={rsi:.1f}，处于超卖区间"})
-        elif rsi > 70:
-            scores.append(-0.25)
-            signals.append({"name": "RSI超买", "direction": "看空",
-                          "desc": f"RSI={rsi:.1f}，处于超买区间"})
-        else:
-            scores.append((50 - rsi) / 100)
-
-        # 3. MACD评分
-        ema12 = close.ewm(span=12, adjust=False).mean()
-        ema26 = close.ewm(span=26, adjust=False).mean()
-        macd = ema12 - ema26
-        signal = macd.ewm(span=9, adjust=False).mean()
-        hist = macd - signal
-
-        if hist.iloc[-1] > 0 and hist.iloc[-2] <= 0:
-            scores.append(0.2)
-            signals.append({"name": "MACD金叉", "direction": "看多",
-                          "desc": "MACD柱由负转正"})
-        elif hist.iloc[-1] < 0 and hist.iloc[-2] >= 0:
-            scores.append(-0.2)
-            signals.append({"name": "MACD死叉", "direction": "看空",
-                          "desc": "MACD柱由正转负"})
-        else:
-            scores.append(0.05 if hist.iloc[-1] > 0 else -0.05)
-
-        # 4. 成交量评分
-        vol_ma = volume.rolling(20).mean().iloc[-1]
-        curr_vol = volume.iloc[-1]
-        vol_ratio = curr_vol / (vol_ma + 1e-8)
-
-        if vol_ratio > 1.5 and curr > close.iloc[-2]:
-            scores.append(0.15)
-            signals.append({"name": "放量上涨", "direction": "看多",
-                          "desc": f"量比={vol_ratio:.2f}，价涨量增"})
-        elif vol_ratio > 1.5 and curr < close.iloc[-2]:
-            scores.append(-0.15)
-            signals.append({"name": "放量下跌", "direction": "看空",
-                          "desc": f"量比={vol_ratio:.2f}，价跌量增"})
-
-        # 5. 动量评分
-        momentum = close.pct_change(forward).iloc[-1]
-        if momentum > 0.03:
-            scores.append(0.1)
-        elif momentum < -0.03:
-            scores.append(-0.1)
-        else:
-            scores.append(0.0)
-
-        # 综合概率
-        total_score = sum(scores)
-        up_prob = _sigmoid(total_score + 0.5)
-        down_prob = _sigmoid(-total_score + 0.5)
-        up_prob = min(max(up_prob, 0.05), 0.95)
-        down_prob = min(max(down_prob, 0.05), 0.95)
-
-        if up_prob + down_prob > 1:
-            scale = 1.0 / (up_prob + down_prob)
-            up_prob *= scale
-            down_prob *= scale
-
-        # 按信号强度排序
-        signals.sort(key=lambda x: abs(x.get('strength', 0)), reverse=True)
-
-        return {
-            'up_prob': up_prob,
-            'down_prob': down_prob,
-            'signals': signals,
-        }
-
-    except Exception as e:
-        return None
+    st.markdown(f"""
+    <div class="apple-card" style="padding:20px;">
+        {rows}
+    </div>
+    """, unsafe_allow_html=True)
 
 
-def _sigmoid(x):
-    """Sigmoid函数"""
-    return 1 / (1 + np.exp(-x * 3))
+def _render_trend_analysis(data: pd.DataFrame):
+    close = data['close']
+
+    periods = [
+        ("5日", 5),
+        ("10日", 10),
+        ("20日", 20),
+        ("60日", 60),
+    ]
+
+    rows = ""
+    for name, period in periods:
+        if len(close) > period:
+            ret = (close.iloc[-1] / close.iloc[-period-1] - 1) * 100
+            if ret > 0:
+                color = 'var(--accent-green)'
+                sign = '+'
+            else:
+                color = 'var(--accent-red)'
+                sign = ''
+
+            rows += f"""
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--border-color);">
+                <span style="font-size:14px; font-weight:500; color:var(--text-secondary);">{name}涨跌幅</span>
+                <span style="font-size:16px; font-weight:700; color:{color};">{sign}{ret:.2f}%</span>
+            </div>
+            """
+
+    st.markdown(f"""
+    <div class="apple-card" style="padding:20px;">
+        {rows}
+    </div>
+    """, unsafe_allow_html=True)

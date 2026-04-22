@@ -1,7 +1,8 @@
 [server]
 runOnSave = true
 port = 8501
-headless = false
+headless = true
+enableXsrfProtection = false
 
 [browser]
 gatherUsageStats = false
@@ -9,3 +10,7 @@ serverAddress = "localhost"
 
 [theme]
 base = "light"
+
+[client]
+showErrorDetails = false
+toolbarMode = "minimal"

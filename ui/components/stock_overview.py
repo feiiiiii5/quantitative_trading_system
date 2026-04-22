@@ -1,123 +1,135 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-股票概览卡片组件
+股票概览卡片组件 - Apple Design Style
 """
 
 import streamlit as st
 import pandas as pd
+from datetime import datetime
 
 
 def render_overview_cards(symbol: str, market: str, data: pd.DataFrame):
-    """
-    渲染股票概览卡片行
-
-    Args:
-        symbol: 股票代码
-        market: 市场代码
-        data: 历史数据DataFrame
-    """
     if data is None or data.empty:
-        st.warning("暂无数据")
         return
 
     latest = data.iloc[-1]
     prev = data.iloc[-2] if len(data) > 1 else latest
 
-    current_price = float(latest.get('close', 0))
+    close_price = float(latest.get('close', 0))
     prev_close = float(prev.get('close', 0))
-    change = current_price - prev_close
-    change_pct = (change / prev_close * 100) if prev_close > 0 else 0
+    change = close_price - prev_close
+    change_pct = (change / prev_close * 100) if prev_close != 0 else 0
 
-    high = float(latest.get('high', 0))
-    low = float(latest.get('low', 0))
+    high_price = float(latest.get('high', 0))
+    low_price = float(latest.get('low', 0))
+    open_price = float(latest.get('open', 0))
     volume = float(latest.get('volume', 0))
 
-    # 52周区间
-    if len(data) > 1:
-        year_data = data.tail(min(252, len(data)))
-        week52_high = float(year_data['high'].max())
-        week52_low = float(year_data['low'].min())
-    else:
-        week52_high = high
-        week52_low = low
+    is_up = change >= 0
+    badge_class = "badge-up" if is_up else "badge-down"
+    arrow = "↑" if is_up else "↓"
 
-    # 涨跌颜色和徽章
-    if change_pct > 0:
-        badge_class = "badge-up"
-        arrow = "▲"
-        color = "var(--accent-green)"
-    elif change_pct < 0:
-        badge_class = "badge-down"
-        arrow = "▼"
-        color = "var(--accent-red)"
-    else:
-        badge_class = "badge-neutral"
-        arrow = "—"
-        color = "var(--text-secondary)"
+    market_name = {"CN": "🇨🇳 A股", "HK": "🇭🇰 港股", "US": "🇺🇸 美股"}.get(market, "📊")
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    st.markdown(f"""
+    <div class="apple-card" style="margin-bottom:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:16px;">
+            <div>
+                <div style="font-size:14px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.04em;">
+                    {market_name} · {symbol}
+                </div>
+                <div style="font-size:42px; font-weight:800; color:var(--text-primary); letter-spacing:-0.03em; margin:8px 0;">
+                    {close_price:,.2f}
+                </div>
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <span class="{badge_class}">{arrow} {abs(change):,.2f} ({abs(change_pct):.2f}%)</span>
+                    <span style="font-size:13px; color:var(--text-tertiary);">{latest.name.strftime('%Y-%m-%d') if hasattr(latest.name, 'strftime') else str(latest.name)}</span>
+                </div>
+            </div>
+            <div style="text-align:right;">
+                <div style="font-size:12px; color:var(--text-secondary); font-weight:500;">开盘</div>
+                <div style="font-size:18px; font-weight:600; color:var(--text-primary);">{open_price:,.2f}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">当前价格</div>
-            <div class="metric-value">{current_price:,.2f}</div>
-            <span class="{badge_class}">{arrow} {abs(change_pct):.2f}%</span>
+            <div class="metric-label">最高价</div>
+            <div class="metric-value" style="color:var(--accent-green);">{high_price:,.2f}</div>
         </div>
         """, unsafe_allow_html=True)
 
     with col2:
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">涨跌幅</div>
-            <div class="metric-value" style="color: {color}">{change_pct:+.2f}%</div>
-            <span class="{badge_class}">{arrow} {abs(change):.2f}</span>
+            <div class="metric-label">最低价</div>
+            <div class="metric-value" style="color:var(--accent-red);">{low_price:,.2f}</div>
         </div>
         """, unsafe_allow_html=True)
 
     with col3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">今日高/低</div>
-            <div class="metric-value" style="font-size:20px">{high:,.2f}</div>
-            <div style="color: var(--text-secondary); font-size:14px">{low:,.2f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with col4:
         vol_str = _format_volume(volume)
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-label">成交量</div>
-            <div class="metric-value" style="font-size:22px">{vol_str}</div>
+            <div class="metric-value">{vol_str}</div>
         </div>
         """, unsafe_allow_html=True)
 
-    with col5:
-        # 52周区间进度条
-        if week52_high > week52_low:
-            pos = (current_price - week52_low) / (week52_high - week52_low) * 100
-        else:
-            pos = 50
+    with col4:
+        amplitude = ((high_price - low_price) / prev_close * 100) if prev_close != 0 else 0
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">52周区间</div>
-            <div style="font-size:12px; color: var(--text-secondary); margin-top:8px">
-                {week52_low:,.2f} - {week52_high:,.2f}
-            </div>
-            <div class="signal-bar" style="margin-top:8px">
-                <div class="signal-bar-fill" style="width:{pos}%; background: var(--accent-blue)"></div>
-            </div>
+            <div class="metric-label">振幅</div>
+            <div class="metric-value">{amplitude:.2f}%</div>
         </div>
         """, unsafe_allow_html=True)
 
+    if len(data) >= 20:
+        _render_mini_sparkline(data)
 
-def _format_volume(vol: float) -> str:
-    """格式化成交量"""
-    if vol >= 1e8:
-        return f"{vol/1e8:.1f}亿"
-    elif vol >= 1e4:
-        return f"{vol/1e4:.1f}万"
+
+def _format_volume(volume: float) -> str:
+    if volume >= 1e8:
+        return f"{volume/1e8:.1f}亿"
+    elif volume >= 1e4:
+        return f"{volume/1e4:.1f}万"
     else:
-        return f"{vol:.0f}"
+        return f"{volume:,.0f}"
+
+
+def _render_mini_sparkline(data: pd.DataFrame):
+    recent = data.tail(20)
+    closes = recent['close'].values
+    min_c = closes.min()
+    max_c = closes.max()
+    range_c = max_c - min_c if max_c != min_c else 1
+
+    bars_html = ""
+    for c in closes:
+        height = max(4, int((c - min_c) / range_c * 26))
+        is_up = c >= closes[0]
+        color = "var(--accent-green)" if is_up else "var(--accent-red)"
+        bars_html += f'<div class="sparkline-bar" style="height:{height}px; background:{color};"></div>'
+
+    st.markdown(f"""
+    <div class="apple-card" style="margin-top:16px; padding:16px 20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <div style="font-size:12px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.04em;">20日走势</div>
+                <div style="font-size:22px; font-weight:700; color:var(--text-primary); margin-top:4px;">
+                    {closes[-1]:,.2f}
+                </div>
+            </div>
+            <div class="sparkline-container">
+                {bars_html}
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)

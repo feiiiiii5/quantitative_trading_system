@@ -1,271 +1,409 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-技术指标面板组件
-分4组展示：趋势/动量/成交量/波动性
+技术指标面板 - Apple Design Style
+支持 MACD, RSI, KDJ, BOLL, ATR, OBV, CCI, WR, DMI, SAR
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 
 def render_technical_indicators(data: pd.DataFrame):
-    """
-    渲染技术指标面板
-
-    Args:
-        data: 历史数据DataFrame
-    """
     if data is None or data.empty:
         st.warning("暂无数据")
         return
 
-    indicators = _calc_all_indicators(data)
+    is_dark = st.session_state.get('dark_mode', False)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 趋势", "⚡ 动量", "📊 成交量", "🌊 波动性"])
+    indicators = st.multiselect(
+        "选择技术指标",
+        ["MACD", "RSI", "KDJ", "BOLL", "ATR", "OBV", "CCI", "WR", "DMI", "SAR"],
+        default=["MACD", "RSI", "KDJ"],
+        key="tech_indicators_select",
+    )
 
-    with tab1:
-        _render_trend_tab(data, indicators)
-    with tab2:
-        _render_momentum_tab(data, indicators)
-    with tab3:
-        _render_volume_tab(data, indicators)
-    with tab4:
-        _render_volatility_tab(data, indicators)
+    if not indicators:
+        return
+
+    df = _calc_all_indicators(data.copy())
+
+    n_subplots = len(indicators) + 1
+    row_heights = [0.4] + [0.6 / len(indicators)] * len(indicators)
+
+    fig = make_subplots(
+        rows=n_subplots, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        row_heights=row_heights,
+    )
+
+    up_color = '#30d158' if is_dark else '#34c759'
+    down_color = '#ff453a' if is_dark else '#ff3b30'
+    bg_color = '#000000' if is_dark else 'white'
+    text_color = '#f5f5f7' if is_dark else '#1d1d1f'
+    grid_color = 'rgba(255,255,255,0.06)' if is_dark else 'rgba(0,0,0,0.05)'
+
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['open'], high=df['high'],
+        low=df['low'], close=df['close'],
+        name='K线',
+        increasing_line_color=up_color, decreasing_line_color=down_color,
+        increasing_fillcolor=up_color, decreasing_fillcolor=down_color,
+    ), row=1, col=1)
+
+    row_idx = 2
+    for indicator in indicators:
+        if indicator == "MACD":
+            _add_macd(fig, df, row_idx, is_dark)
+        elif indicator == "RSI":
+            _add_rsi(fig, df, row_idx, is_dark)
+        elif indicator == "KDJ":
+            _add_kdj(fig, df, row_idx, is_dark)
+        elif indicator == "BOLL":
+            _add_boll(fig, df, 1, is_dark)
+            row_idx -= 1
+        elif indicator == "ATR":
+            _add_atr(fig, df, row_idx, is_dark)
+        elif indicator == "OBV":
+            _add_obv(fig, df, row_idx, is_dark)
+        elif indicator == "CCI":
+            _add_cci(fig, df, row_idx, is_dark)
+        elif indicator == "WR":
+            _add_wr(fig, df, row_idx, is_dark)
+        elif indicator == "DMI":
+            _add_dmi(fig, df, row_idx, is_dark)
+        elif indicator == "SAR":
+            _add_sar(fig, df, 1, is_dark)
+            row_idx -= 1
+
+        row_idx += 1
+
+    fig.update_layout(
+        height=200 + len(indicators) * 150,
+        xaxis_rangeslider_visible=False,
+        plot_bgcolor=bg_color,
+        paper_bgcolor=bg_color,
+        font=dict(family="-apple-system, BlinkMacSystemFont, sans-serif", size=12, color=text_color),
+        margin=dict(l=50, r=20, t=30, b=20),
+        showlegend=True,
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02,
+            xanchor="right", x=1, font=dict(size=10, color=text_color),
+        ),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor=grid_color)
+    fig.update_yaxes(showgrid=True, gridcolor=grid_color)
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    _render_signal_summary(df, indicators)
 
 
-def _calc_all_indicators(data: pd.DataFrame) -> dict:
-    """计算所有技术指标"""
-    close = data['close']
-    high = data['high']
-    low = data['low']
-    volume = data['volume']
-    ind = {}
+def _calc_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    close = df['close']
+    high = df['high']
+    low = df['low']
 
-    # 趋势指标
-    for p in [5, 10, 20, 60]:
-        ind[f'ma{p}'] = close.rolling(p).mean()
-        ind[f'ema{p}'] = close.ewm(span=p, adjust=False).mean()
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    df['macd'] = ema12 - ema26
+    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+    df['macd_hist'] = df['macd'] - df['macd_signal']
 
-    ind['ema12'] = close.ewm(span=12, adjust=False).mean()
-    ind['ema26'] = close.ewm(span=26, adjust=False).mean()
-
-    bb_ma = close.rolling(20).mean()
-    bb_std = close.rolling(20).std()
-    ind['boll_upper'] = bb_ma + 2 * bb_std
-    ind['boll_mid'] = bb_ma
-    ind['boll_lower'] = bb_ma - 2 * bb_std
-
-    # 金叉死叉信号
-    ma5 = ind['ma5']
-    ma20 = ind['ma20']
-    ind['golden_cross'] = (ma5 > ma20) & (ma5.shift(1) <= ma20.shift(1))
-    ind['death_cross'] = (ma5 < ma20) & (ma5.shift(1) >= ma20.shift(1))
-
-    # 动量指标
     delta = close.diff()
     gain = delta.where(delta > 0, 0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / (loss + 1e-8)
-    ind['rsi'] = 100 - (100 / (1 + rs))
+    df['rsi'] = 100 - (100 / (1 + rs))
 
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    ind['macd'] = ema12 - ema26
-    ind['macd_signal'] = ind['macd'].ewm(span=9, adjust=False).mean()
-    ind['macd_hist'] = ind['macd'] - ind['macd_signal']
+    low_9 = low.rolling(9).min()
+    high_9 = high.rolling(9).max()
+    rsv = (close - low_9) / (high_9 - low_9 + 1e-8) * 100
+    df['k'] = rsv.ewm(com=2, adjust=False).mean()
+    df['d'] = df['k'].ewm(com=2, adjust=False).mean()
+    df['j'] = 3 * df['k'] - 2 * df['d']
 
-    low_min = low.rolling(9).min()
-    high_max = high.rolling(9).max()
-    rsv = (close - low_min) / (high_max - low_min + 1e-8) * 100
-    ind['k'] = rsv.ewm(com=2, adjust=False).mean()
-    ind['d'] = ind['k'].ewm(com=2, adjust=False).mean()
-    ind['j'] = 3 * ind['k'] - 2 * ind['d']
+    df['boll_mid'] = close.rolling(20).mean()
+    std20 = close.rolling(20).std()
+    df['boll_upper'] = df['boll_mid'] + 2 * std20
+    df['boll_lower'] = df['boll_mid'] - 2 * std20
+
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    df['atr'] = tr.rolling(14).mean()
+
+    df['obv'] = (np.sign(close.diff()) * df['volume']).cumsum()
 
     tp = (high + low + close) / 3
-    ind['cci'] = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).std() + 1e-8)
-    ind['roc'] = close.pct_change(12) * 100
+    ma_tp = tp.rolling(20).mean()
+    md = tp.rolling(20).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    df['cci'] = (tp - ma_tp) / (0.015 * md + 1e-8)
 
-    # 成交量指标
-    ind['obv'] = (np.sign(close.diff()) * volume).cumsum()
-    vol_ma5 = volume.rolling(5).mean()
-    vol_ma20 = volume.rolling(20).mean()
-    ind['vol_ratio'] = vol_ma5 / (vol_ma20 + 1e-8)
+    high_14 = high.rolling(14).max()
+    low_14 = low.rolling(14).min()
+    df['wr'] = (high_14 - close) / (high_14 - low_14 + 1e-8) * -100
 
-    # 波动性指标
-    tr1 = high - low
-    tr2 = abs(high - close.shift(1))
-    tr3 = abs(low - close.shift(1))
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    ind['atr'] = tr.rolling(14).mean()
-    ind['hist_vol'] = close.pct_change().rolling(20).std() * np.sqrt(252) * 100
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
+    atr14 = tr.rolling(14).mean()
+    plus_di = 100 * plus_dm.rolling(14).mean() / (atr14 + 1e-8)
+    minus_di = 100 * minus_dm.rolling(14).mean() / (atr14 + 1e-8)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-8)
+    df['adx'] = dx.rolling(14).mean()
+    df['plus_di'] = plus_di
+    df['minus_di'] = minus_di
 
-    return ind
+    return df
 
 
-def _render_trend_tab(data, ind):
-    """趋势指标标签页"""
-    close = data['close'].iloc[-1]
+def _add_macd(fig, df, row, is_dark):
+    blue = '#0a84ff' if is_dark else '#0071e3'
+    orange = '#ff9f0a' if is_dark else '#ff9500'
+    up = '#30d158' if is_dark else '#34c759'
+    down = '#ff453a' if is_dark else '#ff3b30'
 
-    cols = st.columns(3)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['macd'], mode='lines', name='MACD',
+        line=dict(color=blue, width=1.5),
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['macd_signal'], mode='lines', name='Signal',
+        line=dict(color=orange, width=1.5),
+    ), row=row, col=1)
+    colors = [up if v >= 0 else down for v in df['macd_hist'].fillna(0)]
+    fig.add_trace(go.Bar(
+        x=df.index, y=df['macd_hist'], name='Hist',
+        marker_color=colors, showlegend=False,
+    ), row=row, col=1)
 
-    # MA/EMA
-    with cols[0]:
-        _indicator_card("MA5", f"{ind['ma5'].iloc[-1]:.2f}",
-                        _trend_signal(close, ind['ma5'].iloc[-1]),
-                        _signal_strength(close, ind['ma5'].iloc[-1]))
-    with cols[1]:
-        _indicator_card("MA20", f"{ind['ma20'].iloc[-1]:.2f}",
-                        _trend_signal(close, ind['ma20'].iloc[-1]),
-                        _signal_strength(close, ind['ma20'].iloc[-1]))
-    with cols[2]:
-        _indicator_card("MA60", f"{ind['ma60'].iloc[-1]:.2f}",
-                        _trend_signal(close, ind['ma60'].iloc[-1]),
-                        _signal_strength(close, ind['ma60'].iloc[-1]))
 
-    cols2 = st.columns(3)
-    with cols2[0]:
-        ema12_val = ind.get('ema12', close)
-        _indicator_card("EMA12", f"{ema12_val.iloc[-1]:.2f}",
-                        _trend_signal(close, ema12_val.iloc[-1]),
-                        _signal_strength(close, ema12_val.iloc[-1]))
-    with cols2[1]:
-        ema26_val = ind.get('ema26', close)
-        _indicator_card("EMA26", f"{ema26_val.iloc[-1]:.2f}",
-                        _trend_signal(close, ema26_val.iloc[-1]),
-                        _signal_strength(close, ema26_val.iloc[-1]))
+def _add_rsi(fig, df, row, is_dark):
+    purple = '#bf5af2' if is_dark else '#af52de'
+    red = '#ff453a' if is_dark else '#ff3b30'
+    green = '#30d158' if is_dark else '#34c759'
 
-    # 布林带
-    with cols2[2]:
-        bb_pos = (close - ind['boll_lower'].iloc[-1]) / (ind['boll_upper'].iloc[-1] - ind['boll_lower'].iloc[-1] + 1e-8)
-        if bb_pos > 0.8:
-            sig = "超买 ⚠️"
-        elif bb_pos < 0.2:
-            sig = "超卖 ⚠️"
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['rsi'], mode='lines', name='RSI',
+        line=dict(color=purple, width=1.5),
+    ), row=row, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color=red, row=row, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color=green, row=row, col=1)
+
+
+def _add_kdj(fig, df, row, is_dark):
+    blue = '#0a84ff' if is_dark else '#0071e3'
+    orange = '#ff9f0a' if is_dark else '#ff9500'
+    purple = '#bf5af2' if is_dark else '#af52de'
+
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['k'], mode='lines', name='K',
+        line=dict(color=blue, width=1.5),
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['d'], mode='lines', name='D',
+        line=dict(color=orange, width=1.5),
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['j'], mode='lines', name='J',
+        line=dict(color=purple, width=1.5),
+    ), row=row, col=1)
+
+
+def _add_boll(fig, df, row, is_dark):
+    blue = '#0a84ff' if is_dark else '#0071e3'
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['boll_upper'], mode='lines', name='BOLL上轨',
+        line=dict(color=blue, width=1, dash='dash'), opacity=0.6,
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['boll_mid'], mode='lines', name='BOLL中轨',
+        line=dict(color=blue, width=1.5),
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['boll_lower'], mode='lines', name='BOLL下轨',
+        line=dict(color=blue, width=1, dash='dash'), opacity=0.6,
+    ), row=row, col=1)
+
+
+def _add_atr(fig, df, row, is_dark):
+    teal = '#64d2ff' if is_dark else '#5ac8fa'
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['atr'], mode='lines', name='ATR',
+        line=dict(color=teal, width=1.5),
+    ), row=row, col=1)
+
+
+def _add_obv(fig, df, row, is_dark):
+    teal = '#64d2ff' if is_dark else '#5ac8fa'
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['obv'], mode='lines', name='OBV',
+        line=dict(color=teal, width=1.5),
+    ), row=row, col=1)
+
+
+def _add_cci(fig, df, row, is_dark):
+    purple = '#bf5af2' if is_dark else '#af52de'
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['cci'], mode='lines', name='CCI',
+        line=dict(color=purple, width=1.5),
+    ), row=row, col=1)
+    fig.add_hline(y=100, line_dash="dash", line_color='rgba(255,69,58,0.5)', row=row, col=1)
+    fig.add_hline(y=-100, line_dash="dash", line_color='rgba(48,209,88,0.5)', row=row, col=1)
+
+
+def _add_wr(fig, df, row, is_dark):
+    orange = '#ff9f0a' if is_dark else '#ff9500'
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['wr'], mode='lines', name='WR',
+        line=dict(color=orange, width=1.5),
+    ), row=row, col=1)
+    fig.add_hline(y=-20, line_dash="dash", line_color='rgba(255,69,58,0.5)', row=row, col=1)
+    fig.add_hline(y=-80, line_dash="dash", line_color='rgba(48,209,88,0.5)', row=row, col=1)
+
+
+def _add_dmi(fig, df, row, is_dark):
+    blue = '#0a84ff' if is_dark else '#0071e3'
+    orange = '#ff9f0a' if is_dark else '#ff9500'
+    purple = '#bf5af2' if is_dark else '#af52de'
+
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['plus_di'], mode='lines', name='+DI',
+        line=dict(color=blue, width=1.5),
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['minus_di'], mode='lines', name='-DI',
+        line=dict(color=orange, width=1.5),
+    ), row=row, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df['adx'], mode='lines', name='ADX',
+        line=dict(color=purple, width=1.5),
+    ), row=row, col=1)
+
+
+def _add_sar(fig, df, row, is_dark):
+    orange = '#ff9f0a' if is_dark else '#ff9500'
+    try:
+        high = df['high'].values
+        low = df['low'].values
+        close = df['close'].values
+
+        sar = _calc_sar(high, low)
+        df['sar'] = sar
+
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df['sar'], mode='markers', name='SAR',
+            marker=dict(color=orange, size=3, symbol='diamond'),
+        ), row=row, col=1)
+    except Exception:
+        pass
+
+
+def _calc_sar(high, low, af_step=0.02, af_max=0.2):
+    n = len(high)
+    sar = np.zeros(n)
+    trend = np.ones(n)
+    ep = high[0]
+    af = af_step
+    sar[0] = low[0]
+
+    for i in range(1, n):
+        sar[i] = sar[i-1] + af * (ep - sar[i-1])
+
+        if trend[i-1] == 1:
+            if low[i] < sar[i]:
+                trend[i] = -1
+                sar[i] = ep
+                ep = low[i]
+                af = af_step
+            else:
+                trend[i] = 1
+                if high[i] > ep:
+                    ep = high[i]
+                    af = min(af + af_step, af_max)
         else:
-            sig = "中性"
-        _indicator_card("BOLL", f"{ind['boll_mid'].iloc[-1]:.2f}", sig, int(bb_pos * 100))
+            if high[i] > sar[i]:
+                trend[i] = 1
+                sar[i] = ep
+                ep = high[i]
+                af = af_step
+            else:
+                trend[i] = -1
+                if low[i] < ep:
+                    ep = low[i]
+                    af = min(af + af_step, af_max)
 
-    # 金叉死叉信号
-    gc = ind['golden_cross'].iloc[-1] if len(ind['golden_cross']) > 0 else False
-    dc = ind['death_cross'].iloc[-1] if len(ind['death_cross']) > 0 else False
-    if gc:
-        st.markdown('<span class="badge-up">🔥 金叉信号</span>', unsafe_allow_html=True)
-    elif dc:
-        st.markdown('<span class="badge-down">💀 死叉信号</span>', unsafe_allow_html=True)
-
-
-def _render_momentum_tab(data, ind):
-    """动量指标标签页"""
-    cols = st.columns(3)
-
-    rsi_val = ind['rsi'].iloc[-1]
-    rsi_sig = "超买" if rsi_val > 70 else ("超卖" if rsi_val < 30 else "中性")
-    rsi_strength = min(int(rsi_val), 100)
-    _indicator_card("RSI(14)", f"{rsi_val:.1f}", rsi_sig, rsi_strength, parent=cols[0])
-
-    macd_val = ind['macd'].iloc[-1]
-    macd_sig = "多头" if macd_val > 0 else "空头"
-    _indicator_card("MACD", f"{macd_val:.4f}", macd_sig,
-                    70 if macd_val > 0 else 30, parent=cols[1])
-
-    k_val = ind['k'].iloc[-1]
-    d_val = ind['d'].iloc[-1]
-    j_val = ind['j'].iloc[-1]
-    kdj_sig = "超买" if k_val > 80 else ("超卖" if k_val < 20 else "中性")
-    _indicator_card("KDJ", f"K:{k_val:.1f} D:{d_val:.1f} J:{j_val:.1f}",
-                    kdj_sig, min(int(k_val), 100), parent=cols[2])
-
-    cols2 = st.columns(2)
-    cci_val = ind['cci'].iloc[-1]
-    cci_sig = "超买" if cci_val > 100 else ("超卖" if cci_val < -100 else "中性")
-    _indicator_card("CCI", f"{cci_val:.1f}", cci_sig,
-                    min(max(int((cci_val + 200) / 4), 0), 100), parent=cols2[0])
-
-    roc_val = ind['roc'].iloc[-1]
-    roc_sig = "上涨" if roc_val > 0 else "下跌"
-    _indicator_card("ROC", f"{roc_val:.2f}%", roc_sig,
-                    70 if roc_val > 0 else 30, parent=cols2[1])
+    return sar
 
 
-def _render_volume_tab(data, ind):
-    """成交量指标标签页"""
-    cols = st.columns(2)
+def _render_signal_summary(df: pd.DataFrame, indicators: list):
+    latest = df.iloc[-1]
+    signals = []
 
-    obv_val = ind['obv'].iloc[-1]
-    obv_prev = ind['obv'].iloc[-2] if len(ind['obv']) > 1 else obv_val
-    obv_sig = "放量" if obv_val > obv_prev else "缩量"
-    _indicator_card("OBV", f"{obv_val:,.0f}", obv_sig,
-                    70 if obv_val > obv_prev else 30, parent=cols[0])
+    if "MACD" in indicators:
+        if latest['macd'] > latest['macd_signal'] and latest['macd_hist'] > 0:
+            signals.append(("MACD", "看多", "badge-up"))
+        elif latest['macd'] < latest['macd_signal'] and latest['macd_hist'] < 0:
+            signals.append(("MACD", "看空", "badge-down"))
+        else:
+            signals.append(("MACD", "中性", "badge-neutral"))
 
-    vr_val = ind['vol_ratio'].iloc[-1]
-    vr_sig = "放量" if vr_val > 1.5 else ("缩量" if vr_val < 0.5 else "正常")
-    _indicator_card("量比", f"{vr_val:.2f}", vr_sig,
-                    min(int(vr_val * 50), 100), parent=cols[1])
+    if "RSI" in indicators:
+        rsi_val = latest.get('rsi', 50)
+        if rsi_val > 70:
+            signals.append(("RSI", "超买", "badge-down"))
+        elif rsi_val < 30:
+            signals.append(("RSI", "超卖", "badge-up"))
+        else:
+            signals.append(("RSI", "中性", "badge-neutral"))
 
-    # 量价背离检测
-    close_chg = data['close'].pct_change(5).iloc[-1]
-    vol_chg = data['volume'].rolling(5).mean().pct_change(5).iloc[-1]
-    if close_chg > 0.02 and vol_chg < -0.1:
-        st.markdown('<span class="badge-down">⚠️ 量价背离：价涨量缩</span>', unsafe_allow_html=True)
-    elif close_chg < -0.02 and vol_chg > 0.1:
-        st.markdown('<span class="badge-up">⚠️ 量价背离：价跌量增（可能见底）</span>', unsafe_allow_html=True)
+    if "KDJ" in indicators:
+        j_val = latest.get('j', 50)
+        if j_val > 100:
+            signals.append(("KDJ", "超买", "badge-down"))
+        elif j_val < 0:
+            signals.append(("KDJ", "超卖", "badge-up"))
+        else:
+            signals.append(("KDJ", "中性", "badge-neutral"))
 
+    if "CCI" in indicators:
+        cci_val = latest.get('cci', 0)
+        if cci_val > 100:
+            signals.append(("CCI", "超买", "badge-down"))
+        elif cci_val < -100:
+            signals.append(("CCI", "超卖", "badge-up"))
+        else:
+            signals.append(("CCI", "中性", "badge-neutral"))
 
-def _render_volatility_tab(data, ind):
-    """波动性指标标签页"""
-    cols = st.columns(2)
+    if "WR" in indicators:
+        wr_val = latest.get('wr', -50)
+        if wr_val > -20:
+            signals.append(("WR", "超买", "badge-down"))
+        elif wr_val < -80:
+            signals.append(("WR", "超卖", "badge-up"))
+        else:
+            signals.append(("WR", "中性", "badge-neutral"))
 
-    atr_val = ind['atr'].iloc[-1]
-    atr_pct = atr_val / data['close'].iloc[-1] * 100
-    atr_sig = "高波动" if atr_pct > 3 else ("低波动" if atr_pct < 1 else "正常")
-    _indicator_card("ATR(14)", f"{atr_val:.2f} ({atr_pct:.1f}%)", atr_sig,
-                    min(int(atr_pct * 25), 100), parent=cols[0])
-
-    hv_val = ind['hist_vol'].iloc[-1]
-    hv_sig = "高波动" if hv_val > 30 else ("低波动" if hv_val < 15 else "正常")
-    _indicator_card("历史波动率", f"{hv_val:.1f}%", hv_sig,
-                    min(int(hv_val * 2), 100), parent=cols[1])
-
-
-def _indicator_card(name, value, signal, strength, parent=None):
-    """渲染单个指标卡片"""
-    if signal in ("超买", "多头", "上涨", "放量", "高波动"):
-        sig_color = "var(--accent-green)"
-    elif signal in ("超卖", "空头", "下跌", "缩量", "低波动"):
-        sig_color = "var(--accent-red)"
-    else:
-        sig_color = "var(--accent-blue)"
-
-    strength = max(0, min(100, int(strength)))
-
-    html = f"""
-    <div class="metric-card" style="text-align:left; padding:16px">
-        <div class="metric-label">{name}</div>
-        <div class="metric-value" style="font-size:20px; margin:6px 0">{value}</div>
-        <div style="color:{sig_color}; font-size:13px; font-weight:600; margin-bottom:8px">{signal}</div>
-        <div class="signal-bar">
-            <div class="signal-bar-fill" style="width:{strength}%; background:{sig_color}"></div>
+    if signals:
+        signals_html = " ".join([
+            f'<span class="{cls}" style="margin:4px 0;">{name}: {sig}</span>'
+            for name, sig, cls in signals
+        ])
+        st.markdown(f"""
+        <div class="apple-card" style="padding:16px 20px; margin-top:16px;">
+            <div style="font-size:12px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:10px;">
+                信号汇总
+            </div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                {signals_html}
+            </div>
         </div>
-    </div>
-    """
-
-    if parent:
-        parent.markdown(html, unsafe_allow_html=True)
-    else:
-        st.markdown(html, unsafe_allow_html=True)
-
-
-def _trend_signal(price, ma):
-    """判断趋势信号"""
-    if price > ma:
-        return "多头 ▲"
-    else:
-        return "空头 ▼"
-
-
-def _signal_strength(price, ma):
-    """计算信号强度"""
-    diff = abs(price - ma) / ma * 100
-    return min(int(diff * 20), 100)
+        """, unsafe_allow_html=True)
