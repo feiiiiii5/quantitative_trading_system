@@ -371,12 +371,17 @@ async def sim_buy(request: Request,
     strategy: str = Query("manual"),
     stop_loss: float = Query(0),
     take_profit: float = Query(0),
+    order_type: str = Query("market"),
+    shares: int = Query(0),
 ):
     try:
         if not name:
             from core.stock_search import get_stock_name
             name = get_stock_name(symbol) or symbol
-        result = request.app.state.sim_trading.execute_buy(symbol, name, market, price, strategy, stop_loss, take_profit)
+        result = request.app.state.sim_trading.execute_buy(
+            symbol, name, market, price, strategy, stop_loss, take_profit,
+            order_type=order_type, shares=shares,
+        )
         if result["success"]:
             return _json_response(True, data=result)
         return _json_response(False, error=result.get("error", "买入失败"))

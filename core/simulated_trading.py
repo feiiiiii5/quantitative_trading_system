@@ -153,27 +153,35 @@ class SimulatedTrading:
     def execute_buy(
         self, symbol: str, name: str, market: str, price: float,
         strategy: str = "manual", stop_loss: float = 0.0, take_profit: float = 0.0,
+        order_type: str = "market", shares: int = 0,
     ) -> dict:
         if symbol in self.positions:
             return {"success": False, "error": "已有持仓，不可重复买入"}
 
-        max_invest = self.account.cash * self.max_position_pct
-        commission_cost = price * (1 + self.commission_rate + self.slippage_rate)
-        shares = int(max_invest / commission_cost / 100) * 100
-        if shares <= 0:
-            shares = int(max_invest / commission_cost)
-        if shares <= 0:
-            return {"success": False, "error": "资金不足"}
+        if order_type == "limit" and price <= 0:
+            return {"success": False, "error": "限价单价格必须大于0"}
 
-        total_cost = shares * price * (1 + self.commission_rate + self.slippage_rate)
-        if total_cost > self.account.cash:
-            return {"success": False, "error": "资金不足"}
+        if shares > 0:
+            total_cost = shares * price * (1 + self.commission_rate + self.slippage_rate)
+            if total_cost > self.account.cash:
+                return {"success": False, "error": "资金不足"}
+        else:
+            max_invest = self.account.cash * self.max_position_pct
+            commission_cost = price * (1 + self.commission_rate + self.slippage_rate)
+            shares = int(max_invest / commission_cost / 100) * 100
+            if shares <= 0:
+                shares = int(max_invest / commission_cost)
+            if shares <= 0:
+                return {"success": False, "error": "资金不足"}
+            total_cost = shares * price * (1 + self.commission_rate + self.slippage_rate)
+            if total_cost > self.account.cash:
+                return {"success": False, "error": "资金不足"}
 
         self.account.cash -= total_cost
         self.positions[symbol] = Position(
             symbol=symbol, name=name, market=market,
             shares=shares, entry_price=price,
-            entry_date=time.strftime("%Y-%m-%d"),
+            entry_date=time.strftime("%Y-%m-%d %H:%M:%S"),
             stop_loss=stop_loss, take_profit=take_profit,
             strategy=strategy,
         )
@@ -183,6 +191,7 @@ class SimulatedTrading:
         return {
             "success": True,
             "action": "buy",
+            "order_type": order_type,
             "symbol": symbol,
             "name": name,
             "shares": shares,

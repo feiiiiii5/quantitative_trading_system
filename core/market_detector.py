@@ -5,6 +5,7 @@ class MarketDetector:
     A_SHARE_PREFIXES = {"0", "1", "2", "3", "4", "5", "6", "8", "9"}
     HK_PREFIXES = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
     US_PATTERN = re.compile(r"^[A-Z]{1,5}$")
+    US_9DIGIT_PATTERN = re.compile(r"^[A-Z]{1,4}\.?[A-Z]?$")
 
     MARKET_CONFIG = {
         "A": {
@@ -35,14 +36,18 @@ class MarketDetector:
         s = symbol.strip().upper()
         if s.endswith(".HK") or s.endswith(".HKEX"):
             return "HK"
-        if cls.US_PATTERN.match(s) and s.isalpha():
-            return "US"
+        clean = re.sub(r"[^A-Za-z0-9.]", "", s)
+        if re.match(r"^[A-Z]", clean):
+            if cls.US_PATTERN.match(clean.split(".")[0]) or cls.US_9DIGIT_PATTERN.match(clean):
+                return "US"
         digits = re.sub(r"[^0-9]", "", symbol)
         if len(digits) == 6 and digits[0] in cls.A_SHARE_PREFIXES:
             return "A"
         if len(digits) <= 5 and digits and digits[0] in cls.HK_PREFIXES:
-            if not cls.US_PATTERN.match(s):
+            if not cls.US_PATTERN.match(s) and not cls.US_9DIGIT_PATTERN.match(s):
                 return "HK"
+        if cls.US_PATTERN.match(s) or cls.US_9DIGIT_PATTERN.match(s):
+            return "US"
         return "A"
 
     @classmethod
@@ -58,5 +63,5 @@ class MarketDetector:
             digits = re.sub(r"[^0-9]", "", s)
             return digits.zfill(5)
         if market == "US":
-            return s.upper()
+            return s.upper().split(".")[0]
         return re.sub(r"[^0-9]", "", s)

@@ -550,6 +550,82 @@ class EastMoneySource:
         return None
 
 
+class YahooFinanceSource:
+    NAME = "Yahoo Finance"
+
+    @staticmethod
+    def fetch_realtime(code: str, market: str) -> Optional[dict]:
+        if market != "US":
+            return None
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}"
+            params = {"range": "1d", "interval": "1m", "includePrePost": "false"}
+            headers = {
+                "User-Agent": _UA,
+            }
+            resp = _http_get(url, params=params, headers=headers, timeout=8)
+            if resp:
+                d = resp.json()
+                meta = d.get("chart", {}).get("result", [{}])[0].get("meta", {})
+                if meta and meta.get("regularMarketPrice"):
+                    price = _safe_float(meta["regularMarketPrice"])
+                    prev = _safe_float(meta.get("chartPreviousClose", meta.get("previousClose", 0)))
+                    change = round(price - prev, 2) if prev > 0 else 0
+                    pct = round(change / prev * 100, 2) if prev > 0 else 0
+                    return {
+                        "name": meta.get("shortName", code),
+                        "price": price,
+                        "change": change,
+                        "pct": pct,
+                        "volume": _safe_float(meta.get("regularMarketVolume", 0)),
+                        "high": _safe_float(meta.get("regularMarketDayHigh", 0)),
+                        "low": _safe_float(meta.get("regularMarketDayLow", 0)),
+                        "open": _safe_float(meta.get("regularMarketOpen", 0)),
+                        "prev_close": prev,
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                    }
+        except Exception as e:
+            logger.debug(f"Yahoo Finance realtime error for {code}: {e}")
+        return None
+
+    @staticmethod
+    def fetch_history(code: str, market: str, start: str, end: str) -> Optional[pd.DataFrame]:
+        if market != "US":
+            return None
+        try:
+            s1 = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
+            e1 = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}"
+            params = {"period1": str(int(datetime.strptime(s1, "%Y-%m-%d").timestamp())),
+                      "period2": str(int(datetime.strptime(e1, "%Y-%m-%d").timestamp())),
+                      "interval": "1d"}
+            headers = {"User-Agent": _UA}
+            resp = _http_get(url, params=params, headers=headers, timeout=15)
+            if resp:
+                d = resp.json()
+                result = d.get("chart", {}).get("result", [{}])[0]
+                timestamps = result.get("timestamp", [])
+                quote = result.get("indicators", {}).get("quote", [{}])[0]
+                if timestamps and quote:
+                    rows = []
+                    for i, ts in enumerate(timestamps):
+                        o = _safe_float(quote.get("open", [])[i]) if i < len(quote.get("open", [])) else 0
+                        h = _safe_float(quote.get("high", [])[i]) if i < len(quote.get("high", [])) else 0
+                        l = _safe_float(quote.get("low", [])[i]) if i < len(quote.get("low", [])) else 0
+                        c = _safe_float(quote.get("close", [])[i]) if i < len(quote.get("close", [])) else 0
+                        v = _safe_float(quote.get("volume", [])[i]) if i < len(quote.get("volume", [])) else 0
+                        if c > 0:
+                            rows.append({
+                                "date": datetime.fromtimestamp(ts).strftime("%Y-%m-%d"),
+                                "open": o, "high": h, "low": l, "close": c, "volume": v,
+                            })
+                    if rows:
+                        return pd.DataFrame(rows)
+        except Exception as e:
+            logger.debug(f"Yahoo Finance history error for {code}: {e}")
+        return None
+
+
 class AkshareSource:
     NAME = "AkShare"
 
@@ -815,6 +891,8 @@ class SmartDataFetcher:
         ]
         if market == "A":
             sources.append(("baostock", self._bs.fetch_realtime))
+        if market == "US":
+            sources.insert(0, ("yahoo", YahooFinanceSource.fetch_realtime))
         return sources
 
     def _get_history_sources(self, market: str) -> list:
@@ -826,6 +904,8 @@ class SmartDataFetcher:
         ]
         if market == "A":
             sources.append(("baostock", self._bs.fetch_history))
+        if market == "US":
+            sources.insert(0, ("yahoo", YahooFinanceSource.fetch_history))
         return sources
 
     async def get_history(self, symbol: str, period: str = "1y") -> pd.DataFrame:

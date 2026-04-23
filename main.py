@@ -210,8 +210,20 @@ def index():
 
 @app.post("/shutdown")
 async def shutdown_server():
+    try:
+        from core.simulated_trading import SimulatedTrading
+        logging.getLogger(__name__).info("Graceful shutdown initiated, saving state...")
+    except Exception:
+        pass
     shutdown_event.set()
     return {"success": True, "message": "Server shutting down..."}
+
+
+@app.post("/client-disconnect")
+async def client_disconnect():
+    logging.getLogger(__name__).info("Client browser closed, initiating shutdown...")
+    shutdown_event.set()
+    return {"success": True, "message": "Shutdown initiated"}
 
 
 shutdown_event = threading.Event()

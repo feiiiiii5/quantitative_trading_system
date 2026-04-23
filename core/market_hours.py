@@ -266,8 +266,8 @@ class MarketHours:
     def get_refresh_interval(market: str) -> int:
         status = MarketHours.get_market_status(market)
         if status.get("is_open"):
-            return 5
-        return 60
+            return 1
+        return 30
 
     @staticmethod
     def should_fetch_realtime(market: str) -> bool:

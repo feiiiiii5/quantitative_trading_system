@@ -591,6 +591,148 @@ class BollingerBreakoutStrategy(BaseStrategy):
         )
 
 
+class MomentumStrategy(BaseStrategy):
+    def __init__(self, lookback: int = 20, holding: int = 10):
+        super().__init__("动量策略", "基于价格动量排名的趋势跟踪策略，买入强势股，卖出弱势股")
+        self.lookback = lookback
+        self.holding = holding
+
+    def get_default_params(self) -> dict:
+        return {"lookback": self.lookback, "holding": self.holding}
+
+    def generate_signals(self, df: pd.DataFrame) -> StrategyResult:
+        if not self._validate_df(df, self.lookback + 10):
+            return StrategyResult(name=self.name, description=self.description)
+
+        c = df["close"].values.astype(float)
+        h = df["high"].values.astype(float)
+        l = df["low"].values.astype(float)
+        atr = self._calc_atr(h, l, c)
+
+        momentum = np.zeros(len(c))
+        for i in range(self.lookback, len(c)):
+            momentum[i] = (c[i] - c[i - self.lookback]) / c[i - self.lookback] * 100
+
+        ma20 = pd.Series(c).rolling(20).mean().values
+
+        signals = []
+        for i in range(self.lookback + 1, len(c)):
+            if np.isnan(momentum[i]) or np.isnan(ma20[i]):
+                continue
+            if momentum[i] > 5 and c[i] > ma20[i]:
+                sl = c[i] - 2 * atr[i] if not np.isnan(atr[i]) else c[i] * 0.93
+                pos = self._calc_position_size(atr[i] if not np.isnan(atr[i]) else c[i] * 0.02)
+                signals.append(TradeSignal(
+                    signal_type=SignalType.BUY, strength=min(0.9, 0.5 + momentum[i] / 50),
+                    reason=f"动量={momentum[i]:.1f}%强势",
+                    price=c[i], stop_loss=sl,
+                    take_profit=c[i] + 3 * (c[i] - sl),
+                    position_pct=pos,
+                ))
+            elif momentum[i] < -5 and c[i] < ma20[i]:
+                signals.append(TradeSignal(
+                    signal_type=SignalType.SELL, strength=min(0.9, 0.5 + abs(momentum[i]) / 50),
+                    reason=f"动量={momentum[i]:.1f}%弱势",
+                    price=c[i],
+                ))
+
+        current_signal = None
+        score = 0.0
+        if not np.isnan(momentum[-1]):
+            score = max(-80, min(80, momentum[-1] * 3))
+            if momentum[-1] > 5 and not np.isnan(ma20[-1]) and c[-1] > ma20[-1]:
+                current_signal = TradeSignal(
+                    signal_type=SignalType.BUY, strength=min(0.85, 0.5 + momentum[-1] / 50),
+                    reason=f"当前动量={momentum[-1]:.1f}%",
+                    price=c[-1],
+                    stop_loss=c[-1] - 2 * atr[-1] if not np.isnan(atr[-1]) else c[-1] * 0.93,
+                    take_profit=c[-1] + 6 * atr[-1] if not np.isnan(atr[-1]) else c[-1] * 1.1,
+                    position_pct=self._calc_position_size(atr[-1] if not np.isnan(atr[-1]) else c[-1] * 0.02),
+                )
+            elif momentum[-1] < -5:
+                current_signal = TradeSignal(
+                    signal_type=SignalType.SELL, strength=min(0.85, 0.5 + abs(momentum[-1]) / 50),
+                    reason=f"当前动量={momentum[-1]:.1f}%",
+                    price=c[-1],
+                )
+
+        return StrategyResult(
+            name=self.name, signals=signals, current_signal=current_signal,
+            score=score, params=self.get_default_params(), description=self.description,
+        )
+
+
+class VolumeBreakoutStrategy(BaseStrategy):
+    def __init__(self, vol_period: int = 20, vol_mult: float = 2.0):
+        super().__init__("成交量突破策略", "基于成交量异动和价格突破的短线策略，放量突破更可靠")
+        self.vol_period = vol_period
+        self.vol_mult = vol_mult
+
+    def get_default_params(self) -> dict:
+        return {"vol_period": self.vol_period, "vol_mult": self.vol_mult}
+
+    def generate_signals(self, df: pd.DataFrame) -> StrategyResult:
+        if not self._validate_df(df, self.vol_period + 10):
+            return StrategyResult(name=self.name, description=self.description)
+
+        c = df["close"].values.astype(float)
+        h = df["high"].values.astype(float)
+        l = df["low"].values.astype(float)
+        v = df["volume"].values.astype(float) if "volume" in df.columns else np.ones(len(c))
+        atr = self._calc_atr(h, l, c)
+
+        vol_ma = pd.Series(v).rolling(self.vol_period).mean().values
+        vol_ratio = np.where(vol_ma > 0, v / vol_ma, 1.0)
+
+        hh20 = pd.Series(h).rolling(20).max().values
+        ll20 = pd.Series(l).rolling(20).min().values
+
+        signals = []
+        for i in range(self.vol_period + 1, len(c)):
+            if np.isnan(vol_ratio[i]) or np.isnan(hh20[i]) or np.isnan(ll20[i]):
+                continue
+            is_vol_surge = vol_ratio[i] >= self.vol_mult
+            if c[i] > hh20[i - 1] and is_vol_surge:
+                sl = c[i] - 2 * atr[i] if not np.isnan(atr[i]) else c[i] * 0.94
+                pos = self._calc_position_size(atr[i] if not np.isnan(atr[i]) else c[i] * 0.02)
+                signals.append(TradeSignal(
+                    signal_type=SignalType.BUY, strength=0.85,
+                    reason=f"放量突破20日高点(量比={vol_ratio[i]:.1f})",
+                    price=c[i], stop_loss=sl,
+                    take_profit=c[i] + 3 * (c[i] - sl),
+                    position_pct=pos,
+                ))
+            elif c[i] < ll20[i - 1] and is_vol_surge:
+                signals.append(TradeSignal(
+                    signal_type=SignalType.SELL, strength=0.85,
+                    reason=f"放量跌破20日低点(量比={vol_ratio[i]:.1f})",
+                    price=c[i],
+                ))
+            elif c[i] > hh20[i - 1]:
+                sl = c[i] - 2 * atr[i] if not np.isnan(atr[i]) else c[i] * 0.95
+                signals.append(TradeSignal(
+                    signal_type=SignalType.BUY, strength=0.6,
+                    reason="缩量突破20日高点",
+                    price=c[i], stop_loss=sl,
+                    take_profit=c[i] + 3 * (c[i] - sl),
+                    position_pct=self._calc_position_size(atr[i] if not np.isnan(atr[i]) else c[i] * 0.02),
+                ))
+
+        current_signal = None
+        score = 0.0
+        if not np.isnan(vol_ratio[-1]):
+            if vol_ratio[-1] >= self.vol_mult:
+                score = 30 + (vol_ratio[-1] - self.vol_mult) * 10
+            else:
+                score = (vol_ratio[-1] - 1) * 20
+            score = max(-80, min(80, score))
+
+        return StrategyResult(
+            name=self.name, signals=signals, current_signal=current_signal,
+            score=score, params=self.get_default_params(), description=self.description,
+        )
+
+
 class CompositeStrategy:
     def __init__(self):
         self.strategies = [
@@ -600,14 +742,18 @@ class CompositeStrategy:
             SuperTrendStrategy(),
             KDJStrategy(),
             BollingerBreakoutStrategy(),
+            MomentumStrategy(),
+            VolumeBreakoutStrategy(),
         ]
         self.weights = {
-            "双均线交叉策略": 0.15,
-            "MACD策略": 0.20,
-            "RSI均值回归策略": 0.15,
-            "SuperTrend趋势跟踪策略": 0.25,
-            "KDJ随机策略": 0.10,
-            "布林带突破策略": 0.15,
+            "双均线交叉策略": 0.12,
+            "MACD策略": 0.15,
+            "RSI均值回归策略": 0.12,
+            "SuperTrend趋势跟踪策略": 0.18,
+            "KDJ随机策略": 0.08,
+            "布林带突破策略": 0.12,
+            "动量策略": 0.12,
+            "成交量突破策略": 0.11,
         }
 
     def run_all(self, df: pd.DataFrame) -> dict:

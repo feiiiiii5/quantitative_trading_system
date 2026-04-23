@@ -59,11 +59,17 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .nav-status-dot.live{background:var(--up);box-shadow:0 0 6px var(--up)}
 .nav-status-dot.off{background:var(--text3)}
 
-.search-wrap{flex:1;max-width:480px;position:relative}
-.search-input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px 8px 36px;font-size:14px;color:var(--text);outline:none;transition:border-color 0.2s,box-shadow 0.2s;font-family:inherit}
+.search-wrap{flex:1;max-width:480px;position:relative;display:flex;align-items:center}
+.search-input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 80px 8px 36px;font-size:14px;color:var(--text);outline:none;transition:border-color 0.2s,box-shadow 0.2s;font-family:inherit}
 .search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
 .search-input::placeholder{color:var(--text3)}
 .search-icon{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3);pointer-events:none}
+.search-btn{position:absolute;right:4px;top:50%;transform:translateY(-50%);padding:5px 14px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none;background:var(--accent);color:#fff;font-family:inherit;transition:all 0.2s;display:flex;align-items:center;gap:4px}
+.search-btn:hover{background:var(--accent-hover);box-shadow:0 2px 8px var(--accent-glow)}
+.search-btn:disabled{opacity:0.6;cursor:not-allowed}
+.search-btn .spinner{width:12px;height:12px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 0.6s linear infinite;display:none}
+.search-btn.loading .spinner{display:block}
+.search-btn.loading .search-btn-text{display:none}
 .search-dd{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-md);max-height:320px;overflow-y:auto;z-index:200;box-shadow:var(--shadow-lg);display:none}
 .search-dd.show{display:block;animation:ddIn 0.15s cubic-bezier(0.25,0.1,0.25,1)}
 .search-item{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;transition:background-color 0.1s;border-bottom:1px solid var(--border)}
@@ -96,6 +102,24 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .hero-badge-hk{color:var(--warn);border-color:rgba(255,159,10,0.2);background:var(--warn-dim)}
 .hero-badge-us{color:var(--up);border-color:rgba(48,209,88,0.2);background:var(--up-dim)}
 
+.hero-search-wrap{max-width:640px;margin:32px auto 0;position:relative}
+.hero-search-input{width:100%;background:var(--card);border:2px solid var(--border2);border-radius:16px;padding:18px 120px 18px 52px;font-size:18px;color:var(--text);outline:none;transition:border-color 0.2s,box-shadow 0.2s;font-family:inherit}
+.hero-search-input:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-dim)}
+.hero-search-input::placeholder{color:var(--text3)}
+.hero-search-icon{position:absolute;left:20px;top:50%;transform:translateY(-50%);color:var(--text3)}
+.hero-search-btn{position:absolute;right:8px;top:50%;transform:translateY(-50%);padding:10px 24px;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;border:none;background:var(--accent);color:#fff;font-family:inherit;transition:all 0.2s;display:flex;align-items:center;gap:6px}
+.hero-search-btn:hover{background:var(--accent-hover);box-shadow:0 4px 16px var(--accent-glow)}
+.hero-search-btn .spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 0.6s linear infinite;display:none}
+.hero-search-btn.loading .spinner{display:block}
+.hero-search-btn.loading .btn-text{display:none}
+
+.guide-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:40px}
+.guide-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;text-align:center;transition:all 0.3s cubic-bezier(0.25,0.1,0.25,1)}
+.guide-card:hover{transform:translateY(-4px);box-shadow:var(--shadow-lg);border-color:var(--accent)}
+.guide-icon{font-size:36px;margin-bottom:12px}
+.guide-title{font-size:16px;font-weight:700;margin-bottom:6px}
+.guide-desc{font-size:13px;color:var(--text2);line-height:1.5}
+
 .metric-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 .metric-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 16px;position:relative;overflow:hidden}
 .metric-label{font-size:11px;color:var(--text3);font-weight:500;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}
@@ -106,6 +130,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .period-btn{padding:6px 16px;border-radius:6px;font-size:13px;font-weight:500;cursor:pointer;transition:all 0.2s cubic-bezier(0.25,0.1,0.25,1);border:none;background:transparent;color:var(--text3);font-family:inherit}
 .period-btn:hover{color:var(--text)}
 .period-btn.active{background:var(--accent);color:#fff;box-shadow:0 2px 8px var(--accent-glow)}
+.period-btn.loading{opacity:0.6;pointer-events:none}
 
 .indicator-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer;transition:background-color 0.15s}
 .indicator-row:last-child{border-bottom:none}
@@ -162,6 +187,14 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .sim-reset-btn{background:transparent;color:var(--text2);border:1px solid var(--border)}
 .sim-reset-btn:hover{background:var(--card-hover);color:var(--text)}
 
+.back-home-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border-radius:var(--radius-sm);font-size:14px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--text);font-family:inherit;transition:all 0.2s;min-width:44px;min-height:44px}
+.back-home-btn:hover{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
+
+.trade-form{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
+.trade-form label{font-size:12px;color:var(--text3);font-weight:500;display:block;margin-bottom:4px}
+.trade-form input,.trade-form select{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:14px;color:var(--text);outline:none;font-family:inherit}
+.trade-form input:focus,.trade-form select:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-dim)}
+
 .page{display:none}.page.active{display:block;animation:fadeIn 0.3s cubic-bezier(0.25,0.1,0.25,1)}
 .loading-wrap{display:flex;align-items:center;justify-content:center;padding:60px 0;gap:8px}
 .loading-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 1.2s infinite}
@@ -184,6 +217,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
 @keyframes countUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
 .fade-in-up{animation:fadeInUp 0.5s cubic-bezier(0.25,0.1,0.25,1) both}
 
 @media(max-width:768px){
@@ -194,6 +228,9 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   .content{padding:0 16px 40px}
   .section{padding:24px 0}
   .section-title{font-size:22px}
+  .guide-grid{grid-template-columns:1fr}
+  .hero-search-input{font-size:16px;padding:14px 100px 14px 44px}
+  .trade-form{grid-template-columns:1fr}
 }
 @media(max-width:375px){
   .hero-title{font-size:28px}
@@ -204,13 +241,17 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 <body>
 <nav class="nav-bar">
   <div class="nav-inner">
-    <div class="nav-logo" onclick="switchPage('home')">
+    <div class="nav-logo" onclick="goHome()">
       <div class="nav-logo-icon"><svg width="16" height="16" viewBox="0 0 18 18" fill="none"><path d="M3 13L7 5L10 10L15 3" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
       <span class="nav-logo-text">Quant<span class="nav-logo-accent">Vision</span></span>
     </div>
     <div class="search-wrap" id="search-wrapper">
       <svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/><path d="M10 10L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       <input id="search-input" class="search-input" type="text" placeholder="搜索股票代码或名称" autocomplete="off" spellcheck="false">
+      <button id="search-btn" class="search-btn" onclick="doSearch()">
+        <span class="spinner"></span>
+        <span class="search-btn-text">搜索</span>
+      </button>
       <div id="search-dropdown" class="search-dd"></div>
     </div>
     <div class="nav-tabs">
@@ -236,6 +277,31 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
           <span class="hero-badge hero-badge-hk">🇭🇰 港股</span>
           <span class="hero-badge hero-badge-us">🇺🇸 美股</span>
         </div>
+        <div class="hero-search-wrap">
+          <svg class="hero-search-icon" width="20" height="20" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/><path d="M10 10L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <input id="hero-search-input" class="hero-search-input" type="text" placeholder="输入股票代码或名称，开始量化分析..." autocomplete="off" spellcheck="false">
+          <button id="hero-search-btn" class="hero-search-btn" onclick="doHeroSearch()">
+            <span class="spinner"></span>
+            <span class="btn-text">开始分析</span>
+          </button>
+        </div>
+      </div>
+      <div class="guide-grid">
+        <div class="guide-card fade-in-up" style="animation-delay:0.1s">
+          <div class="guide-icon">📊</div>
+          <div class="guide-title">实时行情</div>
+          <div class="guide-desc">支持A股、港股、美股实时行情，1秒级更新频率，WebSocket实时推送价格变动</div>
+        </div>
+        <div class="guide-card fade-in-up" style="animation-delay:0.2s">
+          <div class="guide-icon">🧠</div>
+          <div class="guide-title">量化策略</div>
+          <div class="guide-desc">8大内置策略智能分析，支持自定义策略开发与回测，AI辅助决策</div>
+        </div>
+        <div class="guide-card fade-in-up" style="animation-delay:0.3s">
+          <div class="guide-icon">💰</div>
+          <div class="guide-title">模拟交易</div>
+          <div class="guide-desc">100万虚拟资金，支持市价/限价单，完整交易体验，零风险学习量化投资</div>
+        </div>
       </div>
       <div class="section">
         <div class="section-head"><h2 class="section-title">热门股票</h2></div>
@@ -259,6 +325,12 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 
     <div id="stock-view" style="display:none">
       <div class="section" style="padding-top:24px">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <button class="back-home-btn" onclick="goHome()">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            返回
+          </button>
+        </div>
         <div id="stock-header" class="card" style="margin-bottom:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
             <div>
@@ -288,6 +360,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
             <button class="period-btn" data-period="all">ALL</button>
           </div>
           <div id="data-status" style="font-size:12px;color:var(--text3)"></div>
+          <div id="period-loading" style="font-size:12px;color:var(--accent);display:none">⟳ 加载中...</div>
         </div>
 
         <div id="chart-container" class="card" style="padding:12px;margin-bottom:16px">
@@ -327,6 +400,17 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
             <span style="width:3px;height:12px;background:var(--accent);border-radius:2px;display:inline-block"></span>基本面
           </div>
           <div id="fundamentals-content" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <div style="font-size:12px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;display:flex;align-items:center;gap:6px">
+            <span style="width:3px;height:12px;background:var(--accent);border-radius:2px;display:inline-block"></span>快捷模拟交易
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <button class="sim-trade-btn sim-buy-btn" onclick="simBuy(currentSymbol)">📈 买入</button>
+            <button class="sim-trade-btn sim-sell-btn" onclick="simSell(currentSymbol)">📉 卖出</button>
+            <span style="font-size:12px;color:var(--text3)">使用当前实时价格进行模拟交易</span>
+          </div>
         </div>
       </div>
     </div>
@@ -369,6 +453,46 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
           <div id="sim-win-rate" class="num" style="font-size:28px;font-weight:700;letter-spacing:-0.02em">--</div>
         </div>
       </div>
+
+      <div class="card" style="margin-bottom:24px">
+        <div style="font-size:12px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;display:flex;align-items:center;gap:6px">
+          <span style="width:3px;height:12px;background:var(--accent);border-radius:2px;display:inline-block"></span>委托下单
+        </div>
+        <div class="trade-form">
+          <div>
+            <label>股票代码</label>
+            <input id="trade-symbol" type="text" placeholder="如 600519">
+          </div>
+          <div>
+            <label>委托类型</label>
+            <select id="trade-order-type">
+              <option value="market">市价单</option>
+              <option value="limit">限价单</option>
+            </select>
+          </div>
+          <div>
+            <label>委托价格（限价单必填）</label>
+            <input id="trade-price" type="number" step="0.01" placeholder="市价单可留空">
+          </div>
+          <div>
+            <label>委托数量（留空自动计算）</label>
+            <input id="trade-shares" type="number" step="100" placeholder="自动计算">
+          </div>
+          <div>
+            <label>止损价</label>
+            <input id="trade-stop-loss" type="number" step="0.01" placeholder="可选">
+          </div>
+          <div>
+            <label>止盈价</label>
+            <input id="trade-take-profit" type="number" step="0.01" placeholder="可选">
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;margin-top:16px">
+          <button class="sim-trade-btn sim-buy-btn" onclick="placeOrder('buy')" style="flex:1">买入委托</button>
+          <button class="sim-trade-btn sim-sell-btn" onclick="placeOrder('sell')" style="flex:1">卖出委托</button>
+        </div>
+      </div>
+
       <div style="margin-bottom:24px">
         <div style="font-size:12px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;display:flex;align-items:center;gap:6px">
           <span style="width:3px;height:12px;background:var(--accent);border-radius:2px;display:inline-block"></span>当前持仓
@@ -398,7 +522,7 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 const $=s=>document.querySelector(s);const $$=s=>document.querySelectorAll(s);
 let currentSymbol='',currentPeriod='1y',chartInstance=null,volChartInstance=null,volumeSeries=null,maSeries={};
 let ws=null,lastSymbol='',searchTimer=null,searchIndex=-1;
-let currentPage='home',strategyData=null,backtestData=null;
+let currentPage='home',strategyData=null,backtestData=null,isSearching=false;
 
 function initTheme(){
   const dark=window.matchMedia('(prefers-color-scheme:dark)');
@@ -419,6 +543,14 @@ function showToast(msg,type='info'){
   setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity 0.3s';setTimeout(()=>el.remove(),300)},3000);
 }
 
+function setSearchLoading(loading){
+  isSearching=loading;
+  const btn=$('#search-btn');
+  const heroBtn=$('#hero-search-btn');
+  if(btn){if(loading)btn.classList.add('loading');else btn.classList.remove('loading');btn.disabled=loading}
+  if(heroBtn){if(loading)heroBtn.classList.add('loading');else heroBtn.classList.remove('loading');heroBtn.disabled=loading}
+}
+
 async function api(path,opts={}){
   try{
     const r=await fetch(`/api${path}`,opts);
@@ -427,6 +559,16 @@ async function api(path,opts={}){
     if(j.success)return j.data;
     throw new Error(j.error||'Unknown error');
   }catch(e){console.error('API:',e);throw e}
+}
+
+function goHome(){
+  currentSymbol='';lastSymbol='';
+  $('#search-input').value='';
+  const heroInput=$('#hero-search-input');if(heroInput)heroInput.value='';
+  showView('landing');
+  switchPage('home');
+  window.scrollTo(0,0);
+  if(ws){try{ws.close()}catch(e){}ws=null}
 }
 
 function switchPage(page){
@@ -449,6 +591,7 @@ async function loadStock(symbol,period='1y'){
   if(!symbol.trim())return;
   currentSymbol=symbol;currentPeriod=period;lastSymbol=symbol;
   showView('loading');
+  setSearchLoading(true);
   try{
     const data=await api(`/stock/${encodeURIComponent(symbol)}?period=${period}`);
     showView('stock');
@@ -458,6 +601,8 @@ async function loadStock(symbol,period='1y'){
   }catch(e){
     showView('error');$('#error-msg').textContent=e.message||'请检查股票代码';
     showToast('加载失败: '+e.message,'error');
+  }finally{
+    setSearchLoading(false);
   }
 }
 
@@ -673,14 +818,14 @@ async function loadMarketStatus(market){
 function connectWS(symbol){
   if(ws){try{ws.close()}catch(e){}}
   const proto=location.protocol==='https:'?'wss:':'ws:';
-  let retryCount=0;const maxRetries=5;const baseDelay=2000;
+  let retryCount=0;const maxRetries=10;const baseDelay=1000;
   function doConnect(){
     ws=new WebSocket(`${proto}//${location.host}/ws/${encodeURIComponent(symbol)}`);
     ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.type==='realtime'&&msg.data&&msg.data.price&&currentSymbol===symbol){const cls=pctClass(msg.data.pct);const sign=msg.data.pct>0?'+':'';$('#stock-price-el').textContent=fmt(msg.data.price);$('#stock-price-el').className=`num ${cls}`;$('#stock-change-el').innerHTML=`<span class="${cls}">${sign}${fmt(msg.data.change)} (${pctFmt(msg.data.pct)})</span>`}}catch(err){}};
     ws.onerror=()=>{};
     ws.onclose=()=>{
       if(currentSymbol===symbol&&retryCount<maxRetries){
-        const delay=baseDelay*Math.pow(2,retryCount);
+        const delay=Math.min(baseDelay*Math.pow(1.5,retryCount),10000);
         retryCount++;
         setTimeout(()=>doConnect(),delay);
       }
@@ -721,7 +866,18 @@ function showSearchDD(results){
 function hideSearchDD(){$('#search-dropdown').classList.remove('show');searchIndex=-1}
 function highlightSearchItem(){$$('.search-item').forEach((el,i)=>el.classList.toggle('active',i===searchIndex))}
 function selectSearchItem(code){$('#search-input').value=code;hideSearchDD();loadStock(code)}
-function doSearch(){const val=$('#search-input').value.trim();if(val)loadStock(val,currentPeriod);else showToast('请输入股票代码或名称','info')}
+function doSearch(){
+  if(isSearching)return;
+  const val=$('#search-input').value.trim();
+  if(val)loadStock(val,currentPeriod);
+  else showToast('请输入股票代码或名称','info');
+}
+function doHeroSearch(){
+  if(isSearching)return;
+  const val=$('#hero-search-input').value.trim();
+  if(val){$('#search-input').value=val;loadStock(val,currentPeriod)}
+  else showToast('请输入股票代码或名称','info');
+}
 
 $('#search-input').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(handleSearchInput,250)});
 $('#search-input').addEventListener('keydown',e=>{
@@ -733,7 +889,26 @@ $('#search-input').addEventListener('keydown',e=>{
 });
 $('#search-input').addEventListener('focus',()=>{if($('#search-input').value.trim().length>=1)handleSearchInput()});
 document.addEventListener('click',e=>{if(!$('#search-wrapper').contains(e.target))hideSearchDD()});
-$$('.period-btn').forEach(btn=>btn.addEventListener('click',()=>{$$('.period-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');currentPeriod=btn.dataset.period;if(currentSymbol)loadStock(currentSymbol,currentPeriod)}));
+
+const heroInput=$('#hero-search-input');
+if(heroInput){
+  heroInput.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();doHeroSearch()}});
+}
+
+$$('.period-btn').forEach(btn=>btn.addEventListener('click',()=>{
+  $$('.period-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const period=btn.dataset.period;
+  currentPeriod=period;
+  if(currentSymbol){
+    btn.classList.add('loading');
+    $('#period-loading').style.display='inline';
+    loadStock(currentSymbol,period).finally(()=>{
+      $$('.period-btn').forEach(b=>b.classList.remove('loading'));
+      $('#period-loading').style.display='none';
+    });
+  }
+}));
 
 async function loadStrategies(){
   try{
@@ -838,9 +1013,65 @@ async function simSell(symbol){
   }catch(e){showToast('卖出失败: '+e.message,'error')}
 }
 
+async function placeOrder(side){
+  const symbol=$('#trade-symbol').value.trim();
+  if(!symbol){showToast('请输入股票代码','info');return}
+  const orderType=$('#trade-order-type').value;
+  const sharesVal=$('#trade-shares').value;
+  const shares=sharesVal?parseInt(sharesVal):0;
+  const stopLoss=$('#trade-stop-loss').value;
+  const takeProfit=$('#trade-take-profit').value;
+
+  try{
+    if(side==='buy'){
+      let price=parseFloat($('#trade-price').value);
+      if(orderType==='market'||!price||isNaN(price)){
+        const rt=await api(`/realtime?symbol=${encodeURIComponent(symbol)}`);
+        if(!rt||!rt.price){showToast('无法获取实时价格','error');return}
+        price=rt.price;
+        const market=rt.market||'A';
+        const name=rt.name||'';
+        const params=new URLSearchParams({
+          symbol,name:encodeURIComponent(name),market,price,
+          strategy:'manual',order_type:orderType,
+          shares:shares>0?shares:0,
+          stop_loss:stopLoss||0,take_profit:takeProfit||0,
+        });
+        await api(`/sim/buy?${params}`,{method:'POST'});
+        showToast(`买入委托成功 (${orderType==='market'?'市价':'限价'}单)`,'success');
+      }else{
+        const name='';
+        const params=new URLSearchParams({
+          symbol,name:encodeURIComponent(name),market:'A',price,
+          strategy:'manual',order_type:orderType,
+          shares:shares>0?shares:0,
+          stop_loss:stopLoss||0,take_profit:takeProfit||0,
+        });
+        await api(`/sim/buy?${params}`,{method:'POST'});
+        showToast('限价买入委托成功','success');
+      }
+    }else{
+      let price=parseFloat($('#trade-price').value);
+      if(!price||isNaN(price)){
+        const rt=await api(`/realtime?symbol=${encodeURIComponent(symbol)}`);
+        if(!rt||!rt.price){showToast('无法获取实时价格','error');return}
+        price=rt.price;
+      }
+      await api(`/sim/sell?symbol=${encodeURIComponent(symbol)}&price=${price}&reason=manual`,{method:'POST'});
+      showToast('卖出成功','success');
+    }
+    loadSimData();
+  }catch(e){showToast('交易失败: '+e.message,'error')}
+}
+
 async function resetSimAccount(){
   try{await api('/sim/reset',{method:'POST'});showToast('账户已重置','success');loadSimData()}catch(e){showToast('重置失败','error')}
 }
+
+window.addEventListener('beforeunload',e=>{
+  if(ws){try{ws.close()}catch(err){}}
+  navigator.sendBeacon('/api/client-disconnect','');
+});
 
 document.addEventListener('DOMContentLoaded',()=>{
   initTheme();

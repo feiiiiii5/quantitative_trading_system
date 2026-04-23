@@ -45,7 +45,7 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
                     await websocket.send_json({"type": "heartbeat"})
                 except Exception:
                     break
-            delay = 5 if fail_count < 3 else 30
+            delay = 1 if fail_count < 3 else 10
             await asyncio.sleep(delay)
     except WebSocketDisconnect:
         pass
