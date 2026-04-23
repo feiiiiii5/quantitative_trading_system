@@ -37,7 +37,7 @@ async def create_strategy(request: Request, name: str = Query(...), description:
 
 
 @router.post("/builder/add-node")
-async def add_node(request: Request)
+async def add_node(request: Request,
     strategy_name: str = Query(...),
     node_type: str = Query(...),
     node_name: str = Query(...),
@@ -55,7 +55,7 @@ async def add_node(request: Request)
 
 
 @router.post("/builder/add-edge")
-async def add_edge(request: Request)
+async def add_edge(request: Request,
     strategy_name: str = Query(...),
     source_id: str = Query(...),
     source_output: str = Query("value"),
@@ -85,7 +85,7 @@ async def list_strategies(request: Request):
 # ==================== 17 信号执行解耦 ====================
 
 @router.post("/pipeline/run")
-async def run_pipeline(request: Request)
+async def run_pipeline(request: Request,
     symbols: str = Query(..., description="逗号分隔的股票代码"),
     period: str = Query("1y"),
     alpha_model: str = Query("momentum"),
@@ -161,7 +161,7 @@ async def train_ml_model(request: Request, symbol: str = Query(...), period: str
 # ==================== 19 因子研究 ====================
 
 @router.post("/factor/research")
-async def research_factor(request: Request)
+async def research_factor(request: Request,
     name: str = Query(...),
     factor_values: str = Query(..., description="逗号分隔的因子值"),
     returns: str = Query(..., description="逗号分隔的收益率"),
@@ -177,7 +177,7 @@ async def research_factor(request: Request)
 
 
 @router.post("/factor/composite")
-async def composite_factor(request: Request)
+async def composite_factor(request: Request,
     returns: str = Query(..., description="逗号分隔的收益率"),
     method: str = Query("equal_weight"),
 ):
@@ -197,7 +197,7 @@ async def composite_factor(request: Request)
 # ==================== 20 策略版本控制 ====================
 
 @router.post("/version/commit")
-async def commit_version(request: Request)
+async def commit_version(request: Request,
     strategy_name: str = Query(...),
     params: str = Query("{}"),
     commit_message: str = Query(""),
