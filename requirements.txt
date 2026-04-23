@@ -1,26 +1,17 @@
-# QuantSystem Pro - 量化交易系统依赖
-# 安装命令: pip install -r requirements.txt
-
-# 核心依赖
-numpy>=1.24.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+akshare>=1.12.0
+baostock>=0.8.9
 pandas>=2.0.0
-scipy>=1.10.0
-
-# 数据源（国内可用）
-akshare>=1.10.0
-baostock>=0.8.8
-
-# 可视化
-matplotlib>=3.7.0
-plotly>=5.15.0
-
-# 工具库
-loguru>=0.7.0
-scikit-learn>=1.2.0
-python-dateutil>=2.8.0
-
-# Web界面
-streamlit>=1.28.0
-
-# 可选依赖
-streamlit_autorefresh>=0.0.19
+numpy>=1.24.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+python-dotenv>=1.0.0
+websockets>=12.0
+requests>=2.31.0
+pytz>=2024.1
+cryptography>=41.0.0
+optuna>=3.4.0
+psutil>=5.9.0

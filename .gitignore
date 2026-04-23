@@ -1,45 +1,18 @@
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Data directories
-data/daily/
-data/minute/
-data/cache/
-
-# Logs
-logs/
-*.log
-
-# Backtest results
-backtest_results/
-
-# Reports (output only)
-reports/output/
-reports/__pycache__/
-reports/*.png
-
-# Virtual environments
+*.so
+.env
+.venv
 venv/
 env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
+cache/
+*.csv
+*.db
+*.sqlite3
 .DS_Store
-Thumbs.db
-
-# Streamlit cache
-.streamlit/cache/
-
-# Environment variables
-.env
-
-# Jupyter
-.ipynb_checkpoints/
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
