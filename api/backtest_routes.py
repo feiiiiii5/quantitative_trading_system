@@ -1,14 +1,13 @@
 import logging
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
 from core.backtest_v2.event_engine import EventBacktestEngine
 from core.backtest_v2.microstructure import MicrostructureSimulator, SlippageModel, OrderBookMechanism, OrderBookLevel
 from core.backtest_v2.portfolio_backtest import PortfolioBacktester
 from core.backtest_v2.param_optimizer import ParamOptimizer
 from core.backtest_v2.monte_carlo import MonteCarloStressTest
-from core.data_fetcher import SmartDataFetcher
 from core.strategies import (
     DualMAStrategy, MACDStrategy, RSIMeanReversionStrategy,
     SuperTrendStrategy, KDJStrategy, BollingerBreakoutStrategy,
@@ -17,13 +16,6 @@ from core.strategies import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bt2", tags=["回测引擎V2"])
-
-fetcher = SmartDataFetcher()
-event_engine = EventBacktestEngine()
-micro_sim = MicrostructureSimulator()
-portfolio_bt = PortfolioBacktester()
-param_optimizer = ParamOptimizer()
-mc_stress = MonteCarloStressTest()
 
 STRATEGY_MAP = {
     "dual_ma": DualMAStrategy,
@@ -39,63 +31,62 @@ def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-# ==================== 06 事件驱动回测 ====================
-
 @router.get("/event/run/{symbol}")
-async def event_backtest(symbol: str, strategy: str = Query("dual_ma"), period: str = Query("1y")):
+async def event_backtest(request: Request, symbol: str, strategy: str = Query("dual_ma"), period: str = Query("1y")):
     if strategy not in STRATEGY_MAP:
         return _resp(False, msg=f"不支持的策略: {strategy}")
     try:
-        df = await fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period)
         if df.empty or len(df) < 60:
             return _resp(False, msg="数据不足")
         strat = STRATEGY_MAP[strategy]()
-        result = event_engine.run(strat, df, symbol)
+        result = request.app.state.event_engine.run(strat, df, symbol)
         return _resp(True, data=result)
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
-# ==================== 07 微观结构模拟 ====================
-
 @router.post("/micro/fill")
 async def simulate_fill(
+    request: Request,
     price: float = Query(...),
     quantity: int = Query(...),
     direction: str = Query("buy"),
     avg_volume: float = Query(0),
     volatility: float = Query(0),
 ):
-    fill = micro_sim.simulate_fill(price, quantity, direction, avg_volume, volatility)
+    fill = request.app.state.micro_sim.simulate_fill(price, quantity, direction, avg_volume, volatility)
     return _resp(True, data=fill.to_dict())
 
 
 @router.get("/micro/model-info")
-async def get_micro_model_info():
-    return _resp(True, data=micro_sim.get_model_info())
+async def get_micro_model_info(request: Request):
+    return _resp(True, data=request.app.state.micro_sim.get_model_info())
 
 
 @router.post("/micro/set-model")
 async def set_slippage_model(
+    request: Request,
     model: str = Query("percentage"),
     fixed_slippage: float = Query(0.01),
     percentage_slippage: float = Query(0.001),
     commission_rate: float = Query(0.0003),
 ):
     try:
-        micro_sim.slippage_model = SlippageModel(model)
-        micro_sim.fixed_slippage = fixed_slippage
-        micro_sim.percentage_slippage = percentage_slippage
-        micro_sim.commission_rate = commission_rate
+        micro_sim = request.app.state.micro_sim
+        async with request.app.state.write_lock:
+            micro_sim.slippage_model = SlippageModel(model)
+            micro_sim.fixed_slippage = fixed_slippage
+            micro_sim.percentage_slippage = percentage_slippage
+            micro_sim.commission_rate = commission_rate
         return _resp(True, msg="模型已更新")
     except ValueError:
         return _resp(False, msg=f"不支持的模型: {model}")
 
 
-# ==================== 08 多资产组合回测 ====================
-
 @router.post("/portfolio/run")
 async def portfolio_backtest(
+    request: Request,
     symbols: str = Query(..., description="逗号分隔的股票代码"),
     strategies: str = Query("dual_ma,macd", description="逗号分隔的策略名"),
     period: str = Query("1y"),
@@ -120,7 +111,7 @@ async def portfolio_backtest(
     data = {}
     for sym in symbol_list:
         try:
-            df = await fetcher.get_history(sym, period)
+            df = await request.app.state.fetcher.get_history(sym, period)
             if not df.empty:
                 data[sym] = df
         except Exception:
@@ -129,14 +120,13 @@ async def portfolio_backtest(
     if not data:
         return _resp(False, msg="无有效数据")
 
-    result = portfolio_bt.run(strat_map, data, alloc_map)
+    result = request.app.state.portfolio_bt.run(strat_map, data, alloc_map)
     return _resp(True, data=result)
 
 
-# ==================== 09 参数优化 ====================
-
 @router.get("/optimize/grid/{symbol}")
 async def grid_search(
+    request: Request,
     symbol: str,
     strategy: str = Query("dual_ma"),
     period: str = Query("1y"),
@@ -147,12 +137,12 @@ async def grid_search(
         return _resp(False, msg=f"不支持的策略: {strategy}")
 
     try:
-        df = await fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period)
         if df.empty or len(df) < 60:
             return _resp(False, msg="数据不足")
 
         param_grid = _get_default_param_grid(strategy)
-        results = param_optimizer.grid_search(
+        results = request.app.state.param_optimizer.grid_search(
             STRATEGY_MAP[strategy], param_grid, df, symbol, metric, top_n
         )
         return _resp(True, data=[r.to_dict() for r in results])
@@ -162,6 +152,7 @@ async def grid_search(
 
 @router.get("/optimize/bayesian/{symbol}")
 async def bayesian_optimize(
+    request: Request,
     symbol: str,
     strategy: str = Query("dual_ma"),
     period: str = Query("1y"),
@@ -172,12 +163,12 @@ async def bayesian_optimize(
         return _resp(False, msg=f"不支持的策略: {strategy}")
 
     try:
-        df = await fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period)
         if df.empty or len(df) < 60:
             return _resp(False, msg="数据不足")
 
         param_ranges = _get_default_param_ranges(strategy)
-        results = param_optimizer.bayesian_optimize(
+        results = request.app.state.param_optimizer.bayesian_optimize(
             STRATEGY_MAP[strategy], param_ranges, df, symbol, n_trials, metric
         )
         return _resp(True, data=[r.to_dict() for r in results])
@@ -187,6 +178,7 @@ async def bayesian_optimize(
 
 @router.get("/optimize/walkforward/{symbol}")
 async def walk_forward(
+    request: Request,
     symbol: str,
     strategy: str = Query("dual_ma"),
     period: str = Query("1y"),
@@ -196,12 +188,12 @@ async def walk_forward(
         return _resp(False, msg=f"不支持的策略: {strategy}")
 
     try:
-        df = await fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period)
         if df.empty or len(df) < 60:
             return _resp(False, msg="数据不足")
 
         param_grid = _get_default_param_grid(strategy)
-        result = param_optimizer.walk_forward(
+        result = request.app.state.param_optimizer.walk_forward(
             STRATEGY_MAP[strategy], param_grid, df, symbol, n_splits
         )
         return _resp(True, data=result.to_dict())
@@ -211,6 +203,7 @@ async def walk_forward(
 
 @router.get("/optimize/heatmap/{symbol}")
 async def generate_heatmap(
+    request: Request,
     symbol: str,
     strategy: str = Query("dual_ma"),
     period: str = Query("1y"),
@@ -221,24 +214,23 @@ async def generate_heatmap(
         return _resp(False, msg=f"不支持的策略: {strategy}")
 
     try:
-        df = await fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period)
         if df.empty or len(df) < 60:
             return _resp(False, msg="数据不足")
 
         param_grid = _get_default_param_grid(strategy)
-        results = param_optimizer.grid_search(
+        results = request.app.state.param_optimizer.grid_search(
             STRATEGY_MAP[strategy], param_grid, df, symbol, top_n=50
         )
-        heatmap = param_optimizer.generate_heatmap_data(results, param_x, param_y)
+        heatmap = request.app.state.param_optimizer.generate_heatmap_data(results, param_x, param_y)
         return _resp(True, data=heatmap)
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
-# ==================== 10 蒙特卡洛压力测试 ====================
-
 @router.get("/montecarlo/{symbol}")
 async def monte_carlo_test(
+    request: Request,
     symbol: str,
     strategy: str = Query("dual_ma"),
     period: str = Query("1y"),
@@ -249,7 +241,7 @@ async def monte_carlo_test(
         return _resp(False, msg=f"不支持的策略: {strategy}")
 
     try:
-        df = await fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period)
         if df.empty or len(df) < 60:
             return _resp(False, msg="数据不足")
 
@@ -261,7 +253,7 @@ async def monte_carlo_test(
         if not bt_result.equity_curve:
             return _resp(False, msg="回测无结果")
 
-        mc_result = mc_stress.run(bt_result.equity_curve, n_simulations, method)
+        mc_result = request.app.state.mc_stress.run(bt_result.equity_curve, n_simulations, method)
         return _resp(True, data=mc_result.to_dict())
     except Exception as e:
         return _resp(False, msg=str(e))
@@ -269,6 +261,7 @@ async def monte_carlo_test(
 
 @router.get("/montecarlo/stress/{symbol}")
 async def stress_scenarios(
+    request: Request,
     symbol: str,
     strategy: str = Query("dual_ma"),
     period: str = Query("1y"),
@@ -277,7 +270,7 @@ async def stress_scenarios(
         return _resp(False, msg=f"不支持的策略: {strategy}")
 
     try:
-        df = await fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period)
         if df.empty or len(df) < 60:
             return _resp(False, msg="数据不足")
 
@@ -289,7 +282,7 @@ async def stress_scenarios(
         if not bt_result.equity_curve:
             return _resp(False, msg="回测无结果")
 
-        results = mc_stress.run_stress_scenarios(bt_result.equity_curve)
+        results = request.app.state.mc_stress.run_stress_scenarios(bt_result.equity_curve)
         return _resp(True, data={name: r.to_dict() for name, r in results.items()})
     except Exception as e:
         return _resp(False, msg=str(e))

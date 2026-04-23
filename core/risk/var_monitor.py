@@ -132,7 +132,8 @@ class VaRMonitor:
         var_return = mean + z_score * std
         return abs(var_return * portfolio_value * np.sqrt(self.time_horizon))
 
-    def _monte_carlo_var(self, returns: np.ndarray, portfolio_value: float) -> float:
+    def _monte_carlo_var(self, returns: np.ndarray, portfolio_value: float, seed: int = 42) -> float:
+        np.random.seed(seed)
         mean = np.mean(returns)
         std = np.std(returns)
         simulated = np.random.normal(mean, std, self.n_simulations)

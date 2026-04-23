@@ -40,6 +40,42 @@ class CapitalAllocator:
     def remove_strategy(self, name: str):
         self._strategies.pop(name, None)
 
+    def allocate(self, strat_data: List[dict], total_capital: float = 100000.0, method: str = "sharpe") -> dict:
+        self.total_capital = total_capital
+        for s in strat_data:
+            name = s.get("name", "unknown")
+            self._strategies[name] = StrategyMetrics(
+                name=name,
+                sharpe=s.get("sharpe", 0),
+                volatility=s.get("volatility", 0.01),
+                return_rate=s.get("return_rate", 0),
+                max_drawdown=s.get("max_drawdown", 0),
+                weight=s.get("weight", 0),
+                capital=s.get("capital", 0),
+            )
+
+        if method == "sharpe":
+            weights = self.allocate_by_sharpe()
+        elif method == "risk_parity":
+            weights = self.allocate_by_risk_parity()
+        elif method == "volatility":
+            weights = self.allocate_by_volatility_contribution()
+        else:
+            weights = self.allocate_by_sharpe()
+
+        allocations = {}
+        for name, weight in weights.items():
+            allocations[name] = {
+                "weight": round(weight, 4),
+                "capital": round(weight * total_capital, 2),
+            }
+
+        return {
+            "method": method,
+            "total_capital": total_capital,
+            "allocations": allocations,
+        }
+
     def allocate_by_sharpe(self) -> Dict[str, float]:
         if not self._strategies:
             return {}
@@ -98,6 +134,31 @@ class CapitalAllocator:
 
         return adjusted
 
+    def update_correlation_matrix(self, strategy_names: List[str], returns_data: Dict[str, np.ndarray]) -> dict:
+        n = len(strategy_names)
+        if n < 2:
+            return {"success": False, "error": "至少需要2个策略"}
+
+        corr_matrix = np.eye(n)
+        for i in range(n):
+            for j in range(i + 1, n):
+                ri = returns_data.get(strategy_names[i])
+                rj = returns_data.get(strategy_names[j])
+                if ri is not None and rj is not None:
+                    min_len = min(len(ri), len(rj))
+                    if min_len > 1:
+                        corr = np.corrcoef(ri[:min_len], rj[:min_len])[0, 1]
+                        corr_matrix[i, j] = corr
+                        corr_matrix[j, i] = corr
+
+        self._correlation_matrix = corr_matrix
+
+        return {
+            "success": True,
+            "strategies": strategy_names,
+            "correlation_matrix": corr_matrix.tolist(),
+        }
+
     def auto_rebalance(self) -> Dict[str, dict]:
         if not self._strategies:
             return {}
@@ -119,7 +180,7 @@ class CapitalAllocator:
 
         return actions
 
-    def get_allocation_info(self) -> dict:
+    def get_info(self) -> dict:
         return {
             "total_capital": self.total_capital,
             "strategy_count": len(self._strategies),
@@ -127,3 +188,6 @@ class CapitalAllocator:
             "sharpe_allocation": self.allocate_by_sharpe(),
             "risk_parity_allocation": self.allocate_by_risk_parity(),
         }
+
+    def get_allocation_info(self) -> dict:
+        return self.get_info()

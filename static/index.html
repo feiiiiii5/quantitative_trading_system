@@ -673,9 +673,20 @@ async function loadMarketStatus(market){
 function connectWS(symbol){
   if(ws){try{ws.close()}catch(e){}}
   const proto=location.protocol==='https:'?'wss:':'ws:';
-  ws=new WebSocket(`${proto}//${location.host}/ws/${encodeURIComponent(symbol)}`);
-  ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.type==='realtime'&&msg.data&&msg.data.price&&currentSymbol===symbol){const cls=pctClass(msg.data.pct);const sign=msg.data.pct>0?'+':'';$('#stock-price-el').textContent=fmt(msg.data.price);$('#stock-price-el').className=`num ${cls}`;$('#stock-change-el').innerHTML=`<span class="${cls}">${sign}${fmt(msg.data.change)} (${pctFmt(msg.data.pct)})</span>`}}catch(err){}};
-  ws.onerror=()=>{};ws.onclose=()=>{};
+  let retryCount=0;const maxRetries=5;const baseDelay=2000;
+  function doConnect(){
+    ws=new WebSocket(`${proto}//${location.host}/ws/${encodeURIComponent(symbol)}`);
+    ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.type==='realtime'&&msg.data&&msg.data.price&&currentSymbol===symbol){const cls=pctClass(msg.data.pct);const sign=msg.data.pct>0?'+':'';$('#stock-price-el').textContent=fmt(msg.data.price);$('#stock-price-el').className=`num ${cls}`;$('#stock-change-el').innerHTML=`<span class="${cls}">${sign}${fmt(msg.data.change)} (${pctFmt(msg.data.pct)})</span>`}}catch(err){}};
+    ws.onerror=()=>{};
+    ws.onclose=()=>{
+      if(currentSymbol===symbol&&retryCount<maxRetries){
+        const delay=baseDelay*Math.pow(2,retryCount);
+        retryCount++;
+        setTimeout(()=>doConnect(),delay);
+      }
+    };
+  }
+  doConnect();
 }
 
 async function loadHotStocks(){
@@ -830,10 +841,6 @@ async function simSell(symbol){
 async function resetSimAccount(){
   try{await api('/sim/reset',{method:'POST'});showToast('账户已重置','success');loadSimData()}catch(e){showToast('重置失败','error')}
 }
-
-window.addEventListener('beforeunload',()=>{
-  navigator.sendBeacon('/shutdown','');
-});
 
 document.addEventListener('DOMContentLoaded',()=>{
   initTheme();

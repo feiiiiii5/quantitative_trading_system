@@ -119,10 +119,17 @@ class AuthSecurityManager:
         permissions = ROLE_PERMISSIONS.get(user.role, [])
         return permission in permissions
 
-    def rotate_api_key(self, username: str) -> Optional[str]:
+    def set_user_active(self, username: str, active: bool = True) -> dict:
         user = self._users.get(username)
         if not user:
-            return None
+            return {"success": False, "error": f"用户{username}不存在"}
+        user.is_active = active
+        return {"success": True, "username": username, "is_active": active}
+
+    def rotate_api_key(self, username: str) -> dict:
+        user = self._users.get(username)
+        if not user:
+            return {"success": False, "error": f"用户{username}不存在"}
 
         for key, name in list(self._api_keys.items()):
             if name == username:
@@ -131,7 +138,13 @@ class AuthSecurityManager:
         new_key = self._generate_api_key(username)
         user.api_key_hash = self._hash(new_key)
         self._api_keys[new_key] = username
-        return new_key
+        return {"success": True, "username": username, "new_api_key": new_key}
+
+    def encrypt(self, value: str) -> str:
+        return self.encrypt_field(value)
+
+    def decrypt(self, encrypted: str) -> str:
+        return self.decrypt_field(encrypted)
 
     def encrypt_field(self, value: str) -> str:
         if self._fernet:

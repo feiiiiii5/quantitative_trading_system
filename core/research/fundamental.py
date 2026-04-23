@@ -90,13 +90,14 @@ class FundamentalFactorLibrary:
 
         return factors
 
-    def calculate_all_factors(self, symbol: str, data: dict) -> List[FundamentalFactor]:
+    def calculate_all_factors(self, data: dict) -> List[dict]:
+        symbol = data.get("symbol", "unknown")
         all_factors = []
         all_factors.extend(self.calculate_valuation_factors(data))
         all_factors.extend(self.calculate_growth_factors(data))
         all_factors.extend(self.calculate_financial_health_factors(data))
         self._factors[symbol] = all_factors
-        return all_factors
+        return [f.to_dict() for f in all_factors]
 
     def get_factors(self, symbol: str) -> List[dict]:
         factors = self._factors.get(symbol, [])
@@ -105,16 +106,21 @@ class FundamentalFactorLibrary:
     def get_factor_categories(self) -> List[str]:
         return ["估值", "成长", "财务健康"]
 
-    def compare_with_industry(self, symbol: str, industry_data: dict) -> List[dict]:
-        factors = self._factors.get(symbol, [])
-        results = []
-        for f in factors:
-            industry_val = industry_data.get(f.name, 0)
-            if industry_val > 0 and f.value > 0:
-                percentile = (f.value / industry_val - 1) * 100
-            else:
-                percentile = 0
-            f.industry_median = industry_val
-            f.percentile = percentile
-            results.append(f.to_dict())
-        return results
+    def compare_with_industry(
+        self, factor_name: str, factor_value: float,
+        industry: str, industry_data: dict,
+    ) -> dict:
+        industry_median = industry_data.get(factor_name, 0)
+        if industry_median > 0 and factor_value > 0:
+            percentile = (factor_value / industry_median - 1) * 100
+        else:
+            percentile = 0
+
+        return {
+            "factor_name": factor_name,
+            "factor_value": round(factor_value, 4),
+            "industry": industry,
+            "industry_median": round(industry_median, 4),
+            "percentile": round(percentile, 2),
+            "relative_position": "above" if factor_value > industry_median else "below" if factor_value < industry_median else "equal",
+        }

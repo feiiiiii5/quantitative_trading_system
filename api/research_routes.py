@@ -2,7 +2,7 @@ import logging
 from typing import Optional
 
 import numpy as np
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
 from core.research.fundamental import FundamentalFactorLibrary
 from core.research.sentiment import MarketSentimentAnalyzer
@@ -12,27 +12,16 @@ from core.research.report_ai import ReportAIAssistant
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/research", tags=["研究与分析"])
 
-fundamental_lib = FundamentalFactorLibrary()
-sentiment_analyzer = MarketSentimentAnalyzer()
-sector_research = SectorResearch()
-report_ai = ReportAIAssistant()
-
 
 def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-# ==================== 36 量化研究Notebook环境 ====================
-
 @router.get("/notebook/status")
 async def get_notebook_status():
     return _resp(True, data={
         "available": True,
-        "packages": [
-            "pandas", "numpy", "scipy", "scikit-learn",
-            "matplotlib", "seaborn", "plotly",
-            "akshare", "tushare", "yfinance",
-        ],
+        "packages": ["pandas", "numpy", "scipy", "scikit-learn", "matplotlib", "seaborn", "plotly", "akshare", "tushare", "yfinance"],
         "kernel": "python3",
         "message": "JupyterLab环境需单独启动: jupyter lab --port=8888",
     })
@@ -44,27 +33,18 @@ async def generate_notebook_template(
     symbol: str = Query("", description="股票代码"),
 ):
     templates = {
-        "factor_research": {
-            "cells": [
-                {"type": "markdown", "content": "# 因子研究模板\n本模板用于单因子IC/IR分析和分层回测"},
-                {"type": "code", "content": "from core.data_infra.data_adapter import UnifiedDataAdapter\nfrom core.strategy_v2.factor_research import FactorResearchWorkbench\nimport numpy as np\n\nadapter = UnifiedDataAdapter()\nworkbench = FactorResearchWorkbench()"},
-                {"type": "code", "content": f"# 获取数据\ndf = await adapter.fetch_history('{symbol or '000001'}', 'A', '20200101', '20261231')\nprint(f'数据量: {{len(df)}}')"},
-                {"type": "code", "content": "# 计算因子值\nfactor_values = df['close'].pct_change(20)  # 动量因子\nreturns = df['close'].pct_change().shift(-1)  # 未来收益\n\nresult = workbench.research_factor('momentum', factor_values.dropna().values, returns.dropna().values)\nprint(f'IC: {{result.ic:.4f}}, IR: {{result.ir:.4f}}')"},
-            ],
-        },
-        "strategy_backtest": {
-            "cells": [
-                {"type": "markdown", "content": "# 策略回测模板"},
-                {"type": "code", "content": "from core.backtest_v2.event_engine import EventBacktestEngine\nfrom core.strategies import DualMAStrategy\n\nengine = EventBacktestEngine()"},
-                {"type": "code", "content": f"strategy = DualMAStrategy()\nresult = engine.run(strategy, df, '{symbol or '000001'}')\nprint(result)"},
-            ],
-        },
-        "ml_prediction": {
-            "cells": [
-                {"type": "markdown", "content": "# 机器学习预测模板"},
-                {"type": "code", "content": "from core.strategy_v2.ml_strategy import MLStrategyModule\nfrom core.ai.prediction_models import PredictionModelPlatform\n\nml = MLStrategyModule()\nplatform = PredictionModelPlatform()"},
-            ],
-        },
+        "factor_research": {"cells": [
+            {"type": "markdown", "content": "# 因子研究模板"},
+            {"type": "code", "content": "from core.strategy_v2.factor_research import FactorResearchWorkbench\nworkbench = FactorResearchWorkbench()"},
+        ]},
+        "strategy_backtest": {"cells": [
+            {"type": "markdown", "content": "# 策略回测模板"},
+            {"type": "code", "content": "from core.backtest_v2.event_engine import EventBacktestEngine\nfrom core.strategies import DualMAStrategy"},
+        ]},
+        "ml_prediction": {"cells": [
+            {"type": "markdown", "content": "# 机器学习预测模板"},
+            {"type": "code", "content": "from core.ai.prediction_models import PredictionModelPlatform\nplatform = PredictionModelPlatform()"},
+        ]},
     }
     template = templates.get(template_type)
     if template:
@@ -81,55 +61,45 @@ async def list_notebook_templates():
     ])
 
 
-# ==================== 37 基本面因子库 ====================
-
 @router.post("/fundamental/valuation")
-async def calculate_valuation_factors(
-    data: str = Query(..., description="JSON格式财务数据"),
-):
+async def calculate_valuation_factors(request: Request, data: str = Query(..., description="JSON格式财务数据")):
     import json
     try:
         financial = json.loads(data)
-        result = fundamental_lib.calculate_valuation_factors(financial)
-        return _resp(True, data=result)
+        result = request.app.state.fundamental_lib.calculate_valuation_factors(financial)
+        return _resp(True, data=[f.to_dict() for f in result])
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
 @router.post("/fundamental/growth")
-async def calculate_growth_factors(
-    data: str = Query(..., description="JSON格式财务数据"),
-):
+async def calculate_growth_factors(request: Request, data: str = Query(..., description="JSON格式财务数据")):
     import json
     try:
         financial = json.loads(data)
-        result = fundamental_lib.calculate_growth_factors(financial)
-        return _resp(True, data=result)
+        result = request.app.state.fundamental_lib.calculate_growth_factors(financial)
+        return _resp(True, data=[f.to_dict() for f in result])
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
 @router.post("/fundamental/health")
-async def calculate_health_factors(
-    data: str = Query(..., description="JSON格式财务数据"),
-):
+async def calculate_health_factors(request: Request, data: str = Query(..., description="JSON格式财务数据")):
     import json
     try:
         financial = json.loads(data)
-        result = fundamental_lib.calculate_financial_health_factors(financial)
-        return _resp(True, data=result)
+        result = request.app.state.fundamental_lib.calculate_financial_health_factors(financial)
+        return _resp(True, data=[f.to_dict() for f in result])
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
 @router.post("/fundamental/all")
-async def calculate_all_factors(
-    data: str = Query(..., description="JSON格式财务数据"),
-):
+async def calculate_all_factors(request: Request, data: str = Query(..., description="JSON格式财务数据")):
     import json
     try:
         financial = json.loads(data)
-        result = fundamental_lib.calculate_all_factors(financial)
+        result = request.app.state.fundamental_lib.calculate_all_factors(financial)
         return _resp(True, data=result)
     except Exception as e:
         return _resp(False, msg=str(e))
@@ -137,6 +107,7 @@ async def calculate_all_factors(
 
 @router.post("/fundamental/compare-industry")
 async def compare_with_industry(
+    request: Request,
     factor_name: str = Query(...),
     factor_value: float = Query(...),
     industry: str = Query(...),
@@ -145,18 +116,16 @@ async def compare_with_industry(
     import json
     try:
         ind_data = json.loads(industry_data)
-        result = fundamental_lib.compare_with_industry(factor_name, factor_value, industry, ind_data)
+        result = request.app.state.fundamental_lib.compare_with_industry(factor_name, factor_value, industry, ind_data)
         return _resp(True, data=result)
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
-# ==================== 38 市场情绪分析 ====================
-
 @router.get("/sentiment/analyze/{symbol}")
-async def analyze_sentiment(symbol: str):
+async def analyze_sentiment(request: Request, symbol: str):
     try:
-        result = await sentiment_analyzer.analyze(symbol)
+        result = await request.app.state.sentiment_analyzer.analyze(symbol)
         if result:
             return _resp(True, data=result.to_dict())
         return _resp(False, msg="情绪数据获取失败")
@@ -165,9 +134,9 @@ async def analyze_sentiment(symbol: str):
 
 
 @router.get("/sentiment/margin-data")
-async def get_margin_data(symbol: str = Query("")):
+async def get_margin_data(request: Request, symbol: str = Query("")):
     try:
-        result = await sentiment_analyzer._fetch_margin_data(symbol)
+        result = await request.app.state.sentiment_analyzer._fetch_margin_data(symbol)
         if result:
             return _resp(True, data=result)
         return _resp(False, msg="融资融券数据获取失败")
@@ -176,9 +145,9 @@ async def get_margin_data(symbol: str = Query("")):
 
 
 @router.get("/sentiment/long-short")
-async def get_long_short_data():
+async def get_long_short_data(request: Request):
     try:
-        result = await sentiment_analyzer._fetch_long_short_data()
+        result = await request.app.state.sentiment_analyzer._fetch_long_short_data()
         if result:
             return _resp(True, data=result)
         return _resp(False, msg="多空数据暂不可用")
@@ -187,9 +156,9 @@ async def get_long_short_data():
 
 
 @router.get("/sentiment/dragon-tiger/{symbol}")
-async def get_dragon_tiger(symbol: str):
+async def get_dragon_tiger(request: Request, symbol: str):
     try:
-        result = await sentiment_analyzer._fetch_dragon_tiger(symbol)
+        result = await request.app.state.sentiment_analyzer._fetch_dragon_tiger(symbol)
         if result:
             return _resp(True, data=result)
         return _resp(False, msg="龙虎榜数据暂不可用")
@@ -197,77 +166,74 @@ async def get_dragon_tiger(symbol: str):
         return _resp(False, msg=str(e))
 
 
-# ==================== 39 板块与主题研究 ====================
-
 @router.get("/sector/flows")
-async def get_sector_flows():
+async def get_sector_flows(request: Request):
     try:
-        result = await sector_research.get_sector_flows()
+        result = await request.app.state.sector_research.get_sector_flows()
         return _resp(True, data=result)
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
 @router.get("/sector/concept-heat")
-async def get_concept_heat():
+async def get_concept_heat(request: Request):
     try:
-        result = await sector_research.get_concept_heat()
+        result = await request.app.state.sector_research.get_concept_heat()
         return _resp(True, data=result)
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
 @router.get("/sector/rotation")
-async def get_sector_rotation(period: int = Query(20)):
+async def get_sector_rotation(request: Request, period: int = Query(20)):
     try:
-        result = await sector_research.analyze_rotation(period)
+        result = await request.app.state.sector_research.analyze_rotation(period)
         return _resp(True, data=result)
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
 @router.get("/sector/industry-chain")
-async def get_industry_chain(industry: str = Query("")):
+async def get_industry_chain(request: Request, industry: str = Query("")):
     try:
-        result = sector_research.analyze_industry_chain(industry)
+        result = request.app.state.sector_research.analyze_industry_chain(industry)
         return _resp(True, data=result)
     except Exception as e:
         return _resp(False, msg=str(e))
 
 
-# ==================== 40 研报摘要AI助手 ====================
-
 @router.post("/report/upload")
 async def upload_report(
+    request: Request,
     title: str = Query(...),
     content: str = Query(..., description="研报文本内容"),
     source: str = Query(""),
 ):
-    result = report_ai.process_text(title, content, source)
+    result = request.app.state.report_ai.process_text(title, content, source)
     return _resp(result.get("success", False), data=result)
 
 
 @router.get("/report/list")
-async def list_reports(limit: int = Query(20)):
-    reports = report_ai.list_reports(limit)
+async def list_reports(request: Request, limit: int = Query(20)):
+    reports = request.app.state.report_ai.list_reports(limit)
     return _resp(True, data=reports)
 
 
 @router.get("/report/summary/{report_id}")
-async def get_report_summary(report_id: str):
-    summary = report_ai.get_summary(report_id)
+async def get_report_summary(request: Request, report_id: str):
+    summary = request.app.state.report_ai.get_summary(report_id)
     if summary:
         return _resp(True, data=summary.to_dict())
     return _resp(False, msg="研报未找到")
 
 
 @router.get("/report/aggregation")
-async def get_report_aggregation(symbol: str = Query(""), days: int = Query(30)):
-    result = report_ai.get_aggregation(symbol, days)
+async def get_report_aggregation(request: Request, symbol: str = Query(""), days: int = Query(30)):
+    result = request.app.state.report_ai.get_aggregation(symbol, days)
     return _resp(True, data=result)
 
 
 @router.get("/report/sentiment-trend")
-async def get_report_sentiment_trend(days: int = Query(30)):
-    result = report_ai.get_sentiment_trend(days)
+async def get_report_sentiment_trend(request: Request, days: int = Query(30)):
+    result = request.app.state.report_ai.get_sentiment_trend(days)
     return _resp(True, data=result)

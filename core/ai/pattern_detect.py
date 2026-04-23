@@ -31,6 +31,111 @@ class AnomalyPatternDetector:
         self._patterns: List[PatternMatch] = []
         self._historical_patterns: Dict[str, List[dict]] = {}
 
+    def detect(self, prices: np.ndarray, volumes: Optional[np.ndarray] = None, timestamps: Optional[List[str]] = None) -> List[PatternMatch]:
+        results = []
+        symbol = ""
+
+        if len(prices) >= 20 and volumes is not None and len(volumes) >= 20:
+            vp = self.detect_volume_price_anomaly(symbol, volumes, prices)
+            if vp:
+                results.append(vp)
+
+        if len(prices) >= 5:
+            tail = self.detect_tail_manipulation(symbol, prices)
+            if tail:
+                results.append(tail)
+
+        if timestamps and len(prices) >= 2:
+            opening = self.detect_opening_anomaly(symbol, prices[:-1], prices[1:])
+            if opening:
+                results.append(opening)
+
+        return results
+
+    def check_volume_price_anomaly(
+        self, symbol: str, current_volume: float, avg_volume: float,
+        current_price: float, prev_price: float = 0,
+    ) -> dict:
+        vol_ratio = current_volume / avg_volume if avg_volume > 0 else 0
+        price_change = (current_price / prev_price - 1) if prev_price > 0 else 0
+
+        is_anomaly = False
+        anomaly_type = ""
+        confidence = 0.0
+
+        if vol_ratio > 2.0 and abs(price_change) > 0.03:
+            is_anomaly = True
+            anomaly_type = "放量突破" if price_change > 0 else "放量下跌"
+            confidence = min(vol_ratio / 5, 1.0)
+        elif vol_ratio < 0.3 and abs(price_change) > 0.02:
+            is_anomaly = True
+            anomaly_type = "缩量异动"
+            confidence = 0.6
+        elif vol_ratio > 3.0:
+            is_anomaly = True
+            anomaly_type = "异常放量"
+            confidence = min(vol_ratio / 5, 1.0)
+
+        result = {
+            "symbol": symbol,
+            "is_anomaly": is_anomaly,
+            "anomaly_type": anomaly_type,
+            "confidence": round(confidence, 4),
+            "vol_ratio": round(vol_ratio, 2),
+            "price_change": round(price_change, 4),
+        }
+
+        if is_anomaly:
+            match = PatternMatch(
+                pattern_type=anomaly_type, symbol=symbol,
+                confidence=confidence,
+                details={"vol_ratio": round(vol_ratio, 2), "price_change": round(price_change, 4)},
+                timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+            self._patterns.append(match)
+
+        return result
+
+    def detect_manipulation(
+        self, symbol: str, prices: np.ndarray, vols: np.ndarray,
+        timestamps: Optional[List[str]] = None,
+    ) -> List[PatternMatch]:
+        results = []
+        if len(prices) < 5 or len(vols) < 5:
+            return results
+
+        consecutive_anomaly = 0
+        avg_vol = np.mean(vols[-20:]) if len(vols) >= 20 else np.mean(vols)
+
+        for i in range(max(0, len(vols) - 10), len(vols)):
+            if avg_vol > 0 and vols[i] > avg_vol * 3:
+                consecutive_anomaly += 1
+            else:
+                consecutive_anomaly = 0
+
+            if consecutive_anomaly >= 3:
+                price_change = (prices[i] / prices[max(0, i - consecutive_anomaly)] - 1) if i >= consecutive_anomaly else 0
+                pattern_type = "连续大单拉升" if price_change > 0 else "连续大单打压"
+                match = PatternMatch(
+                    pattern_type=pattern_type, symbol=symbol,
+                    confidence=min(consecutive_anomaly / 5, 1.0),
+                    details={
+                        "consecutive_anomaly": consecutive_anomaly,
+                        "price_change": round(price_change, 4),
+                        "vol_ratio": round(vols[i] / avg_vol, 2) if avg_vol > 0 else 0,
+                    },
+                    timestamp=timestamps[i] if timestamps and i < len(timestamps) else time.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                results.append(match)
+                self._patterns.append(match)
+                break
+
+        tail = self.detect_tail_manipulation(symbol, prices)
+        if tail:
+            results.append(tail)
+
+        return results
+
     def detect_volume_price_anomaly(
         self, symbol: str, volumes: np.ndarray, prices: np.ndarray,
     ) -> Optional[PatternMatch]:
@@ -110,12 +215,12 @@ class AnomalyPatternDetector:
 
         return None
 
-    def find_similar_historical(self, current_pattern: PatternMatch, lookback: int = 100) -> List[str]:
+    def find_similar_historical(self, pattern_type: str, symbol: str = "", limit: int = 10) -> List[str]:
         similars = []
-        for p in self._patterns[-lookback:]:
-            if p.pattern_type == current_pattern.pattern_type and p.symbol != current_pattern.symbol:
+        for p in self._patterns[-200:]:
+            if p.pattern_type == pattern_type and p.symbol != symbol:
                 similars.append(f"{p.symbol}@{p.timestamp}")
-        return similars[:5]
+        return similars[:limit]
 
     def get_recent_patterns(self, limit: int = 50) -> List[dict]:
         return [p.to_dict() for p in self._patterns[-limit:]]

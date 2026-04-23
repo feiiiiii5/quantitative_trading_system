@@ -111,8 +111,32 @@ class EnvironmentManager:
         config = self._envs.get(env_name)
         return config.to_dict() if config else None
 
+    def get_env_config(self, env_name: str) -> Optional[EnvironmentConfig]:
+        return self._envs.get(env_name)
+
     def list_envs(self) -> List[dict]:
         return [config.to_dict() for config in self._envs.values()]
+
+    def create_env(self, env_name: str, database_url: str = "", redis_url: str = "", log_level: str = "INFO") -> dict:
+        if env_name in self._envs:
+            return {"success": False, "error": f"环境{env_name}已存在"}
+        config = EnvironmentConfig(
+            env_name=env_name,
+            database_url=database_url,
+            redis_url=redis_url,
+            log_level=log_level,
+        )
+        self._envs[env_name] = config
+        self._save_env(env_name)
+        return {"success": True, "env_name": env_name}
+
+    def set_config(self, env_name: str, key: str, value: str) -> dict:
+        config = self._envs.get(env_name)
+        if not config:
+            return {"success": False, "error": f"环境{env_name}不存在"}
+        config.custom_config[key] = value
+        self._save_env(env_name)
+        return {"success": True, "env_name": env_name, "key": key}
 
     def update_env(self, env_name: str, updates: dict) -> bool:
         config = self._envs.get(env_name)
@@ -133,19 +157,26 @@ class EnvironmentManager:
         self._save_env(env_name)
         return True
 
-    def load_env_vars(self, env_name: str):
+    def load_env_vars(self, env_name: str) -> dict:
         config = self._envs.get(env_name)
         if not config:
-            return
+            return {"success": False, "error": f"环境{env_name}不存在"}
 
+        loaded = []
         for key, value in config.api_keys.items():
             os.environ[key] = value
+            loaded.append(key)
         for key, value in config.custom_config.items():
             os.environ[key] = value
+            loaded.append(key)
         if config.database_url:
             os.environ["DATABASE_URL"] = config.database_url
+            loaded.append("DATABASE_URL")
         if config.redis_url:
             os.environ["REDIS_URL"] = config.redis_url
+            loaded.append("REDIS_URL")
+
+        return {"success": True, "env_name": env_name, "loaded_vars": loaded}
 
     def promote(self, from_env: str, to_env: str) -> dict:
         checklist = self._checklists.get(f"{from_env}->{to_env}", PromotionChecklist())
@@ -168,16 +199,19 @@ class EnvironmentManager:
 
         return {"success": True, "from": from_env, "to": to_env}
 
-    def update_checklist(self, from_env: str, to_env: str, item: str, passed: bool) -> bool:
+    def update_checklist(self, from_env: str, to_env: str, data: dict) -> dict:
         key = f"{from_env}->{to_env}"
         if key not in self._checklists:
             self._checklists[key] = PromotionChecklist()
 
         checklist = self._checklists[key]
-        if hasattr(checklist, item):
-            setattr(checklist, item, passed)
-            return True
-        return False
+        updated = []
+        for item, passed in data.items():
+            if hasattr(checklist, item):
+                setattr(checklist, item, bool(passed))
+                updated.append(item)
+
+        return {"success": True, "updated_items": updated, "checklist": checklist.to_dict()}
 
     def get_checklist(self, from_env: str, to_env: str) -> dict:
         key = f"{from_env}->{to_env}"

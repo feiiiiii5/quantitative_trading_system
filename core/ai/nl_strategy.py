@@ -186,6 +186,28 @@ class {strategy.name.replace(' ', '')}Strategy(BaseStrategy):
 # 请根据以上条件实现策略逻辑
 """
 
+    def generate(self, description: str) -> dict:
+        parsed = self.parse(description)
+        return {
+            "success": True,
+            "strategy": parsed.to_dict(),
+        }
+
+    def get_templates(self) -> list:
+        return [
+            {"name": name, **template}
+            for name, template in STRATEGY_TEMPLATES.items()
+        ]
+
+    def validate_code(self, code: str) -> dict:
+        try:
+            compile(code, "<strategy>", "exec")
+            return {"valid": True, "error": None}
+        except SyntaxError as e:
+            return {"valid": False, "error": f"SyntaxError: {e.msg} (line {e.lineno})"}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
     def _estimate_confidence(self, description: str, matched_template: Optional[str]) -> float:
         score = 0.3
         if matched_template:

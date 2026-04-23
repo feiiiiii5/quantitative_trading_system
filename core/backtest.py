@@ -82,16 +82,20 @@ class BacktestEngine:
 
         signal_map: Dict[int, TradeSignal] = {}
         for sig in strategy_result.signals:
-            best_idx = -1
-            best_diff = float("inf")
-            for i in range(len(c)):
-                diff = abs(c[i] - sig.price)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_idx = i
-            if best_idx >= 0 and best_diff < c[best_idx] * 0.02:
-                if best_idx not in signal_map or sig.strength > signal_map[best_idx].strength:
-                    signal_map[best_idx] = sig
+            idx = sig.bar_index if sig.bar_index >= 0 else -1
+            if idx < 0:
+                best_idx = -1
+                best_diff = float("inf")
+                for i in range(len(c)):
+                    diff = abs(c[i] - sig.price)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_idx = i
+                if best_idx >= 0 and best_diff < c[best_idx] * 0.02:
+                    idx = best_idx
+            if idx >= 0:
+                if idx not in signal_map or sig.strength > signal_map[idx].strength:
+                    signal_map[idx] = sig
 
         capital = self.initial_capital
         position = 0
@@ -297,20 +301,6 @@ class BacktestEngine:
             benchmark_return=round(benchmark_return, 2),
             alpha=round(alpha, 2),
             beta=round(beta, 2),
-        )
-
-    def _empty_result(self, name: str, df: pd.DataFrame) -> BacktestResult:
-        dates = []
-        if "date" in df.columns:
-            dates = [str(pd.Timestamp(d).date()) if not isinstance(d, str) else d for d in df["date"].values]
-        c = df["close"].values.astype(float) if len(df) > 0 else np.array([self.initial_capital])
-        equity = [self.initial_capital] * len(df)
-        return BacktestResult(
-            strategy_name=name,
-            equity_curve=equity,
-            drawdown_curve=[0.0] * len(df),
-            dates=dates,
-            benchmark_return=round((c[-1] / c[0] - 1) * 100, 2) if len(c) > 1 else 0,
         )
 
     def run_multi(self, strategies: List[BaseStrategy], df: pd.DataFrame) -> Dict[str, BacktestResult]:

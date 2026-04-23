@@ -25,6 +25,7 @@ class TradeSignal:
     stop_loss: float = 0.0
     take_profit: float = 0.0
     position_pct: float = 0.0
+    bar_index: int = -1
 
 
 @dataclass
@@ -109,13 +110,13 @@ class DualMAStrategy(BaseStrategy):
                     reason=f"MA{self.fast}上穿MA{self.slow}",
                     price=c[i], stop_loss=sl,
                     take_profit=c[i] + 3 * (c[i] - sl),
-                    position_pct=pos,
+                    position_pct=pos, bar_index=i,
                 ))
             elif prev_diff >= 0 and curr_diff < 0:
                 signals.append(TradeSignal(
                     signal_type=SignalType.SELL, strength=0.7,
                     reason=f"MA{self.fast}下穿MA{self.slow}",
-                    price=c[i],
+                    price=c[i], bar_index=i,
                 ))
 
         current_signal = None

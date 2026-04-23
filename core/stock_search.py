@@ -1,5 +1,6 @@
 import logging
 import re
+import threading
 from functools import lru_cache
 from typing import List, Optional
 
@@ -187,21 +188,25 @@ _US_STOCKS = [
 ]
 
 _STOCK_INDEX = {}
+_index_lock = threading.Lock()
 
 
 def _build_index():
     global _STOCK_INDEX
     if _STOCK_INDEX:
         return
-    for code, name, sector in _A_STOCKS:
-        key = f"A:{code}"
-        _STOCK_INDEX[key] = {"code": code, "name": name, "market": "A", "sector": sector}
-    for code, name, sector in _HK_STOCKS:
-        key = f"HK:{code}"
-        _STOCK_INDEX[key] = {"code": code, "name": name, "market": "HK", "sector": sector}
-    for code, name, sector in _US_STOCKS:
-        key = f"US:{code}"
-        _STOCK_INDEX[key] = {"code": code, "name": name, "market": "US", "sector": sector}
+    with _index_lock:
+        if _STOCK_INDEX:
+            return
+        for code, name, sector in _A_STOCKS:
+            key = f"A:{code}"
+            _STOCK_INDEX[key] = {"code": code, "name": name, "market": "A", "sector": sector}
+        for code, name, sector in _HK_STOCKS:
+            key = f"HK:{code}"
+            _STOCK_INDEX[key] = {"code": code, "name": name, "market": "HK", "sector": sector}
+        for code, name, sector in _US_STOCKS:
+            key = f"US:{code}"
+            _STOCK_INDEX[key] = {"code": code, "name": name, "market": "US", "sector": sector}
 
 
 def search_stocks(query: str, limit: int = 10) -> List[dict]:

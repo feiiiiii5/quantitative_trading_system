@@ -33,6 +33,24 @@ _RT_CACHE_TTL = 15
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+_global_session = None
+
+def _get_session() -> requests.Session:
+    global _global_session
+    if _global_session is None:
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        _global_session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        _global_session.mount("http://", adapter)
+        _global_session.mount("https://", adapter)
+    return _global_session
+
 _EM_HEADERS = {
     "User-Agent": _UA,
     "Referer": "https://quote.eastmoney.com/",
@@ -70,7 +88,8 @@ def _cache_set(cache: OrderedDict, key: str, data, ttl: int = 60):
 
 def _http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 8) -> Optional[requests.Response]:
     try:
-        resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+        session = _get_session()
+        resp = session.get(url, params=params, headers=headers, timeout=timeout)
         if resp.status_code == 200:
             return resp
         logger.debug(f"HTTP {resp.status_code} from {url}")

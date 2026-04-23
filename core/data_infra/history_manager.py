@@ -188,6 +188,18 @@ class HistoryDataManager:
 
         filename = f"{adjust_type.value}.parquet"
         filepath = symbol_dir / filename
+
+        if filepath.exists() and "date" in adjusted_df.columns:
+            try:
+                existing_df = pd.read_parquet(filepath, engine="pyarrow")
+                if "date" in existing_df.columns:
+                    combined = pd.concat([existing_df, adjusted_df], ignore_index=True)
+                    combined = combined.drop_duplicates(subset=["date"], keep="last")
+                    combined = combined.sort_values("date").reset_index(drop=True)
+                    adjusted_df = combined
+            except Exception as e:
+                logger.debug(f"Failed to merge existing data for {symbol}: {e}")
+
         adjusted_df.to_parquet(filepath, engine="pyarrow")
 
         meta_file = symbol_dir / "meta.json"

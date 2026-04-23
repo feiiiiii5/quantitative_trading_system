@@ -1,5 +1,6 @@
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -40,16 +41,19 @@ class AnomalyDetector:
         self.large_order_threshold = large_order_threshold
         self.daily_loss_limit = daily_loss_limit
         self.high_freq_threshold = high_freq_threshold
-        self._volume_history: Dict[str, List[float]] = {}
-        self._price_history: Dict[str, List[float]] = {}
+        self._volume_history: OrderedDict = OrderedDict()
+        self._price_history: OrderedDict = OrderedDict()
         self._order_timestamps: Dict[str, List[float]] = {}
         self._anomalies: List[AnomalyEvent] = []
         self._max_anomalies = 10000
         self._max_history = 60
+        self._max_symbols = 5000
 
     def check_volume_anomaly(self, symbol: str, current_volume: float) -> Optional[AnomalyEvent]:
         if symbol not in self._volume_history:
             self._volume_history[symbol] = []
+        self._volume_history.move_to_end(symbol)
+        self._evict_if_needed()
         self._volume_history[symbol].append(current_volume)
         if len(self._volume_history[symbol]) > self._max_history:
             self._volume_history[symbol] = self._volume_history[symbol][-self._max_history:]
@@ -79,6 +83,8 @@ class AnomalyDetector:
     def check_price_anomaly(self, symbol: str, current_return: float) -> Optional[AnomalyEvent]:
         if symbol not in self._price_history:
             self._price_history[symbol] = []
+        self._price_history.move_to_end(symbol)
+        self._evict_if_needed()
         self._price_history[symbol].append(current_return)
         if len(self._price_history[symbol]) > self._max_history:
             self._price_history[symbol] = self._price_history[symbol][-self._max_history:]
@@ -183,3 +189,9 @@ class AnomalyDetector:
     def _trim_anomalies(self):
         if len(self._anomalies) > self._max_anomalies:
             self._anomalies = self._anomalies[-self._max_anomalies:]
+
+    def _evict_if_needed(self):
+        while len(self._volume_history) > self._max_symbols:
+            self._volume_history.popitem(last=False)
+        while len(self._price_history) > self._max_symbols:
+            self._price_history.popitem(last=False)

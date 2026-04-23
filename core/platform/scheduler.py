@@ -62,7 +62,7 @@ class TaskScheduler:
         max_retries: int = 3,
         timeout_seconds: float = 300.0,
         dependencies: Optional[List[str]] = None,
-    ) -> ScheduledTask:
+    ) -> str:
         self._task_counter += 1
         task_id = f"task_{self._task_counter:04d}"
         next_run = time.time() + interval_seconds if interval_seconds > 0 else time.time()
@@ -75,13 +75,13 @@ class TaskScheduler:
             dependencies=dependencies or [],
         )
         self._tasks[task_id] = task
-        return task
+        return task_id
 
-    def remove_task(self, task_id: str) -> bool:
+    def remove_task(self, task_id: str) -> dict:
         if task_id in self._tasks:
             del self._tasks[task_id]
-            return True
-        return False
+            return {"success": True, "task_id": task_id, "msg": "任务已删除"}
+        return {"success": False, "task_id": task_id, "error": "任务不存在"}
 
     async def run_task(self, task_id: str) -> dict:
         task = self._tasks.get(task_id)
@@ -140,19 +140,25 @@ class TaskScheduler:
             if task.status == TaskStatus.PENDING and task.next_run <= now:
                 await self.run_task(task_id)
 
-    def get_tasks(self) -> List[dict]:
+    def list_tasks(self) -> List[dict]:
         return [t.to_dict() for t in self._tasks.values()]
+
+    def get_tasks(self) -> List[dict]:
+        return self.list_tasks()
 
     def get_task(self, task_id: str) -> Optional[dict]:
         task = self._tasks.get(task_id)
         return task.to_dict() if task else None
 
-    def reset_task(self, task_id: str) -> bool:
+    def get_task_status(self, task_id: str) -> Optional[dict]:
+        return self.get_task(task_id)
+
+    def reset_task(self, task_id: str) -> dict:
         task = self._tasks.get(task_id)
         if task:
             task.status = TaskStatus.PENDING
             task.retry_count = 0
             task.error = ""
             task.next_run = time.time()
-            return True
-        return False
+            return {"success": True, "task_id": task_id, "status": "pending"}
+        return {"success": False, "task_id": task_id, "error": "任务不存在"}

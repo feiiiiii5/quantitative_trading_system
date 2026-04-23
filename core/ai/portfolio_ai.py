@@ -111,13 +111,66 @@ class PortfolioAIAdvisor:
 
         return suggestions
 
+    def generate_rebalance_plan(
+        self,
+        positions: Dict[str, dict],
+        returns_data: Dict[str, np.ndarray],
+        transaction_cost: float = 0.001,
+    ) -> dict:
+        suggestions = self.suggest_rebalance(positions, returns_data)
+        total_value = sum(p.get("value", 0) for p in positions.values())
+
+        orders = []
+        estimated_cost = 0.0
+
+        for s in suggestions:
+            if total_value <= 0:
+                continue
+            current_amount = s.current_weight * total_value
+            target_amount = s.suggested_weight * total_value
+            trade_amount = abs(target_amount - current_amount)
+
+            if trade_amount > 0:
+                side = "buy" if s.action == "increase" else "sell"
+                cost = trade_amount * transaction_cost
+                estimated_cost += cost
+
+                orders.append({
+                    "symbol": s.symbol, "side": side,
+                    "amount": round(trade_amount, 2),
+                    "current_weight": round(s.current_weight, 4),
+                    "target_weight": round(s.suggested_weight, 4),
+                    "reason": s.reason,
+                    "cost": round(cost, 2),
+                })
+
+        return {
+            "orders": orders,
+            "estimated_cost": round(estimated_cost, 2),
+            "total_suggestions": len(suggestions),
+        }
+
     def generate_daily_summary(
         self,
-        portfolio_return: float,
-        market_return: float,
         positions: Dict[str, dict],
         returns_data: Dict[str, np.ndarray],
     ) -> DailySummary:
+        total_value = sum(p.get("value", 0) for p in positions.values())
+        if total_value <= 0:
+            return DailySummary(date=time.strftime("%Y-%m-%d"))
+
+        portfolio_return = 0.0
+        for symbol, pos in positions.items():
+            weight = pos.get("value", 0) / total_value
+            ret = returns_data.get(symbol, np.array([0]))
+            latest_ret = ret[-1] if len(ret) > 0 else 0
+            portfolio_return += weight * latest_ret
+
+        market_return = 0.0
+        all_rets = [r for r in returns_data.values() if len(r) > 0]
+        if all_rets:
+            market_return = float(np.mean([r[-1] for r in all_rets]))
+
         alpha = portfolio_return - market_return
 
         risk_level = "low"

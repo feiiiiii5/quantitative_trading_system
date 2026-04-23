@@ -11,6 +11,9 @@ from core.strategies import BaseStrategy, SignalType, TradeSignal, StrategyResul
 
 logger = logging.getLogger(__name__)
 
+_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "models")
+os.makedirs(_MODEL_DIR, exist_ok=True)
+
 
 @dataclass
 class FeatureConfig:
@@ -127,6 +130,9 @@ class LightGBMStrategy(BaseStrategy):
     def generate_signals(self, df: pd.DataFrame) -> StrategyResult:
         if not self._validate_df(df, 60):
             return StrategyResult(name=self.name, description=self.description)
+
+        if self._model is None:
+            self._load_model()
 
         featured = self._pipeline.transform(df)
         c = featured["close"].values.astype(float)
@@ -254,15 +260,36 @@ class LightGBMStrategy(BaseStrategy):
                 "n_estimators": 100,
             }
             self._model = lgb.train(params, train_data, num_boost_round=100)
+            self._save_model()
             return {"success": True, "samples": len(y), "features": len(feature_cols)}
         except ImportError:
             try:
                 from sklearn.ensemble import GradientBoostingRegressor
                 self._model = GradientBoostingRegressor(n_estimators=100, max_depth=5)
                 self._model.fit(X, y)
+                self._save_model()
                 return {"success": True, "samples": len(y), "features": len(feature_cols), "model": "sklearn"}
             except ImportError:
                 return {"success": False, "error": "需要安装lightgbm或scikit-learn"}
+
+    def _save_model(self):
+        if self._model is None:
+            return
+        try:
+            import joblib
+            path = os.path.join(_MODEL_DIR, "lightgbm_model.pkl")
+            joblib.dump(self._model, path)
+        except Exception as e:
+            logger.debug(f"LightGBM model save failed: {e}")
+
+    def _load_model(self):
+        try:
+            import joblib
+            path = os.path.join(_MODEL_DIR, "lightgbm_model.pkl")
+            if os.path.exists(path):
+                self._model = joblib.load(path)
+        except Exception as e:
+            logger.debug(f"LightGBM model load failed: {e}")
 
 
 class XGBoostStrategy(BaseStrategy):
@@ -280,6 +307,9 @@ class XGBoostStrategy(BaseStrategy):
     def generate_signals(self, df: pd.DataFrame) -> StrategyResult:
         if not self._validate_df(df, 60):
             return StrategyResult(name=self.name, description=self.description)
+
+        if self._model is None:
+            self._load_model()
 
         featured = self._pipeline.transform(df)
         c = featured["close"].values.astype(float)
@@ -346,9 +376,29 @@ class XGBoostStrategy(BaseStrategy):
             import xgboost as xgb
             self._model = xgb.XGBRegressor(n_estimators=100, max_depth=5, learning_rate=0.05)
             self._model.fit(X, y)
+            self._save_model()
             return {"success": True, "samples": len(y), "features": len(feature_cols)}
         except ImportError:
             return {"success": False, "error": "需要安装xgboost"}
+
+    def _save_model(self):
+        if self._model is None:
+            return
+        try:
+            import joblib
+            path = os.path.join(_MODEL_DIR, "xgboost_model.pkl")
+            joblib.dump(self._model, path)
+        except Exception as e:
+            logger.debug(f"XGBoost model save failed: {e}")
+
+    def _load_model(self):
+        try:
+            import joblib
+            path = os.path.join(_MODEL_DIR, "xgboost_model.pkl")
+            if os.path.exists(path):
+                self._model = joblib.load(path)
+        except Exception as e:
+            logger.debug(f"XGBoost model load failed: {e}")
 
 
 class MLStrategyModule:

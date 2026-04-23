@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -138,10 +139,22 @@ class MonteCarloStressTest:
             }
 
         results = {}
-        for name, params in scenarios.items():
+
+        def _run_scenario(name_params):
+            name, params = name_params
             stressed_curve = self._apply_stress(equity_curve, params)
             mc_result = self.run(stressed_curve, n_simulations=500)
-            results[name] = mc_result
+            return name, mc_result
+
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(_run_scenario, (name, params)): name for name, params in scenarios.items()}
+            for future in as_completed(futures):
+                try:
+                    name, mc_result = future.result()
+                    results[name] = mc_result
+                except Exception as e:
+                    name = futures[future]
+                    logger.error(f"Stress scenario {name} failed: {e}")
 
         return results
 

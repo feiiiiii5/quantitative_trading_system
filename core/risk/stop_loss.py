@@ -217,7 +217,7 @@ class MultiDimensionStopLoss:
         current_equity: float,
         trade_pnl: float = 0.0,
     ) -> Optional[dict]:
-        if self._peak_equity == 0:
+        if self._peak_equity == 0 or self._daily_start_equity == 0:
             self._peak_equity = current_equity
             self._daily_start_equity = current_equity
 

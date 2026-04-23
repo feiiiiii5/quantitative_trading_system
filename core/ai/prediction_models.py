@@ -161,75 +161,84 @@ class PredictionModelPlatform:
             pass
         return models
 
-    def train_model(self, model_name: str, data: np.ndarray) -> dict:
+    def train_model(self, model_name: str, data: np.ndarray, **kwargs) -> dict:
         if model_name == "lstm":
+            lookback = kwargs.get("lookback", 20)
+            self._lstm = LSTMPredictor(lookback=lookback)
             return self._lstm.train(data)
         elif model_name == "garch":
-            returns = np.diff(data) / np.maximum(data[:-1], 1e-8)
-            return self._garch.train(returns)
+            p = kwargs.get("p", 1)
+            q = kwargs.get("q", 1)
+            self._garch = GARCHPredictor(p=p, q=q)
+            return self._garch.train(data)
         return {"success": False, "error": f"不支持的模型: {model_name}"}
 
-    def predict(self, model_name: str, symbol: str, data: np.ndarray) -> Optional[ModelPrediction]:
-        pred = None
+    def predict(self, model_name: str, data: np.ndarray, horizon: int = 5) -> dict:
         if model_name == "lstm":
             result = self._lstm.predict(data)
-            if result:
+            if result is not None:
                 pred = ModelPrediction(
-                    model_name="lstm", symbol=symbol,
+                    model_name="lstm", symbol="",
                     prediction=result, confidence=0.5,
-                    horizon="1d", timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+                    horizon=f"{horizon}d", timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
                 )
+                return {"success": True, "prediction": pred.to_dict()}
+            return {"success": False, "error": "LSTM模型未训练或预测失败"}
         elif model_name == "garch":
-            vol = self._garch.predict_volatility()
-            if vol:
+            vol = self._garch.predict_volatility(horizon)
+            if vol is not None:
                 pred = ModelPrediction(
-                    model_name="garch", symbol=symbol,
+                    model_name="garch", symbol="",
                     prediction=vol, confidence=0.6,
-                    horizon="5d", timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+                    horizon=f"{horizon}d", timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
                 )
-
-        if pred:
-            if symbol not in self._predictions:
-                self._predictions[symbol] = []
-            self._predictions[symbol].append(pred)
-
-        return pred
+                return {"success": True, "prediction": pred.to_dict()}
+            return {"success": False, "error": "GARCH模型未训练或预测失败"}
+        return {"success": False, "error": f"不支持的模型: {model_name}"}
 
     def run_ab_test(
-        self, model_a: str, model_b: str,
-        predictions_a: List[float], predictions_b: List[float],
-        actuals: List[float], metric: str = "mse",
-    ) -> ABTestResult:
-        if not predictions_a or not predictions_b or not actuals:
-            return ABTestResult(model_a, model_b, metric)
+        self, model_a: str, model_b: str, data: np.ndarray, metric: str = "mse",
+    ) -> dict:
+        if len(data) < 20:
+            return {"success": False, "error": "数据不足，至少需要20个数据点"}
 
-        min_len = min(len(predictions_a), len(predictions_b), len(actuals))
-        pa = np.array(predictions_a[:min_len])
-        pb = np.array(predictions_b[:min_len])
-        ac = np.array(actuals[:min_len])
+        split = int(len(data) * 0.7)
+        train_data = data[:split]
+        test_data = data[split:]
+
+        self.train_model(model_a, train_data)
+        self.train_model(model_b, train_data)
+
+        pred_a_result = self.predict(model_a, train_data, horizon=len(test_data))
+        pred_b_result = self.predict(model_b, train_data, horizon=len(test_data))
+
+        pred_a_val = pred_a_result.get("prediction", {}).get("prediction", 0)
+        pred_b_val = pred_b_result.get("prediction", {}).get("prediction", 0)
+
+        actual_mean = float(np.mean(test_data))
 
         if metric == "mse":
-            score_a = float(np.mean((pa - ac) ** 2))
-            score_b = float(np.mean((pb - ac) ** 2))
-            winner = model_a if score_a < score_b else model_b
+            score_a = float((pred_a_val - actual_mean) ** 2)
+            score_b = float((pred_b_val - actual_mean) ** 2)
         elif metric == "mae":
-            score_a = float(np.mean(np.abs(pa - ac)))
-            score_b = float(np.mean(np.abs(pb - ac)))
-            winner = model_a if score_a < score_b else model_b
+            score_a = float(abs(pred_a_val - actual_mean))
+            score_b = float(abs(pred_b_val - actual_mean))
         else:
             score_a = 0
             score_b = 0
-            winner = ""
+
+        winner = model_a if score_a < score_b else model_b
 
         result = ABTestResult(
             model_a=model_a, model_b=model_b, metric=metric,
             score_a=score_a, score_b=score_b,
-            winner=winner, sample_size=min_len,
+            winner=winner, sample_size=len(test_data),
         )
         self._ab_tests.append(result)
-        return result
 
-    def get_ab_test_results(self) -> List[dict]:
+        return {"success": True, **result.to_dict()}
+
+    def get_ab_results(self) -> List[dict]:
         return [t.to_dict() for t in self._ab_tests]
 
     def get_predictions(self, symbol: str) -> List[dict]:

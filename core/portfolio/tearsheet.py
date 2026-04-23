@@ -139,7 +139,7 @@ class TearsheetGenerator:
                 var_bm = np.var(br)
                 if var_bm > 0:
                     beta = cov_matrix[0, 1] / var_bm
-                alpha = annual_return - (self.risk_free_rate + beta * (benchmark_return - self.risk_rate))
+                alpha = annual_return - (self.risk_free_rate + beta * (benchmark_return - self.risk_free_rate))
                 excess = dr - br
                 te = np.std(excess) * np.sqrt(252)
                 ir = np.mean(excess) / np.std(excess) * np.sqrt(252) if np.std(excess) > 0 else 0
@@ -222,7 +222,3 @@ class TearsheetGenerator:
                 ret = equity_curve[end_idx - 1] / equity_curve[start_idx] - 1
                 monthly[f"M{m + 1}"] = round(ret, 4)
         return monthly
-
-    @property
-    def risk_rate(self):
-        return self.risk_free_rate

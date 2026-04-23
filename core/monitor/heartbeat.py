@@ -23,6 +23,8 @@ class HeartbeatRecord:
     error_count: int = 0
     last_error: str = ""
     auto_action: str = ""
+    timeout_seconds: float = 60.0
+    history: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -44,9 +46,10 @@ class StrategyHeartbeatMonitor:
         self._strategies: Dict[str, HeartbeatRecord] = {}
         self._callbacks: Dict[str, List[Callable]] = {}
 
-    def register(self, strategy_name: str):
+    def register(self, strategy_name: str, timeout_seconds: float = 30.0):
         self._strategies[strategy_name] = HeartbeatRecord(
             strategy_name=strategy_name, last_heartbeat=time.time(),
+            timeout_seconds=timeout_seconds,
         )
 
     def heartbeat(self, strategy_name: str, latency_ms: float = 0.0):
@@ -58,6 +61,26 @@ class StrategyHeartbeatMonitor:
         if record.status == StrategyStatus.ERROR:
             record.status = StrategyStatus.RUNNING
             record.error_count = 0
+        record.history.append({
+            "time": time.time(), "status": "heartbeat", "latency_ms": latency_ms,
+        })
+        if len(record.history) > 1000:
+            record.history = record.history[-500:]
+
+    def report(self, strategy_name: str) -> dict:
+        if strategy_name not in self._strategies:
+            self.register(strategy_name)
+        record = self._strategies[strategy_name]
+        record.last_heartbeat = time.time()
+        if record.status == StrategyStatus.ERROR:
+            record.status = StrategyStatus.RUNNING
+            record.error_count = 0
+        record.history.append({
+            "time": time.time(), "status": "report",
+        })
+        if len(record.history) > 1000:
+            record.history = record.history[-500:]
+        return {"success": True, **record.to_dict()}
 
     def report_error(self, strategy_name: str, error: str = ""):
         if strategy_name not in self._strategies:
@@ -65,6 +88,9 @@ class StrategyHeartbeatMonitor:
         record = self._strategies[strategy_name]
         record.error_count += 1
         record.last_error = error
+        record.history.append({
+            "time": time.time(), "status": "error", "error": error,
+        })
         if record.error_count >= self.max_errors:
             record.status = StrategyStatus.ERROR
             record.auto_action = "暂停策略"
@@ -77,7 +103,8 @@ class StrategyHeartbeatMonitor:
             if record.status == StrategyStatus.STOPPED:
                 continue
             elapsed = now - record.last_heartbeat if record.last_heartbeat > 0 else 0
-            if elapsed > self.timeout_seconds:
+            timeout = record.timeout_seconds or self.timeout_seconds
+            if elapsed > timeout:
                 record.status = StrategyStatus.WARNING
                 record.auto_action = "降仓"
                 self._fire_callback(name, "timeout")
@@ -106,8 +133,8 @@ class StrategyHeartbeatMonitor:
     def get_all_status(self) -> Dict[str, dict]:
         return {name: record.to_dict() for name, record in self._strategies.items()}
 
-    def get_history(self, strategy_name: str) -> List[dict]:
+    def get_history(self, strategy_name: str, limit: int = 100) -> List[dict]:
         record = self._strategies.get(strategy_name)
         if not record:
             return []
-        return [{"status": record.status.value, "error_count": record.error_count, "last_error": record.last_error}]
+        return record.history[-limit:]

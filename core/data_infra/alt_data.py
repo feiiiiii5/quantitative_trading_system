@@ -59,7 +59,13 @@ class NewsSentimentAnalyzer:
     def __init__(self):
         self._model = None
         self._model_name = os.environ.get("SENTIMENT_MODEL", "")
-        self._cache: Dict[str, NewsSentiment] = {}
+        try:
+            from cachetools import TTLCache
+            self._cache = TTLCache(maxsize=1000, ttl=3600)
+        except ImportError:
+            from functools import lru_cache
+            self._cache = {}
+            self._cache_maxsize = 1000
         self._keyword_weights = {
             "利好": 0.8, "上涨": 0.6, "突破": 0.7, "新高": 0.7,
             "增长": 0.6, "盈利": 0.7, "超预期": 0.8, "强势": 0.6,
@@ -102,6 +108,10 @@ class NewsSentimentAnalyzer:
             sentiment_label=label,
         )
         self._cache[cache_key] = sentiment
+        if isinstance(self._cache, dict) and len(self._cache) > self._cache_maxsize:
+            oldest = list(self._cache.keys())[:len(self._cache) - self._cache_maxsize]
+            for k in oldest:
+                del self._cache[k]
         return sentiment
 
     def analyze_batch(self, items: List[dict]) -> List[NewsSentiment]:
