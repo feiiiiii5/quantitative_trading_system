@@ -218,7 +218,7 @@ class TechnicalIndicators:
     @staticmethod
     def _roc(c: np.ndarray) -> dict:
         result = {}
-        for p in [5, 10, 20]:
+        for p in [3, 5, 10, 20]:
             vals = np.zeros(len(c))
             vals[p:] = (c[p:] - c[:-p]) / c[:-p] * 100
             result[p] = _to_list(vals)
@@ -373,3 +373,240 @@ def _last(arr) -> float:
         return round(float(val), 4) if not np.isnan(val) else 0.0
     except (IndexError, TypeError):
         return 0.0
+
+
+class KLinePatternRecognizer:
+    @staticmethod
+    def recognize(df: pd.DataFrame) -> list[dict]:
+        if df is None or len(df) < 5:
+            return []
+        result = []
+        candles = df.reset_index(drop=True)
+        for i in range(len(candles)):
+            row = candles.iloc[i]
+            open_price = float(row["open"])
+            close_price = float(row["close"])
+            high = float(row["high"])
+            low = float(row["low"])
+            body = abs(close_price - open_price)
+            upper = high - max(open_price, close_price)
+            lower = min(open_price, close_price) - low
+            trend = KLinePatternRecognizer._trend(candles, i)
+
+            if body > 0 and lower > body * 2 and upper <= max(body * 0.3, 0.01):
+                if trend < 0:
+                    result.append({"index": i, "date": str(row["date"]), "pattern": "hammer", "label": "锤子线", "price": low})
+                if trend > 0:
+                    result.append({"index": i, "date": str(row["date"]), "pattern": "hanging_man", "label": "吊颈线", "price": high})
+
+            if max(open_price, close_price) > 0 and body / max(open_price, close_price) < 0.0015:
+                result.append({"index": i, "date": str(row["date"]), "pattern": "doji", "label": "十字星", "price": close_price})
+
+            if i >= 1:
+                prev = candles.iloc[i - 1]
+                prev_open = float(prev["open"])
+                prev_close = float(prev["close"])
+                prev_body_high = max(prev_open, prev_close)
+                prev_body_low = min(prev_open, prev_close)
+                curr_body_high = max(open_price, close_price)
+                curr_body_low = min(open_price, close_price)
+                if curr_body_high <= prev_body_high and curr_body_low >= prev_body_low:
+                    result.append({"index": i, "date": str(row["date"]), "pattern": "harami", "label": "孕线", "price": close_price})
+                if curr_body_high >= prev_body_high and curr_body_low <= prev_body_low and np.sign(close_price - open_price) != np.sign(prev_close - prev_open):
+                    result.append({"index": i, "date": str(row["date"]), "pattern": "engulfing", "label": "吞噬形态", "price": close_price})
+
+            if i >= 2:
+                a = candles.iloc[i - 2]
+                b = candles.iloc[i - 1]
+                c = row
+                a_body = abs(float(a["close"]) - float(a["open"]))
+                b_body = abs(float(b["close"]) - float(b["open"]))
+                c_body = abs(float(c["close"]) - float(c["open"]))
+                midpoint_a = (float(a["open"]) + float(a["close"])) / 2
+                if float(a["close"]) < float(a["open"]) and b_body < a_body * 0.5 and float(c["close"]) > float(c["open"]) and float(c["close"]) > midpoint_a:
+                    result.append({"index": i, "date": str(row["date"]), "pattern": "morning_star", "label": "早晨之星", "price": float(c["close"])})
+                if float(a["close"]) > float(a["open"]) and b_body < a_body * 0.5 and float(c["close"]) < float(c["open"]) and float(c["close"]) < midpoint_a:
+                    result.append({"index": i, "date": str(row["date"]), "pattern": "evening_star", "label": "黄昏之星", "price": float(c["close"])})
+        return result
+
+    @staticmethod
+    def _trend(df: pd.DataFrame, index: int, lookback: int = 5) -> float:
+        start = max(0, index - lookback)
+        if index - start < 2:
+            return 0.0
+        closes = df.iloc[start:index]["close"].astype(float).values
+        x = np.arange(len(closes))
+        slope = np.polyfit(x, closes, 1)[0]
+        return float(slope)
+
+
+class IndicatorAnalysis:
+    @staticmethod
+    def ma_alignment(df: pd.DataFrame) -> dict:
+        if df is None or len(df) < 60:
+            return {"bullish": False, "bearish": False, "values": {}}
+        closes = df["close"].astype(float)
+        ma5 = closes.rolling(5).mean().iloc[-1]
+        ma10 = closes.rolling(10).mean().iloc[-1]
+        ma20 = closes.rolling(20).mean().iloc[-1]
+        ma60 = closes.rolling(60).mean().iloc[-1]
+        values = {"ma5": round(float(ma5), 4), "ma10": round(float(ma10), 4), "ma20": round(float(ma20), 4), "ma60": round(float(ma60), 4)}
+        return {
+            "bullish": ma5 > ma10 > ma20 > ma60,
+            "bearish": ma5 < ma10 < ma20 < ma60,
+            "values": values,
+        }
+
+    @staticmethod
+    def boll_squeeze(df: pd.DataFrame) -> dict:
+        if df is None or len(df) < 25:
+            return {"warning": False, "points": []}
+        closes = df["close"].astype(float)
+        mid = closes.rolling(20).mean()
+        std = closes.rolling(20).std()
+        width = (std * 4 / mid.replace(0, np.nan)).fillna(0)
+        shrink = width.diff().fillna(0) < 0
+        warnings = []
+        for i in range(24, len(df)):
+            if shrink.iloc[i - 4:i + 1].all() and width.iloc[i] < width.iloc[max(i - 19, 0):i + 1].mean() * 0.6:
+                warnings.append({"index": i, "date": str(df.iloc[i]["date"]), "width": round(float(width.iloc[i]), 4)})
+        return {"warning": bool(warnings), "points": warnings}
+
+    @staticmethod
+    def volume_price_analysis(df: pd.DataFrame) -> dict:
+        if df is None or len(df) < 20:
+            return {}
+        window = df.tail(20).copy()
+        x = np.arange(len(window))
+        volume = window["volume"].astype(float).values
+        closes = window["close"].astype(float).values
+        slope = float(np.polyfit(x, volume, 1)[0]) if len(volume) > 1 else 0
+        volume_ratio = float(volume[-1] / max(np.mean(volume[-5:]), 1))
+        price_ret = pd.Series(closes).pct_change().fillna(0)
+        up_volume = volume[price_ret > 0].sum()
+        down_volume = volume[price_ret <= 0].sum()
+        obv = np.cumsum(np.sign(price_ret.values) * volume)
+        obv_ma = pd.Series(obv).rolling(20).mean().fillna(method="bfill")
+        obv_trend = float(obv_ma.iloc[-1] - obv_ma.iloc[0])
+        if closes[-1] > closes[0] and volume_ratio > 1:
+            conclusion = "量增价涨，强势信号"
+            color = "green"
+        elif closes[-1] < closes[0] and volume_ratio > 1:
+            conclusion = "量增价跌，出货信号"
+            color = "red"
+        else:
+            conclusion = "量价配合中性"
+            color = "neutral"
+        return {
+            "volume_trend_slope": round(slope, 4),
+            "volume_ratio": round(volume_ratio, 4),
+            "volume_factor": round(float(up_volume / max(down_volume, 1)), 4),
+            "obv_trend": round(obv_trend, 4),
+            "conclusion": conclusion,
+            "color": color,
+        }
+
+    @staticmethod
+    def support_resistance(df: pd.DataFrame, lookback: int = 120) -> dict:
+        if df is None or len(df) < 30:
+            return {"supports": [], "resistances": []}
+        recent = df.tail(lookback).copy()
+        closes = recent["close"].astype(float)
+        highs = recent["high"].astype(float)
+        lows = recent["low"].astype(float)
+        supports = sorted({round(float(v), 2) for v in [lows.min(), lows.quantile(0.1), closes.rolling(20).mean().iloc[-1], closes.rolling(60).mean().iloc[-1]] if np.isfinite(v)})
+        resistances = sorted({round(float(v), 2) for v in [highs.max(), highs.quantile(0.9), np.ceil(closes.iloc[-1] / 10) * 10] if np.isfinite(v)})
+        return {"supports": supports[:6], "resistances": resistances[:6]}
+
+    @staticmethod
+    def volatility_range(df: pd.DataFrame) -> dict:
+        if df is None or len(df) < 25:
+            return {}
+        h = df["high"].astype(float).values
+        l = df["low"].astype(float).values
+        c = df["close"].astype(float).values
+        atr = TechnicalIndicators._atr(h, l, c, period=14)
+        atr20 = pd.Series(atr).rolling(20).mean().iloc[-1]
+        last_close = float(c[-1])
+        return {
+            "atr20": round(float(atr20), 4) if np.isfinite(atr20) else 0,
+            "predicted_low": round(last_close - float(atr20), 4) if np.isfinite(atr20) else round(last_close, 4),
+            "predicted_high": round(last_close + float(atr20), 4) if np.isfinite(atr20) else round(last_close, 4),
+            "note": "基于历史波动率的统计区间，不构成精确预测",
+        }
+
+    @staticmethod
+    def vpvr(df: pd.DataFrame, bins: int = 24, lookback: int = 120) -> dict:
+        if df is None or len(df) < 10:
+            return {"bins": [], "point_of_control": 0}
+        recent = df.tail(lookback).copy()
+        low = float(recent["low"].min())
+        high = float(recent["high"].max())
+        if high <= low:
+            return {"bins": [], "point_of_control": round(low, 4)}
+        edges = np.linspace(low, high, bins + 1)
+        labels = []
+        volumes = []
+        for i in range(bins):
+            mask = (recent["close"] >= edges[i]) & (recent["close"] < edges[i + 1] if i < bins - 1 else recent["close"] <= edges[i + 1])
+            vol = float(recent.loc[mask, "volume"].astype(float).sum())
+            labels.append(round(float((edges[i] + edges[i + 1]) / 2), 4))
+            volumes.append(round(vol, 4))
+        point_of_control = labels[int(np.argmax(volumes))] if volumes else 0
+        return {"bins": [{"price": labels[i], "volume": volumes[i]} for i in range(len(labels))], "point_of_control": point_of_control}
+
+    @staticmethod
+    def trend_lines(df: pd.DataFrame, lookback: int = 120) -> dict:
+        if df is None or len(df) < 20:
+            return {"support_line": [], "resistance_line": []}
+        recent = df.tail(lookback).reset_index(drop=True)
+        lows = recent["low"].astype(float)
+        highs = recent["high"].astype(float)
+        x = np.arange(len(recent))
+        low_idx = lows.nsmallest(min(5, len(lows))).index.values
+        high_idx = highs.nlargest(min(5, len(highs))).index.values
+        support_coef = np.polyfit(low_idx, lows.iloc[low_idx], 1) if len(low_idx) >= 2 else (0, float(lows.iloc[-1]))
+        resist_coef = np.polyfit(high_idx, highs.iloc[high_idx], 1) if len(high_idx) >= 2 else (0, float(highs.iloc[-1]))
+        support_line = (support_coef[0] * x + support_coef[1]).round(4).tolist()
+        resistance_line = (resist_coef[0] * x + resist_coef[1]).round(4).tolist()
+        return {"support_line": support_line, "resistance_line": resistance_line}
+
+    @staticmethod
+    def relative_strength(df: pd.DataFrame, benchmark_df: pd.DataFrame) -> dict:
+        if df is None or benchmark_df is None or df.empty or benchmark_df.empty:
+            return {"series": []}
+        left = df[["date", "close"]].rename(columns={"close": "asset_close"})
+        right = benchmark_df[["date", "close"]].rename(columns={"close": "benchmark_close"})
+        merged = left.merge(right, on="date", how="inner")
+        if merged.empty:
+            return {"series": []}
+        merged["asset_norm"] = merged["asset_close"] / merged["asset_close"].iloc[0] * 100
+        merged["benchmark_norm"] = merged["benchmark_close"] / merged["benchmark_close"].iloc[0] * 100
+        merged["relative"] = merged["asset_norm"] - merged["benchmark_norm"]
+        return {
+            "series": merged[["date", "asset_norm", "benchmark_norm", "relative"]].assign(date=lambda x: x["date"].astype(str)).to_dict("records"),
+            "stronger_than_benchmark": float(merged["relative"].iloc[-1]) > 0,
+        }
+
+    @staticmethod
+    def rsi_divergence(df: pd.DataFrame, period: int = 14) -> dict:
+        if df is None or len(df) < 30:
+            return {"top_divergence": [], "bottom_divergence": []}
+        closes = df["close"].astype(float).values
+        delta = np.diff(closes, prepend=closes[0])
+        gains = np.where(delta > 0, delta, 0)
+        losses = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gains).ewm(alpha=1 / period, min_periods=period).mean()
+        avg_loss = pd.Series(losses).ewm(alpha=1 / period, min_periods=period).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = (100 - 100 / (1 + rs)).fillna(50)
+        top_divergence = []
+        bottom_divergence = []
+        for i in range(5, len(df)):
+            price_window = closes[i - 5:i + 1]
+            rsi_window = rsi.iloc[i - 5:i + 1].values
+            if closes[i] >= np.max(price_window) and rsi.iloc[i] < np.max(rsi_window[:-1]):
+                top_divergence.append({"index": i, "date": str(df.iloc[i]["date"]), "price": round(float(closes[i]), 4), "rsi": round(float(rsi.iloc[i]), 4)})
+            if closes[i] <= np.min(price_window) and rsi.iloc[i] > np.min(rsi_window[:-1]):
+                bottom_divergence.append({"index": i, "date": str(df.iloc[i]["date"]), "price": round(float(closes[i]), 4), "rsi": round(float(rsi.iloc[i]), 4)})
+        return {"top_divergence": top_divergence, "bottom_divergence": bottom_divergence}

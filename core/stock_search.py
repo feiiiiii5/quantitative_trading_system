@@ -1,283 +1,145 @@
-import logging
 import re
-import threading
-from functools import lru_cache
-from typing import List, Optional
+from typing import Optional
 
-logger = logging.getLogger(__name__)
+from core.database import get_db
+from core.market_data import (
+    get_stock_list,
+    search_all_markets,
+    get_market_summary as _get_market_summary,
+    get_market_page,
+)
 
-_A_STOCKS = [
-    ("000001", "平安银行", "银行"), ("000002", "万科A", "房地产"),
-    ("000063", "中兴通讯", "通信"), ("000100", "TCL科技", "面板"),
-    ("000333", "美的集团", "家电"), ("000338", "潍柴动力", "机械"),
-    ("000425", "徐工机械", "机械"), ("000538", "云南白药", "医药"),
-    ("000568", "泸州老窖", "白酒"), ("000596", "古井贡酒", "白酒"),
-    ("000625", "长安汽车", "汽车"), ("000651", "格力电器", "家电"),
-    ("000661", "长春高新", "医药"), ("000725", "京东方A", "面板"),
-    ("000768", "中航西飞", "军工"), ("000776", "广发证券", "券商"),
-    ("000786", "北新建材", "建材"), ("000800", "一汽解放", "汽车"),
-    ("000858", "五粮液", "白酒"), ("000876", "新 希 望", "农业"),
-    ("000895", "双汇发展", "食品"), ("000898", "鞍钢股份", "钢铁"),
-    ("000938", "紫光股份", "IT"), ("000963", "华东医药", "医药"),
-    ("000977", "浪潮信息", "服务器"), ("001979", "招商蛇口", "房地产"),
-    ("002001", "新和成", "化工"), ("002007", "华兰生物", "医药"),
-    ("002024", "苏宁易购", "零售"), ("002027", "分众传媒", "传媒"),
-    ("002049", "紫光国微", "芯片"), ("002120", "韵达股份", "物流"),
-    ("002142", "宁波银行", "银行"), ("002179", "中航光电", "军工"),
-    ("002230", "科大讯飞", "AI"), ("002241", "歌尔股份", "消费电子"),
-    ("002271", "东方雨虹", "建材"), ("002304", "洋河股份", "白酒"),
-    ("002352", "顺丰控股", "物流"), ("002415", "海康威视", "安防"),
-    ("002460", "赣锋锂业", "锂电"), ("002475", "立讯精密", "消费电子"),
-    ("002493", "荣盛石化", "化工"), ("002555", "三七互娱", "游戏"),
-    ("002594", "比亚迪", "新能源车"), ("002601", "龙蟒佰利", "化工"),
-    ("002607", "中公教育", "教育"), ("002709", "天赐材料", "锂电"),
-    ("002714", "牧原股份", "养猪"), ("002736", "国信证券", "券商"),
-    ("002812", "恩捷股份", "锂电"), ("002841", "视源股份", "显示"),
-    ("002916", "深南电路", "PCB"), ("003816", "中国广核", "核电"),
-    ("300003", "乐普医疗", "医疗器械"), ("300014", "亿纬锂能", "锂电"),
-    ("300015", "爱尔眼科", "医疗"), ("300033", "同花顺", "金融IT"),
-    ("300059", "东方财富", "券商"), ("300122", "智飞生物", "疫苗"),
-    ("300124", "汇川技术", "工控"), ("300142", "沃森生物", "疫苗"),
-    ("300146", "汤臣倍健", "保健品"), ("300274", "阳光电源", "光伏逆变器"),
-    ("300347", "泰格医药", "CRO"), ("300408", "三环集团", "电子元件"),
-    ("300413", "芒果超媒", "传媒"), ("300433", "蓝思科技", "消费电子"),
-    ("300454", "深信服", "网络安全"), ("300457", "赢合科技", "锂电设备"),
-    ("300496", "中科创达", "智能OS"), ("300498", "温氏股份", "养猪"),
-    ("300529", "健帆生物", "医疗器械"), ("300601", "康泰生物", "疫苗"),
-    ("300750", "宁德时代", "动力电池"), ("300760", "迈瑞医疗", "医疗器械"),
-    ("300782", "卓胜微", "射频芯片"), ("300832", "新产业", "体外诊断"),
-    ("300888", "稳健医疗", "医疗"), ("300999", "金龙鱼", "食品"),
-    ("600000", "浦发银行", "银行"), ("600009", "上海机场", "机场"),
-    ("600010", "包钢股份", "钢铁"), ("600011", "华能国际", "电力"),
-    ("600016", "民生银行", "银行"), ("600018", "上港集团", "港口"),
-    ("600019", "宝钢股份", "钢铁"), ("600025", "华能水电", "电力"),
-    ("600028", "中国石化", "石化"), ("600029", "南方航空", "航空"),
-    ("600030", "中信证券", "券商"), ("600031", "三一重工", "工程机械"),
-    ("600036", "招商银行", "银行"), ("600048", "保利发展", "房地产"),
-    ("600050", "中国联通", "通信"), ("600061", "国投资本", "金融"),
-    ("600085", "同仁堂", "中药"), ("600089", "特变电工", "输配电"),
-    ("600104", "上汽集团", "汽车"), ("600109", "国金证券", "券商"),
-    ("600111", "北方稀土", "稀土"), ("600115", "东方航空", "航空"),
-    ("600150", "中国船舶", "造船"), ("600176", "中国巨石", "玻纤"),
-    ("000001", "平安银行", "银行"), ("600196", "复星医药", "医药"),
-    ("600276", "恒瑞医药", "医药"), ("600309", "万华化学", "化工"),
-    ("600332", "白云山", "医药"), ("600346", "恒力石化", "化工"),
-    ("600352", "浙江龙盛", "染料"), ("600406", "国电南瑞", "电力设备"),
-    ("600436", "片仔癀", "中药"), ("600438", "通威股份", "光伏"),
-    ("600519", "贵州茅台", "白酒"), ("600570", "恒生电子", "金融IT"),
-    ("600585", "海螺水泥", "水泥"), ("600588", "用友网络", "企业软件"),
-    ("600600", "青岛啤酒", "啤酒"), ("600690", "海尔智家", "家电"),
-    ("600745", "闻泰科技", "半导体"), ("600809", "山西汾酒", "白酒"),
-    ("600837", "海通证券", "券商"), ("600845", "宝信软件", "工业软件"),
-    ("600887", "伊利股份", "乳业"), ("600893", "航发动力", "航空发动机"),
-    ("600900", "长江电力", "电力"), ("600905", "三峡能源", "新能源"),
-    ("600918", "中泰证券", "券商"), ("600941", "中国移动", "通信"),
-    ("601006", "大秦铁路", "铁路"), ("601012", "隆基绿能", "光伏"),
-    ("601066", "中信建投", "券商"), ("601088", "中国神华", "煤炭"),
-    ("601111", "中国国航", "航空"), ("601138", "工业富联", "电子制造"),
-    ("601166", "兴业银行", "银行"), ("601211", "国泰君安", "券商"),
-    ("601225", "陕西煤业", "煤炭"), ("601228", "广州农商行", "银行"),
-    ("601236", "红塔证券", "券商"), ("601288", "农业银行", "银行"),
-    ("601318", "中国平安", "保险"), ("601328", "交通银行", "银行"),
-    ("601336", "新华保险", "保险"), ("601390", "中国中铁", "基建"),
-    ("601398", "工商银行", "银行"), ("601601", "中国太保", "保险"),
-    ("601628", "中国人寿", "保险"), ("601668", "中国建筑", "基建"),
-    ("601669", "中国电建", "基建"), ("601688", "华泰证券", "券商"),
-    ("601728", "中国电信", "通信"), ("601766", "中国中车", "轨交"),
-    ("601788", "光大证券", "券商"), ("601799", "星宇股份", "车灯"),
-    ("601816", "京沪高铁", "铁路"), ("601857", "中国石油", "石油"),
-    ("601881", "中国银河", "券商"), ("601888", "中国中免", "免税"),
-    ("601899", "紫金矿业", "矿业"), ("601919", "中远海控", "航运"),
-    ("601939", "建设银行", "银行"), ("601985", "中国核电", "核电"),
-    ("601988", "中国银行", "银行"), ("603259", "药明康德", "CRO"),
-    ("603288", "海天味业", "调味品"), ("603501", "韦尔股份", "芯片"),
-    ("603799", "华友钴业", "钴"), ("603986", "兆易创新", "存储芯片"),
-    ("605117", "德业股份", "逆变器"), ("606098", "迎丰股份", "纺织"),
-    ("688001", "华兴源创", "半导体设备"), ("688005", "容百科技", "正极材料"),
-    ("688012", "中微公司", "半导体设备"), ("688036", "传音控股", "手机"),
-    ("688111", "金山办公", "办公软件"), ("688126", "沪硅产业", "硅片"),
-    ("688169", "石头科技", "扫地机器人"), ("688180", "君实生物", "创新药"),
-    ("688187", "时代电气", "轨交"), ("688256", "寒武纪", "AI芯片"),
-    ("688303", "大全能源", "多晶硅"), ("688396", "华润微", "功率半导体"),
-    ("688561", "奇安信", "网络安全"), ("688599", "天合光能", "光伏"),
-    ("688728", "格科微", "CIS"), ("688981", "中芯国际", "晶圆代工"),
-]
+_STOCK_INDEX = {
+    "000001": {"name": "平安银行", "market": "A", "sector": "银行"},
+    "000002": {"name": "万科A", "market": "A", "sector": "房地产"},
+    "000333": {"name": "美的集团", "market": "A", "sector": "家电"},
+    "000858": {"name": "五粮液", "market": "A", "sector": "白酒"},
+    "600519": {"name": "贵州茅台", "market": "A", "sector": "白酒"},
+    "601318": {"name": "中国平安", "market": "A", "sector": "保险"},
+    "600036": {"name": "招商银行", "market": "A", "sector": "银行"},
+    "002594": {"name": "比亚迪", "market": "A", "sector": "新能源"},
+    "300750": {"name": "宁德时代", "market": "A", "sector": "新能源"},
+    "00700": {"name": "腾讯控股", "market": "HK", "sector": "科技", "exchange": "HKEX"},
+    "09988": {"name": "阿里巴巴-SW", "market": "HK", "sector": "科技", "exchange": "HKEX"},
+    "01810": {"name": "小米集团-W", "market": "HK", "sector": "科技", "exchange": "HKEX"},
+    "AAPL": {"name": "苹果", "market": "US", "sector": "科技", "exchange": "NASDAQ"},
+    "MSFT": {"name": "微软", "market": "US", "sector": "科技", "exchange": "NASDAQ"},
+    "NVDA": {"name": "英伟达", "market": "US", "sector": "芯片", "exchange": "NASDAQ"},
+    "TSLA": {"name": "特斯拉", "market": "US", "sector": "新能源", "exchange": "NASDAQ"},
+}
 
-_HK_STOCKS = [
-    ("00700", "腾讯控股", "互联网"), ("09988", "阿里巴巴-SW", "互联网"),
-    ("03690", "美团-W", "互联网"), ("09618", "京东集团-SW", "电商"),
-    ("01810", "小米集团-W", "消费电子"), ("09888", "百度集团-SW", "互联网"),
-    ("09999", "网易-S", "互联网"), ("02382", "舜宇光学科技", "光学"),
-    ("02015", "理想汽车-W", "新能源车"), ("09866", "蔚来-SW", "新能源车"),
-    ("01211", "比亚迪股份", "新能源车"), ("02238", "广汽集团", "汽车"),
-    ("01766", "中国中车", "轨交"), ("02333", "长城汽车", "汽车"),
-    ("00388", "香港交易所", "金融"), ("02388", "中银香港", "银行"),
-    ("01398", "工商银行", "银行"), ("03988", "中国银行", "银行"),
-    ("01288", "农业银行", "银行"), ("00939", "建设银行", "银行"),
-    ("02628", "中国人寿", "保险"), ("02318", "中国平安", "保险"),
-    ("02601", "中国太保", "保险"), ("01658", "邮储银行", "银行"),
-    ("00005", "汇丰控股", "银行"), ("00011", "恒生银行", "银行"),
-    ("00027", "银河娱乐", "博彩"), ("01928", "金沙中国", "博彩"),
-    ("00941", "中国移动", "通信"), ("00728", "中国电信", "通信"),
-    ("00002", "中电控股", "电力"), ("00003", "香港中华煤气", "公用"),
-    ("00006", "电能实业", "电力"), ("00012", "恒基兆业地产", "房地产"),
-    ("00016", "新鸿基地产", "房地产"), ("00017", "新世界发展", "房地产"),
-    ("00066", "港铁公司", "交通"), ("00101", "恒隆地产", "房地产"),
-    ("00175", "吉利汽车", "汽车"), ("00241", "阿里健康", "医疗"),
-    ("00267", "中信股份", "综合"), ("00354", "中国软件国际", "IT"),
-    ("00669", "创科实业", "工具"), ("00688", "中国海外发展", "房地产"),
-    ("00823", "领展房产基金", "REIT"), ("00883", "中海油", "石油"),
-    ("00960", "龙湖集团", "房地产"), ("00968", "信义光能", "光伏"),
-    ("01024", "快手-W", "短视频"), ("01066", "中国铁塔", "通信"),
-    ("01109", "华润置地", "房地产"), ("01113", "长实集团", "房地产"),
-    ("01177", "中国生物制药", "医药"), ("01299", "友邦保险", "保险"),
-    ("01816", "中广核电力", "核电"), ("01898", "中煤能源", "煤炭"),
-    ("02018", "瑞声科技", "声学"), ("02202", "万科企业", "房地产"),
-    ("02269", "药明生物", "CRO"), ("02899", "紫金矿业", "矿业"),
-    ("06098", "碧桂服", "物业"), ("06618", "京东健康", "医疗"),
-    ("06690", "海尔智家", "家电"), ("06969", "思摩尔国际", "电子烟"),
-    ("09626", "哔哩哔哩-W", "互联网"), ("09896", "名创优品", "零售"),
-    ("02099", "中国黄金国际", "矿业"), ("06060", "众安在线", "保险"),
-]
+_INDUSTRY_LIST = sorted(set(
+    info["sector"] for info in _STOCK_INDEX.values() if info.get("sector")
+))
 
-_US_STOCKS = [
-    ("AAPL", "苹果", "科技"), ("MSFT", "微软", "科技"),
-    ("GOOGL", "谷歌", "科技"), ("AMZN", "亚马逊", "电商"),
-    ("META", "Meta", "社交"), ("NVDA", "英伟达", "芯片"),
-    ("TSLA", "特斯拉", "新能源车"), ("BRK.B", "伯克希尔B", "金融"),
-    ("JPM", "摩根大通", "银行"), ("V", "Visa", "支付"),
-    ("JNJ", "强生", "医药"), ("WMT", "沃尔玛", "零售"),
-    ("PG", "宝洁", "消费"), ("MA", "Mastercard", "支付"),
-    ("HD", "家得宝", "零售"), ("UNH", "联合健康", "医疗"),
-    ("DIS", "迪士尼", "传媒"), ("BAC", "美国银行", "银行"),
-    ("XOM", "埃克森美孚", "石油"), ("PFE", "辉瑞", "医药"),
-    ("CSCO", "思科", "网络"), ("ADBE", "Adobe", "软件"),
-    ("NFLX", "奈飞", "流媒体"), ("CRM", "赛富时", "软件"),
-    ("INTC", "英特尔", "芯片"), ("CMCSA", "康卡斯特", "传媒"),
-    ("PEP", "百事", "消费"), ("ABT", "雅培", "医药"),
-    ("TMO", "赛默飞", "科学仪器"), ("COST", "好市多", "零售"),
-    ("AVGO", "博通", "芯片"), ("TXN", "德州仪器", "芯片"),
-    ("QCOM", "高通", "芯片"), ("AMD", "超微半导体", "芯片"),
-    ("AMGN", "安进", "医药"), ("SBUX", "星巴克", "消费"),
-    ("GS", "高盛", "投行"), ("BLK", "贝莱德", "资管"),
-    ("MS", "摩根士丹利", "投行"), ("C", "花旗", "银行"),
-    ("BA", "波音", "航空"), ("CAT", "卡特彼勒", "机械"),
-    ("GE", "通用电气", "工业"), ("IBM", "IBM", "科技"),
-    ("ORCL", "甲骨文", "软件"), ("CRM", "Salesforce", "软件"),
-    ("PYPL", "PayPal", "支付"), ("SQ", "Block", "支付"),
-    ("UBER", "Uber", "出行"), ("ABNB", "Airbnb", "住宿"),
-    ("COIN", "Coinbase", "加密"), ("PLTR", "Palantir", "大数据"),
-    ("SNOW", "Snowflake", "云数据"), ("CRWD", "CrowdStrike", "网络安全"),
-    ("ZS", "Zscaler", "网络安全"), ("DDOG", "Datadog", "监控"),
-    ("NET", "Cloudflare", "CDN"), ("MSTR", "MicroStrategy", "BTC"),
-    ("SHOP", "Shopify", "电商"), ("SE", "Sea", "互联网"),
-    ("NIO", "蔚来", "新能源车"), ("LI", "理想汽车", "新能源车"),
-    ("XPEV", "小鹏汽车", "新能源车"), ("BILI", "哔哩哔哩", "互联网"),
-    ("PDD", "拼多多", "电商"), ("JD", "京东", "电商"),
-    ("BABA", "阿里巴巴", "电商"), ("TCEHY", "腾讯控股ADR", "互联网"),
-    ("NTES", "网易ADR", "互联网"), ("BIDU", "百度ADR", "互联网"),
-    ("FUTU", "富途控股", "券商"), ("TME", "腾讯音乐", "互联网"),
-    ("IQ", "爱奇艺", "流媒体"), ("VIPS", "唯品会", "电商"),
-    ("ZM", "Zoom", "视频会议"), ("ROKU", "Roku", "流媒体"),
-    ("SPOT", "Spotify", "音乐"), ("SNAP", "Snap", "社交"),
-    ("PIN", "Pinterest", "社交"), ("RBLX", "Roblox", "游戏"),
-    ("TTD", "The Trade Desk", "广告"), ("OKTA", "Okta", "身份管理"),
-    ("MDB", "MongoDB", "数据库"), ("EL", "雅诗兰黛", "消费"),
-    ("LULU", "Lululemon", "消费"), ("NKE", "耐克", "消费"),
-    ("DELL", "戴尔", "科技"), ("HPQ", "惠普", "科技"),
-]
-
-_STOCK_INDEX = {}
-_index_lock = threading.Lock()
+_HOT_SEARCH_TERMS = ["白酒", "科技", "银行", "医药", "新能源", "芯片", "军工", "券商", "新能源车", "人工智能"]
 
 
-def _build_index():
-    global _STOCK_INDEX
-    if _STOCK_INDEX:
-        return
-    with _index_lock:
-        if _STOCK_INDEX:
-            return
-        for code, name, sector in _A_STOCKS:
-            key = f"A:{code}"
-            _STOCK_INDEX[key] = {"code": code, "name": name, "market": "A", "sector": sector}
-        for code, name, sector in _HK_STOCKS:
-            key = f"HK:{code}"
-            _STOCK_INDEX[key] = {"code": code, "name": name, "market": "HK", "sector": sector}
-        for code, name, sector in _US_STOCKS:
-            key = f"US:{code}"
-            _STOCK_INDEX[key] = {"code": code, "name": name, "market": "US", "sector": sector}
-
-
-def search_stocks(query: str, limit: int = 10) -> List[dict]:
-    _build_index()
-    if not query or not query.strip():
+def search_stocks(query: str, limit: int = 10, market: Optional[str] = None, category: Optional[str] = None) -> list:
+    q = query.strip()
+    if not q:
         return []
-    q = query.strip().upper()
-    results = []
-    q_lower = query.strip().lower()
 
-    for key, info in _STOCK_INDEX.items():
-        score = 0
-        code = info["code"].upper()
-        name = info["name"]
+    results = search_all_markets(q, limit=limit * 2)
+    if market:
+        results = [r for r in results if r.get("market") == market]
 
-        if code == q:
-            score = 100
-        elif code.startswith(q):
-            score = 80
-        elif q in code:
-            score = 60
+    if category == "ETF" or category == "bond" or category == "future" or category == "index":
+        db = get_db()
+        instrument_types = [category]
+        try:
+            db_results = db.search_stock_info(q, limit=limit, market=market, instrument_types=instrument_types)
+            for row in db_results:
+                results.append({
+                    "code": row.get("code", ""),
+                    "name": row.get("name", ""),
+                    "market": row.get("market", ""),
+                    "sector": row.get("sector", ""),
+                    "instrument_type": row.get("instrument_type", "stock"),
+                })
+        except Exception:
+            pass
 
-        if q_lower in name.lower() or query.strip() in name:
-            name_score = 70 if name.startswith(query.strip()) else 50
-            score = max(score, name_score)
-
-        if score > 0:
-            results.append((score, info))
-
-    results.sort(key=lambda x: (-x[0], x[1]["code"]))
     seen = set()
-    unique = []
-    for score, info in results:
-        uid = f"{info['market']}:{info['code']}"
-        if uid not in seen:
-            seen.add(uid)
-            unique.append(info)
-    return unique[:limit]
+    unique_results = []
+    for r in results:
+        key = (r.get("market", ""), r.get("code", ""))
+        if key not in seen:
+            seen.add(key)
+            unique_results.append(r)
+
+    return unique_results[:limit]
 
 
 def get_stock_name(symbol: str) -> Optional[str]:
-    _build_index()
-    from core.market_detector import MarketDetector
-    market = MarketDetector.detect(symbol)
-    norm = MarketDetector.normalize_symbol(symbol)
-
-    for key, info in _STOCK_INDEX.items():
-        if info["market"] == market and info["code"] == norm:
-            return info["name"]
-
-    if market == "HK":
-        for key, info in _STOCK_INDEX.items():
-            if info["market"] == "HK" and info["code"].lstrip("0") == norm.lstrip("0"):
-                return info["name"]
-
+    db = get_db()
+    info = db.get_stock_info(symbol)
+    if info:
+        return info.get("name")
+    info = _STOCK_INDEX.get(symbol)
+    if info:
+        return info.get("name")
+    for market in ("A", "HK", "US"):
+        stocks = get_stock_list(market)
+        for s in stocks:
+            if s.get("code") == symbol:
+                return s.get("name")
     return None
 
 
 def get_stock_info(symbol: str) -> Optional[dict]:
-    _build_index()
-    from core.market_detector import MarketDetector
-    market = MarketDetector.detect(symbol)
-    norm = MarketDetector.normalize_symbol(symbol)
-
-    for key, info in _STOCK_INDEX.items():
-        if info["market"] == market and info["code"] == norm:
-            return info
-
-    if market == "HK":
-        for key, info in _STOCK_INDEX.items():
-            if info["market"] == "HK" and info["code"].lstrip("0") == norm.lstrip("0"):
-                return info
-
+    db = get_db()
+    info = db.get_stock_info(symbol)
+    if info:
+        return dict(info)
+    info = _STOCK_INDEX.get(symbol)
+    if info:
+        return dict(info)
+    for market in ("A", "HK", "US"):
+        stocks = get_stock_list(market)
+        for s in stocks:
+            if s.get("code") == symbol:
+                return {
+                    "code": s.get("code"),
+                    "name": s.get("name"),
+                    "market": s.get("market"),
+                    "sector": s.get("sector", ""),
+                }
     return None
+
+
+def get_all_industries() -> list:
+    db = get_db()
+    rows = db.fetchall(
+        """
+        SELECT DISTINCT industry
+        FROM stock_info
+        WHERE industry <> ''
+        ORDER BY industry ASC
+        """
+    )
+    db_industries = [row["industry"] for row in rows if row.get("industry")]
+    return sorted(set(_INDUSTRY_LIST).union(db_industries))
+
+
+def get_hot_search_terms() -> list:
+    return _HOT_SEARCH_TERMS
+
+
+def get_stocks_by_market(market: str, limit: int = 100, offset: int = 0) -> dict:
+    market = market.upper()
+    if market not in ("A", "HK", "US"):
+        return {"total": 0, "stocks": []}
+
+    page_data = get_market_page(market, page=offset // limit + 1, page_size=limit, sort="mktcap", asc=False)
+    stocks = page_data.get("stocks", [])
+
+    return {
+        "total": page_data.get("total", 0),
+        "market": market,
+        "stocks": stocks,
+    }
+
+
+def get_market_summary() -> dict:
+    return _get_market_summary()

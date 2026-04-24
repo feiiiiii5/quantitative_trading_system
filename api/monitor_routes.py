@@ -250,6 +250,46 @@ async def record_data_latency(
     return _resp(True, msg="数据延迟已记录")
 
 
+@router.post("/perf/record-connection-status")
+async def record_connection_status(
+    request: Request,
+    source: str = Query(...),
+    status: str = Query(...),
+    latency_ms: float = Query(0),
+):
+    async with request.app.state.write_lock:
+        request.app.state.perf_dashboard.record_connection_status(source, status, latency_ms)
+    return _resp(True, msg="连接状态已记录")
+
+
+@router.get("/perf/connection-status")
+async def get_connection_status(request: Request):
+    status = request.app.state.perf_dashboard.get_connection_status()
+    return _resp(True, data=status)
+
+
+@router.get("/perf/health-score")
+async def get_health_score(request: Request):
+    score = request.app.state.perf_dashboard.get_health_score()
+    return _resp(True, data={"health_score": score})
+
+
+@router.get("/perf/metric-series")
+async def get_metric_series(
+    request: Request,
+    metric_name: str = Query(...),
+    limit: int = Query(100),
+):
+    series = request.app.state.perf_dashboard.get_metric_series(metric_name, limit)
+    return _resp(True, data=series)
+
+
+@router.get("/perf/dashboard")
+async def get_perf_dashboard(request: Request):
+    dashboard = request.app.state.perf_dashboard.get_dashboard()
+    return _resp(True, data=dashboard)
+
+
 @router.get("/perf/data-latency-heatmap")
 async def get_data_latency_heatmap(request: Request):
     heatmap = request.app.state.perf_dashboard.get_data_latency_heatmap()

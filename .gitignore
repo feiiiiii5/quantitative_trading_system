@@ -16,3 +16,7 @@ cache/
 *.egg-info/
 dist/
 build/
+data/
+logs/
+*test*.py
+*_test*.py

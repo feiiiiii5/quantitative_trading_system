@@ -9,19 +9,21 @@ import pandas as pd
 from fastapi import APIRouter, Query, Request
 
 from core.backtest import BacktestEngine
-from core.data_fetcher import SmartDataFetcher
+from core.data_fetcher import SmartDataFetcher, KLINE_TYPE_MAP
 from core.indicators import TechnicalIndicators
 from core.market_detector import MarketDetector
 from core.market_hours import MarketHours
 from core.prediction import PricePredictor
-from core.stock_search import search_stocks, get_stock_info
+from core.stock_search import search_stocks, get_stock_info, get_all_industries, get_hot_search_terms, get_stocks_by_market, get_market_summary
+from core.market_data import get_market_page, get_stock_list, refresh_stock_list
 from core.strategies import CompositeStrategy
 from core.simulated_trading import SimulatedTrading
+from core.file_cache import get as file_cache_get, set as file_cache_set
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_MAX_ROUTE_CACHE = 100
+_MAX_ROUTE_CACHE = 200
 _cache: OrderedDict = OrderedDict()
 _CACHE_TTL = 60
 
@@ -49,19 +51,105 @@ def _json_response(success: bool, data=None, error: str = ""):
 
 
 @router.get("/search")
-async def search_stock(request: Request, q: str = Query(..., min_length=1, max_length=20)):
+async def search_stock(
+    request: Request,
+    q: str = Query(..., min_length=1, max_length=20),
+    market: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+    category: Optional[str] = Query(None),
+):
     try:
-        results = search_stocks(q, limit=10)
+        results = search_stocks(q, limit=limit, market=market, category=category)
         return _json_response(True, data=results)
     except Exception as e:
         logger.error(f"search error: {e}", exc_info=True)
         return _json_response(False, error=str(e))
 
 
-@router.get("/stock/{symbol}")
-async def get_stock_full(request: Request, symbol: str, period: str = Query("1y")):
+@router.get("/search/industry")
+async def get_industries(request: Request):
     try:
-        cache_key = f"full:{symbol}:{period}"
+        industries = get_all_industries()
+        return _json_response(True, data=industries)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/search/hot")
+async def search_hot(request: Request):
+    try:
+        data = get_hot_search_terms()
+        return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/market-list/{market}")
+async def get_market_list(request: Request, market: str, limit: int = Query(50), offset: int = Query(0)):
+    try:
+        data = get_stocks_by_market(market, limit, offset)
+        return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/market/{market}/page")
+async def get_market_page_api(
+    request: Request,
+    market: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=80),
+    sort: str = Query("pct"),
+    asc: bool = Query(False),
+    sector: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+):
+    try:
+        cache_key = f"mkt_page:{market}:{page}:{page_size}:{sort}:{asc}:{sector}:{search}"
+        cached = file_cache_get(cache_key)
+        if cached:
+            return _json_response(True, data=cached)
+        data = get_market_page(market, page=page, page_size=page_size, sort=sort, asc=asc, sector=sector, search=search)
+        file_cache_set(cache_key, data, ttl=15)
+        return _json_response(True, data=data)
+    except Exception as e:
+        logger.error(f"market page error: {e}", exc_info=True)
+        return _json_response(False, error=str(e))
+
+
+@router.post("/market/refresh/{market}")
+async def refresh_market_list(request: Request, market: str):
+    try:
+        result = refresh_stock_list(market)
+        return _json_response(True, data=result)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/market-summary")
+async def get_market_summary_api(request: Request):
+    try:
+        cache_key = "market_summary"
+        cached = file_cache_get(cache_key)
+        if cached:
+            return _json_response(True, data=cached)
+        data = get_market_summary()
+        file_cache_set(cache_key, data, ttl=3600)
+        return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/stock/{symbol}")
+async def get_stock_full(
+    request: Request, 
+    symbol: str, 
+    period: str = Query("1y"),
+    fields: Optional[str] = Query(None, description="按需加载字段，逗号分隔: history,indicators,prediction,realtime,fundamentals")
+):
+    try:
+        kline_type = KLINE_TYPE_MAP.get(period, "daily")
+        cache_key = f"full:{symbol}:{period}:{kline_type}:{fields or 'all'}"
         cached = _cache_get(cache_key)
         if cached:
             return _json_response(True, data=cached)
@@ -69,49 +157,73 @@ async def get_stock_full(request: Request, symbol: str, period: str = Query("1y"
         market_info = MarketDetector.get_config(symbol)
         stock_info = get_stock_info(symbol)
 
-        df, realtime, fundamentals = await asyncio.gather(
-            request.app.state.fetcher.get_history(symbol, period),
-            request.app.state.fetcher.get_realtime(symbol),
-            request.app.state.fetcher.get_fundamentals(symbol, market_info["market"]),
-        )
+        # 按需加载字段
+        requested_fields = fields.split(",") if fields else ["history", "indicators", "prediction", "realtime", "fundamentals"]
+        tasks = []
+        task_indices = {}
+        
+        if "history" in requested_fields:
+            task_indices["history"] = len(tasks)
+            tasks.append(request.app.state.fetcher.get_history(symbol, period, kline_type))
+        
+        if "realtime" in requested_fields:
+            task_indices["realtime"] = len(tasks)
+            tasks.append(request.app.state.fetcher.get_realtime(symbol))
+        
+        if "fundamentals" in requested_fields:
+            task_indices["fundamentals"] = len(tasks)
+            tasks.append(request.app.state.fetcher.get_fundamentals(symbol, market_info["market"]))
+
+        results = await asyncio.gather(*tasks) if tasks else []
+        
+        # 初始化结果变量
+        df = None
+        realtime = None
+        fundamentals = None
+        
+        # 根据任务索引分配结果
+        if "history" in task_indices:
+            df = results[task_indices["history"]]
+        if "realtime" in task_indices:
+            realtime = results[task_indices["realtime"]]
+        if "fundamentals" in task_indices:
+            fundamentals = results[task_indices["fundamentals"]]
 
         stock_name = realtime.get("name", "") if realtime else ""
         if not stock_name and stock_info:
             stock_name = stock_info.get("name", "")
 
-        if df.empty:
-            if realtime and realtime.get("price"):
-                return _json_response(True, data={
-                    "symbol": symbol,
-                    "name": stock_name,
-                    "market": market_info,
-                    "history": [],
-                    "indicators": {},
-                    "prediction": {},
-                    "realtime": realtime,
-                    "fundamentals": fundamentals,
-                    "sector": stock_info.get("sector", "") if stock_info else "",
-                    "no_history": True,
-                })
-            return _json_response(False, error=f"No data for {symbol}")
-
-        indicators = TechnicalIndicators.compute_all(df)
-        prediction = PricePredictor.predict(df, symbol)
-        history_data = _df_to_chart(df)
-
         result = {
             "symbol": symbol,
             "name": stock_name,
             "market": market_info,
-            "history": history_data,
-            "indicators": indicators,
-            "prediction": prediction,
-            "realtime": realtime,
-            "fundamentals": fundamentals,
         }
 
         if stock_info:
             result["sector"] = stock_info.get("sector", "")
+
+        if "history" in requested_fields and df is not None:
+            if df.empty:
+                result["history"] = []
+                result["no_history"] = True
+            else:
+                history_data = _df_to_chart(df, kline_type)
+                result["history"] = history_data
+                result["is_intraday"] = kline_type == "intraday"
+        
+        if "indicators" in requested_fields and df is not None and not df.empty:
+            indicators = TechnicalIndicators.compute_all(df)
+            result["indicators"] = indicators
+        
+        if "prediction" in requested_fields and df is not None and not df.empty:
+            prediction = PricePredictor.predict(df, symbol)
+            result["prediction"] = prediction
+        
+        if "realtime" in requested_fields:
+            result["realtime"] = realtime
+        
+        if "fundamentals" in requested_fields:
+            result["fundamentals"] = fundamentals
 
         _cache_set(cache_key, result, ttl=30)
         return _json_response(True, data=result)
@@ -121,19 +233,42 @@ async def get_stock_full(request: Request, symbol: str, period: str = Query("1y"
 
 
 @router.get("/history")
-async def get_history(request: Request, symbol: str = Query(...), period: str = Query("1y")):
+async def get_history(
+    request: Request, 
+    symbol: str = Query(...), 
+    period: str = Query("1y"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=500)
+):
     try:
-        cache_key = f"hist:{symbol}:{period}"
+        kline_type = KLINE_TYPE_MAP.get(period, "daily")
+        cache_key = f"hist:{symbol}:{period}:{kline_type}:{page}:{limit}"
         cached = _cache_get(cache_key)
         if cached:
             return _json_response(True, data=cached)
 
-        df = await request.app.state.fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period, kline_type)
         if df.empty:
             return _json_response(False, error="No history data")
-        data = _df_to_chart(df)
-        _cache_set(cache_key, data, ttl=60)
-        return _json_response(True, data=data)
+        
+        # 实现分页
+        total = len(df)
+        start = (page - 1) * limit
+        end = start + limit
+        paginated_df = df.iloc[start:end]
+        
+        data = _df_to_chart(paginated_df, kline_type)
+        result = {
+            "data": data,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": (total + limit - 1) // limit,
+            "is_intraday": kline_type == "intraday",
+        }
+        
+        _cache_set(cache_key, result, ttl=60)
+        return _json_response(True, data=result)
     except Exception as e:
         logger.error(f"get_history error: {e}", exc_info=True)
         return _json_response(False, error=str(e))
@@ -150,7 +285,7 @@ async def get_realtime(request: Request, symbol: str = Query(...)):
         data = await request.app.state.fetcher.get_realtime(symbol)
         if not data:
             return _json_response(False, error="No realtime data")
-        _cache_set(cache_key, data, ttl=10)
+        _cache_set(cache_key, data, ttl=8)
         return _json_response(True, data=data)
     except Exception as e:
         logger.error(f"get_realtime error: {e}", exc_info=True)
@@ -160,12 +295,13 @@ async def get_realtime(request: Request, symbol: str = Query(...)):
 @router.get("/indicators")
 async def get_indicators(request: Request, symbol: str = Query(...), period: str = Query("1y")):
     try:
-        cache_key = f"ind:{symbol}:{period}"
+        kline_type = KLINE_TYPE_MAP.get(period, "daily")
+        cache_key = f"ind:{symbol}:{period}:{kline_type}"
         cached = _cache_get(cache_key)
         if cached:
             return _json_response(True, data=cached)
 
-        df = await request.app.state.fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period, kline_type)
         if df.empty:
             return _json_response(False, error="No data for indicators")
         indicators = TechnicalIndicators.compute_all(df)
@@ -179,12 +315,13 @@ async def get_indicators(request: Request, symbol: str = Query(...), period: str
 @router.get("/prediction")
 async def get_prediction(request: Request, symbol: str = Query(...), period: str = Query("1y")):
     try:
-        cache_key = f"pred:{symbol}:{period}"
+        kline_type = KLINE_TYPE_MAP.get(period, "daily")
+        cache_key = f"pred:{symbol}:{period}:{kline_type}"
         cached = _cache_get(cache_key)
         if cached:
             return _json_response(True, data=cached)
 
-        df = await request.app.state.fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period, kline_type)
         if df.empty:
             return _json_response(False, error="No data for prediction")
         prediction = PricePredictor.predict(df, symbol)
@@ -217,7 +354,7 @@ async def get_hot_stocks(request: Request):
             return _json_response(True, data=cached)
 
         data = await request.app.state.fetcher.get_hot_stocks()
-        _cache_set(cache_key, data, ttl=120)
+        _cache_set(cache_key, data, ttl=60)
         return _json_response(True, data=data)
     except Exception as e:
         logger.error(f"get_hot_stocks error: {e}", exc_info=True)
@@ -249,12 +386,13 @@ async def get_strategies(request: Request):
 @router.get("/strategies/{symbol}")
 async def run_strategies(request: Request, symbol: str, period: str = Query("1y")):
     try:
-        cache_key = f"strat:{symbol}:{period}"
+        kline_type = KLINE_TYPE_MAP.get(period, "daily")
+        cache_key = f"strat:{symbol}:{period}:{kline_type}"
         cached = _cache_get(cache_key)
         if cached:
             return _json_response(True, data=cached)
 
-        df = await request.app.state.fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period, kline_type)
         if df.empty:
             return _json_response(False, error="No data for strategy analysis")
 
@@ -293,12 +431,13 @@ async def run_strategies(request: Request, symbol: str, period: str = Query("1y"
 @router.get("/backtest/{symbol}")
 async def run_backtest(request: Request, symbol: str, period: str = Query("1y")):
     try:
-        cache_key = f"bt:{symbol}:{period}"
+        kline_type = KLINE_TYPE_MAP.get(period, "daily")
+        cache_key = f"bt:{symbol}:{period}:{kline_type}"
         cached = _cache_get(cache_key)
         if cached:
             return _json_response(True, data=cached)
 
-        df = await request.app.state.fetcher.get_history(symbol, period)
+        df = await request.app.state.fetcher.get_history(symbol, period, kline_type)
         if df.empty or len(df) < 60:
             return _json_response(False, error="数据不足，至少需要60个交易日")
 
@@ -354,16 +493,25 @@ async def sim_get_performance(request: Request):
 
 
 @router.get("/sim/trades")
-async def sim_get_trades(request: Request, limit: int = Query(50)):
+async def sim_get_trades(request: Request, limit: int = Query(50), page: int = Query(1)):
     try:
-        data = request.app.state.sim_trading.get_trade_history(limit)
+        data = request.app.state.sim_trading.get_trade_history(limit, page)
+        return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/sim/stats")
+async def sim_get_stats(request: Request):
+    try:
+        data = request.app.state.sim_trading.get_detailed_stats()
         return _json_response(True, data=data)
     except Exception as e:
         return _json_response(False, error=str(e))
 
 
 @router.post("/sim/buy")
-async def sim_buy(request: Request, 
+async def sim_buy(request: Request,
     symbol: str = Query(...),
     name: str = Query(""),
     market: str = Query("A"),
@@ -390,9 +538,9 @@ async def sim_buy(request: Request,
 
 
 @router.post("/sim/sell")
-async def sim_sell(request: Request, symbol: str = Query(...), price: float = Query(...), reason: str = Query("manual")):
+async def sim_sell(request: Request, symbol: str = Query(...), price: float = Query(...), reason: str = Query("manual"), shares: int = Query(0)):
     try:
-        result = request.app.state.sim_trading.execute_sell(symbol, price, reason)
+        result = request.app.state.sim_trading.execute_sell(symbol, price, reason, shares=shares)
         if result["success"]:
             return _json_response(True, data=result)
         return _json_response(False, error=result.get("error", "卖出失败"))
@@ -405,6 +553,131 @@ async def sim_reset(request: Request):
     try:
         result = request.app.state.sim_trading.reset_account()
         return _json_response(True, data=result)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.post("/sim/watch")
+async def sim_add_watch(request: Request, symbol: str = Query(...), name: str = Query("")):
+    try:
+        if not name:
+            from core.stock_search import get_stock_name
+            name = get_stock_name(symbol) or symbol
+        result = request.app.state.sim_trading.add_to_watchlist(symbol, name)
+        return _json_response(True, data=result)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.delete("/sim/watch")
+async def sim_remove_watch(request: Request, symbol: str = Query(...)):
+    try:
+        result = request.app.state.sim_trading.remove_from_watchlist(symbol)
+        return _json_response(True, data=result)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/sim/watch")
+async def sim_get_watchlist(request: Request):
+    try:
+        data = request.app.state.sim_trading.get_watchlist()
+        return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.post("/sim/auto/start")
+async def sim_auto_start(request: Request, strategy_name: str = Query(...)):
+    try:
+        result = request.app.state.sim_trading.start_auto_trading(strategy_name, request.app.state.fetcher)
+        return _json_response(True, data=result)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.post("/sim/auto/stop")
+async def sim_auto_stop(request: Request):
+    try:
+        result = request.app.state.sim_trading.stop_auto_trading()
+        return _json_response(True, data=result)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/sim/auto/status")
+async def sim_auto_status(request: Request):
+    try:
+        data = request.app.state.sim_trading.get_auto_trading_status()
+        return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.post("/sim/order")
+async def sim_place_order(request: Request,
+    symbol: str = Query(...),
+    name: str = Query(""),
+    market: str = Query("A"),
+    action: str = Query(...),
+    order_type: str = Query(...),
+    price: float = Query(...),
+    shares: int = Query(...),
+    trigger_price: float = Query(0),
+    strategy: str = Query("manual"),
+):
+    try:
+        if not name:
+            from core.stock_search import get_stock_name
+            name = get_stock_name(symbol) or symbol
+        result = request.app.state.sim_trading.place_order(
+            symbol, name, market, action, order_type, price, shares,
+            trigger_price=trigger_price, strategy=strategy,
+        )
+        if result["success"]:
+            return _json_response(True, data=result)
+        return _json_response(False, error=result.get("error", "下单失败"))
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.delete("/sim/order/{order_id}")
+async def sim_cancel_order(request: Request, order_id: str):
+    try:
+        result = request.app.state.sim_trading.cancel_order(order_id)
+        if result["success"]:
+            return _json_response(True, data=result)
+        return _json_response(False, error=result.get("error", "取消失败"))
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/sim/orders")
+async def sim_get_orders(request: Request):
+    try:
+        data = request.app.state.sim_trading.get_pending_orders()
+        return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.post("/sim/refresh-prices")
+async def sim_refresh_prices(request: Request):
+    try:
+        sim: SimulatedTrading = request.app.state.sim_trading
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        price_map = {}
+        for symbol in list(sim._positions.keys()):
+            try:
+                rt = await fetcher.get_realtime(symbol)
+                if rt and rt.get("price", 0) > 0:
+                    price_map[symbol] = rt["price"]
+            except Exception:
+                pass
+        updated = sim.update_position_prices(price_map)
+        sim.check_pending_orders(price_map)
+        account = sim.get_account_info()
+        return _json_response(True, data={"updated": updated, "account": account})
     except Exception as e:
         return _json_response(False, error=str(e))
 
@@ -544,12 +817,21 @@ async def get_indicator_explanation(request: Request, indicator: str):
     return _json_response(False, error=f"未找到指标 {indicator} 的说明")
 
 
-def _df_to_chart(df) -> list:
+def _df_to_chart(df, kline_type: str = "daily") -> list:
+    is_intraday = kline_type == "intraday" or (
+        len(df) > 0 and "date" in df.columns
+        and hasattr(df["date"].iloc[0], "hour")
+        and df["date"].iloc[0].hour > 0
+    )
+
     dates = df["date"].values
     times = []
     for d in dates:
-        ts = str(pd.Timestamp(d).date())
-        times.append(ts)
+        ts = pd.Timestamp(d)
+        if is_intraday:
+            times.append(int(ts.timestamp()))
+        else:
+            times.append(str(ts.date()))
 
     opens = df["open"].values.astype(float)
     highs = df["high"].values.astype(float)

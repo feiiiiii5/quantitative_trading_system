@@ -127,7 +127,7 @@ class EastMoneyAdapter(DataSourceAdapter):
 
     @property
     def priority(self) -> int:
-        return 1
+        return 4
 
     async def fetch_realtime(self, symbol: str, market: str) -> Optional[dict]:
         try:
@@ -172,7 +172,7 @@ class TencentAdapter(DataSourceAdapter):
 
     @property
     def priority(self) -> int:
-        return 2
+        return 1
 
     async def fetch_realtime(self, symbol: str, market: str) -> Optional[dict]:
         try:
@@ -217,7 +217,7 @@ class AkshareAdapter(DataSourceAdapter):
 
     @property
     def priority(self) -> int:
-        return 3
+        return 2
 
     async def fetch_realtime(self, symbol: str, market: str) -> Optional[dict]:
         try:
@@ -252,6 +252,48 @@ class AkshareAdapter(DataSourceAdapter):
         return h
 
 
+class SinaAdapter(DataSourceAdapter):
+    def __init__(self):
+        from core.data_fetcher import SinaSource
+        self._source = SinaSource
+
+    @property
+    def name(self) -> str:
+        return "sina"
+
+    @property
+    def priority(self) -> int:
+        return 3
+
+    async def fetch_realtime(self, symbol: str, market: str) -> Optional[dict]:
+        try:
+            return await asyncio.to_thread(self._source.fetch_realtime, symbol, market)
+        except Exception:
+            return None
+
+    async def fetch_history(self, symbol: str, market: str, start: str, end: str) -> Optional[pd.DataFrame]:
+        try:
+            return await asyncio.to_thread(self._source.fetch_history, symbol, market, start, end)
+        except Exception:
+            return None
+
+    async def fetch_hot(self) -> Optional[list]:
+        return None
+
+    async def health_check(self) -> SourceHealth:
+        h = SourceHealth(name=self.name)
+        try:
+            start_t = time.time()
+            result = await asyncio.to_thread(self._source.fetch_realtime, "000001", "A")
+            h.latency_ms = (time.time() - start_t) * 1000
+            h.status = SourceStatus.HEALTHY if result else SourceStatus.DOWN
+        except Exception as e:
+            h.status = SourceStatus.DOWN
+            h.last_error = str(e)
+        h.last_check = time.time()
+        return h
+
+
 class YFinanceAdapter(DataSourceAdapter):
     def __init__(self):
         self._available = False
@@ -267,7 +309,7 @@ class YFinanceAdapter(DataSourceAdapter):
 
     @property
     def priority(self) -> int:
-        return 5
+        return 6
 
     async def fetch_realtime(self, symbol: str, market: str) -> Optional[dict]:
         if not self._available:
@@ -336,7 +378,7 @@ class TushareAdapter(DataSourceAdapter):
 
     @property
     def priority(self) -> int:
-        return 4
+        return 5
 
     async def fetch_realtime(self, symbol: str, market: str) -> Optional[dict]:
         if not self._available or market != "A":
@@ -395,7 +437,7 @@ class UnifiedDataAdapter:
         self._register_default_adapters()
 
     def _register_default_adapters(self):
-        for adapter_cls in [EastMoneyAdapter, TencentAdapter, AkshareAdapter, YFinanceAdapter, TushareAdapter]:
+        for adapter_cls in [TencentAdapter, AkshareAdapter, SinaAdapter, EastMoneyAdapter, TushareAdapter, YFinanceAdapter]:
             try:
                 adapter = adapter_cls()
                 self._adapters[adapter.name] = adapter

@@ -1,35 +1,53 @@
 import asyncio
+import json
 import logging
 import re
 import time
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict, deque
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import requests
-
+import os
+from core.database import get_db
 from core.market_detector import MarketDetector
+from core.rate_limit import TokenBucket
 from core.stock_search import get_stock_name
 
 logger = logging.getLogger(__name__)
 
 PERIOD_MAP = {
-    "1d": timedelta(days=5),
-    "1w": timedelta(weeks=2),
-    "1m": timedelta(days=35),
-    "3m": timedelta(days=95),
-    "6m": timedelta(days=185),
-    "1y": timedelta(days=370),
+    "1d": 5,
+    "1w": 15,
+    "1m": 35,
+    "3m": 95,
+    "1y": 370,
     "all": None,
 }
 
-_MAX_CACHE_SIZE = 200
+KLINE_TYPE_MAP = {
+    "1d": "intraday",
+    "1w": "daily",
+    "1m": "daily",
+    "3m": "daily",
+    "1y": "daily",
+    "all": "daily",
+}
+
+_MAX_CACHE_SIZE = 500  # Increased cache size
 _history_cache: OrderedDict = OrderedDict()
 _realtime_cache: OrderedDict = OrderedDict()
-_HIST_CACHE_TTL = 120
-_RT_CACHE_TTL = 15
+_HIST_CACHE_TTL = 300  # Increased cache TTL
+_RT_CACHE_TTL = 10  # Decreased for more timely data
+_TODAY_CACHE_TTL_SECONDS = 900  # Decreased for fresher daily data
+_AKSHARE_BUCKET = TokenBucket(rate=10, capacity=15)  # Increased rate limit
+
+# Connection pooling for database
+_DB_CONNECTION_POOL = {}
+_DB_POOL_SIZE = 5
 
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -46,10 +64,54 @@ def _get_session() -> requests.Session:
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=20, pool_maxsize=50)
         _global_session.mount("http://", adapter)
         _global_session.mount("https://", adapter)
+        _global_session.headers.update({"Connection": "keep-alive"})
     return _global_session
+
+
+_BASE_DIR = Path(__file__).parent.parent
+
+def _get_db_connection():
+    import sqlite3
+    import hashlib
+    
+    db_path = str(_BASE_DIR / "data" / "market_cache.db")
+    key = hashlib.md5(db_path.encode()).hexdigest()
+    
+    if key in _DB_CONNECTION_POOL and _DB_CONNECTION_POOL[key]:
+        return _DB_CONNECTION_POOL[key].pop()
+    
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _return_db_connection(conn):
+    """Return a database connection to the pool"""
+    import sqlite3
+    import hashlib
+    
+    if not conn or not isinstance(conn, sqlite3.Connection):
+        return
+    
+    try:
+        db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+        key = hashlib.md5(db_path.encode()).hexdigest()
+        
+        if key not in _DB_CONNECTION_POOL:
+            _DB_CONNECTION_POOL[key] = []
+        
+        if len(_DB_CONNECTION_POOL[key]) < _DB_POOL_SIZE:
+            _DB_CONNECTION_POOL[key].append(conn)
+        else:
+            conn.close()
+    except Exception:
+        try:
+            conn.close()
+        except:
+            pass
 
 _EM_HEADERS = {
     "User-Agent": _UA,
@@ -86,21 +148,28 @@ def _cache_set(cache: OrderedDict, key: str, data, ttl: int = 60):
         cache.popitem(last=False)
 
 
-def _http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 8) -> Optional[requests.Response]:
-    try:
-        session = _get_session()
-        resp = session.get(url, params=params, headers=headers, timeout=timeout)
-        if resp.status_code == 200:
-            return resp
-        logger.debug(f"HTTP {resp.status_code} from {url}")
-    except requests.exceptions.ConnectionError as e:
-        logger.debug(f"Connection error for {url}: {e}")
-    except requests.exceptions.Timeout:
-        logger.debug(f"Timeout for {url}")
-    except requests.exceptions.ChunkedEncodingError:
-        logger.debug(f"Chunked encoding error for {url}")
-    except Exception as e:
-        logger.debug(f"HTTP error for {url}: {e}")
+def _http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 8, retries: int = 1) -> Optional[requests.Response]:
+    for attempt in range(retries + 1):
+        try:
+            session = _get_session()
+            resp = session.get(url, params=params, headers=headers, timeout=timeout)
+            if resp.status_code == 200:
+                return resp
+            elif resp.status_code == 429:
+                logger.debug(f"Rate limited for {url}")
+                time.sleep(1)
+            elif resp.status_code in (500, 502, 503, 504):
+                logger.debug(f"Server error {resp.status_code} for {url}")
+            else:
+                logger.debug(f"HTTP {resp.status_code} from {url}")
+        except requests.exceptions.ConnectionError:
+            logger.debug(f"Connection error for {url} (attempt {attempt+1}/{retries+1})")
+        except requests.exceptions.Timeout:
+            logger.debug(f"Timeout for {url} (attempt {attempt+1}/{retries+1})")
+        except Exception as e:
+            logger.debug(f"HTTP error for {url} (attempt {attempt+1}/{retries+1}): {e}")
+        if attempt < retries:
+            time.sleep(0.3)
     return None
 
 
@@ -112,6 +181,116 @@ def _safe_float(val, default=0.0) -> float:
         return v if not np.isnan(v) else default
     except (ValueError, TypeError):
         return default
+
+
+def _date_to_key(value) -> str:
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d %H:%M:%S" if value.hour or value.minute or value.second else "%Y-%m-%d")
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S" if value.hour or value.minute or value.second else "%Y-%m-%d")
+    text = str(value)
+    if not text:
+        return ""
+    try:
+        ts = pd.to_datetime(text, errors="coerce")
+        if pd.notna(ts):
+            return ts.strftime("%Y-%m-%d %H:%M:%S" if ts.hour or ts.minute or ts.second else "%Y-%m-%d")
+    except Exception:
+        pass
+    return text
+
+
+class DataQualityChecker:
+    def check_price_continuity(self, df: pd.DataFrame) -> pd.Series:
+        if df.empty or "close" not in df.columns:
+            return pd.Series(dtype=bool)
+        prev_close = df["close"].shift(1)
+        pct_change = (df["close"] - prev_close).abs() / prev_close.replace(0, np.nan)
+        return pct_change.fillna(0) > 0.2
+
+    def check_volume_zero(self, df: pd.DataFrame) -> pd.Series:
+        if "volume" not in df.columns:
+            return pd.Series(False, index=df.index)
+        return df["volume"].fillna(0) <= 0
+
+    def check_null_fields(self, df: pd.DataFrame) -> pd.Series:
+        required = [col for col in ["open", "high", "low", "close"] if col in df.columns]
+        if not required:
+            return pd.Series(False, index=df.index)
+        return df[required].isna().any(axis=1)
+
+    def fill_missing_with_forward(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        df = df.copy()
+        if "is_dirty" not in df.columns:
+            df["is_dirty"] = 0
+        else:
+            df["is_dirty"] = df["is_dirty"].fillna(0).astype(int)
+        for column in [col for col in ["open", "high", "low", "close", "volume"] if col in df.columns]:
+            mask = df[column].isna()
+            if not mask.any():
+                continue
+            # 仅对孤立缺失值使用前向填充，避免整段缺失被误修复。
+            isolated = mask & ~mask.shift(1, fill_value=False) & ~mask.shift(-1, fill_value=False)
+            if isolated.any():
+                df.loc[isolated, column] = df[column].ffill()
+                df.loc[isolated, "is_dirty"] = 1
+        return df
+
+    def run(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        cleaned = self.fill_missing_with_forward(df)
+        if "is_dirty" not in cleaned.columns:
+            cleaned["is_dirty"] = 0
+        else:
+            cleaned["is_dirty"] = cleaned["is_dirty"].fillna(0).astype(int)
+        dirty_mask = (
+            self.check_price_continuity(cleaned).reindex(cleaned.index, fill_value=False)
+            | self.check_volume_zero(cleaned).reindex(cleaned.index, fill_value=False)
+            | self.check_null_fields(cleaned).reindex(cleaned.index, fill_value=False)
+        )
+        cleaned.loc[dirty_mask, "is_dirty"] = 1
+        return cleaned
+
+
+class DataSourceHealthMonitor:
+    def __init__(self):
+        self._db = get_db()
+        self._windows: dict[tuple[str, str], deque] = defaultdict(lambda: deque(maxlen=100))
+
+    def record(self, source_name: str, request_type: str, success: bool, latency_ms: float, error: str = "") -> None:
+        self._windows[(source_name, request_type)].append(
+            {
+                "success": bool(success),
+                "latency_ms": round(float(latency_ms or 0), 2),
+                "error": error[:300] if error else "",
+                "ts": _date_to_key(datetime.now()),
+            }
+        )
+        self._db.record_source_request(source_name, request_type, success, latency_ms, error)
+
+    def get_stats(self) -> list[dict]:
+        return self._db.get_source_stats()
+
+    def rank_sources(self, request_type: str, sources: list[tuple[str, callable]]) -> list[tuple[str, callable]]:
+        stats = {
+            (row["source_name"], row["request_type"]): row
+            for row in self._db.get_source_stats()
+        }
+
+        def _sort_key(item: tuple[str, callable]):
+            name, _ = item
+            row = stats.get((name, request_type))
+            if not row:
+                return (0, 0, 0)
+            success_rate = float(row.get("success_rate", 0))
+            avg_latency = float(row.get("avg_response_ms", 0))
+            degraded = 1 if success_rate < 0.5 and int(row.get("total_requests", 0)) >= 5 else 0
+            return (degraded, -success_rate, avg_latency)
+
+        return sorted(sources, key=_sort_key)
 
 
 def _validate_realtime(data: dict) -> bool:
@@ -189,7 +368,7 @@ class SinaSource:
         return None
 
     @staticmethod
-    def fetch_history(code: str, market: str, start: str, end: str) -> Optional[pd.DataFrame]:
+    def fetch_history(code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
         try:
             if market != "A":
                 return None
@@ -277,7 +456,7 @@ class TencentSource:
         return None
 
     @staticmethod
-    def fetch_history(code: str, market: str, start: str, end: str) -> Optional[pd.DataFrame]:
+    def fetch_history(code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
         try:
             if market == "A":
                 prefix = "sh" if code.startswith(("6", "9")) else "sz"
@@ -287,7 +466,8 @@ class TencentSource:
             else:
                 return None
 
-            url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,500,qfq"
+            adjust_key = adjust if adjust in ("qfq", "hfq", "") else "qfq"
+            url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,500,{adjust_key}"
             resp = _http_get(url, headers=_TENCENT_HEADERS, timeout=10)
             if resp:
                 d = resp.json()
@@ -365,26 +545,42 @@ class TencentSource:
 class EastMoneySource:
     NAME = "东方财富"
 
-    _circuits = {"realtime": {"open": False, "until": 0},
-                 "history": {"open": False, "until": 0},
-                 "hot": {"open": False, "until": 0}}
+    _circuits = {"realtime": {"open": False, "until": 0, "fail_count": 0, "success_count": 0},
+                 "history": {"open": False, "until": 0, "fail_count": 0, "success_count": 0},
+                 "hot": {"open": False, "until": 0, "fail_count": 0, "success_count": 0}}
 
     @classmethod
     def _check_circuit(cls, endpoint: str) -> bool:
-        c = cls._circuits.get(endpoint, {"open": False, "until": 0})
+        c = cls._circuits.get(endpoint, {"open": False, "until": 0, "fail_count": 0, "success_count": 0})
         if c["open"]:
             if time.time() >= c["until"]:
                 c["open"] = False
+                c["fail_count"] = 0  # Reset fail count when circuit reopens
                 return True
             return False
         return True
 
     @classmethod
     def _trip_circuit(cls, endpoint: str, cooldown: int = 60):
-        c = cls._circuits.setdefault(endpoint, {"open": False, "until": 0})
+        c = cls._circuits.setdefault(endpoint, {"open": False, "until": 0, "fail_count": 0, "success_count": 0})
         c["open"] = True
-        c["until"] = time.time() + cooldown
-        logger.info(f"EastMoney {endpoint} circuit tripped, cooldown {cooldown}s")
+        c["fail_count"] += 1
+        c["success_count"] = 0  # Reset success count on failure
+        
+        # Dynamic cooldown based on failure count
+        dynamic_cooldown = min(300, cooldown * (1 + c["fail_count"] * 0.5))
+        c["until"] = time.time() + dynamic_cooldown
+        logger.info(f"EastMoney {endpoint} circuit tripped, cooldown {dynamic_cooldown:.1f}s (fail count: {c['fail_count']})")
+
+    @classmethod
+    def _reset_circuit(cls, endpoint: str):
+        c = cls._circuits.get(endpoint, {"open": False, "until": 0, "fail_count": 0, "success_count": 0})
+        c["success_count"] += 1
+        c["fail_count"] = max(0, c["fail_count"] - 0.5)  # Gradually reduce fail count on success
+        if c["success_count"] >= 3:
+            c["fail_count"] = 0
+            c["success_count"] = 0
+            logger.debug(f"EastMoney {endpoint} circuit reset due to multiple successes")
 
     @staticmethod
     def _a_code_to_secid(code: str) -> str:
@@ -420,31 +616,35 @@ class EastMoneySource:
                 "fields": "f43,f44,f45,f46,f47,f48,f57,f58,f60,f168,f169,f170,f171",
                 "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             }
-            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=5)
+            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=8)  # Increased timeout
             if resp:
-                d = resp.json().get("data", {})
-                if d:
-                    divisor = 100 if market == "A" else 1000
-                    price = _safe_float(d.get("f43", 0)) / divisor if d.get("f43") else 0
-                    change = _safe_float(d.get("f169", 0)) / divisor if d.get("f169") else 0
-                    pct = _safe_float(d.get("f170", 0)) / 100 if d.get("f170") else 0
-                    name = str(d.get("f58", ""))
-                    result = {
-                        "name": name,
-                        "price": price,
-                        "change": change,
-                        "pct": pct,
-                        "volume": _safe_float(d.get("f47", 0)),
-                        "high": _safe_float(d.get("f44", 0)) / divisor if d.get("f44") else 0,
-                        "low": _safe_float(d.get("f45", 0)) / divisor if d.get("f45") else 0,
-                        "open": _safe_float(d.get("f46", 0)) / divisor if d.get("f46") else 0,
-                        "prev_close": _safe_float(d.get("f60", 0)) / divisor if d.get("f60") else 0,
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                    }
-                    if market == "A":
-                        result["turnover"] = _safe_float(d.get("f168", 0)) / 100 if d.get("f168") else 0
-                        result["amplitude"] = _safe_float(d.get("f171", 0)) / 100 if d.get("f171") else 0
-                    return result
+                try:
+                    d = resp.json().get("data", {})
+                    if d:
+                        divisor = 100 if market == "A" else 1000
+                        price = _safe_float(d.get("f43", 0)) / divisor if d.get("f43") else 0
+                        change = _safe_float(d.get("f169", 0)) / divisor if d.get("f169") else 0
+                        pct = _safe_float(d.get("f170", 0)) / 100 if d.get("f170") else 0
+                        name = str(d.get("f58", ""))
+                        result = {
+                            "name": name,
+                            "price": price,
+                            "change": change,
+                            "pct": pct,
+                            "volume": _safe_float(d.get("f47", 0)),
+                            "high": _safe_float(d.get("f44", 0)) / divisor if d.get("f44") else 0,
+                            "low": _safe_float(d.get("f45", 0)) / divisor if d.get("f45") else 0,
+                            "open": _safe_float(d.get("f46", 0)) / divisor if d.get("f46") else 0,
+                            "prev_close": _safe_float(d.get("f60", 0)) / divisor if d.get("f60") else 0,
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                        }
+                        if market == "A":
+                            result["turnover"] = _safe_float(d.get("f168", 0)) / 100 if d.get("f168") else 0
+                            result["amplitude"] = _safe_float(d.get("f171", 0)) / 100 if d.get("f171") else 0
+                        EastMoneySource._reset_circuit("realtime")  # Reset circuit on success
+                        return result
+                except json.JSONDecodeError:
+                    logger.debug(f"EastMoney realtime JSON decode error for {code}")
             EastMoneySource._trip_circuit("realtime", 60)
         except Exception as e:
             logger.debug(f"EastMoney realtime error for {code}: {e}")
@@ -452,7 +652,7 @@ class EastMoneySource:
         return None
 
     @staticmethod
-    def fetch_history(code: str, market: str, start: str, end: str) -> Optional[pd.DataFrame]:
+    def fetch_history(code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
         if not EastMoneySource._check_circuit("history"):
             return None
         try:
@@ -466,35 +666,40 @@ class EastMoneySource:
                 return None
 
             url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+            klt_map = {"daily": "101", "weekly": "102", "monthly": "103"}
             params = {
                 "secid": secid,
                 "fields1": "f1,f2,f3,f4,f5,f6",
                 "fields2": "f51,f52,f53,f54,f55,f56,f57",
-                "klt": "101",
-                "fqt": "1",
+                "klt": klt_map.get(kline_type, "101"),
+                "fqt": "2" if adjust == "hfq" else "0" if adjust == "" else "1",
                 "beg": start,
                 "end": end,
                 "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             }
-            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=10)
+            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=15)  # Increased timeout
             if resp:
-                data = resp.json().get("data", {})
-                klines = data.get("klines", [])
-                if klines:
-                    rows = []
-                    for line in klines:
-                        parts = line.split(",")
-                        if len(parts) >= 6:
-                            rows.append({
-                                "date": parts[0],
-                                "open": _safe_float(parts[1]),
-                                "close": _safe_float(parts[2]),
-                                "high": _safe_float(parts[3]),
-                                "low": _safe_float(parts[4]),
-                                "volume": _safe_float(parts[5]),
-                            })
-                    if rows:
-                        return pd.DataFrame(rows)
+                try:
+                    data = resp.json().get("data", {})
+                    klines = data.get("klines", [])
+                    if klines:
+                        rows = []
+                        for line in klines:
+                            parts = line.split(",")
+                            if len(parts) >= 6:
+                                rows.append({
+                                    "date": parts[0],
+                                    "open": _safe_float(parts[1]),
+                                    "close": _safe_float(parts[2]),
+                                    "high": _safe_float(parts[3]),
+                                    "low": _safe_float(parts[4]),
+                                    "volume": _safe_float(parts[5]),
+                                })
+                        if rows:
+                            EastMoneySource._reset_circuit("history")  # Reset circuit on success
+                            return pd.DataFrame(rows)
+                except json.JSONDecodeError:
+                    logger.debug(f"EastMoney history JSON decode error for {code}")
             EastMoneySource._trip_circuit("history", 60)
         except Exception as e:
             logger.debug(f"EastMoney history error for {code}: {e}")
@@ -519,110 +724,38 @@ class EastMoneySource:
                 "fields": "f2,f3,f4,f5,f6,f7,f8,f12,f14",
                 "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             }
-            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=8)
+            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=10)  # Increased timeout
             if resp:
-                data = resp.json().get("data", {})
-                diff = data.get("diff", [])
-                if diff:
-                    result = []
-                    for item in diff:
-                        code = str(item.get("f12", ""))
-                        name = str(item.get("f14", ""))
-                        price = _safe_float(item.get("f2", 0))
-                        pct = _safe_float(item.get("f3", 0))
-                        change = _safe_float(item.get("f4", 0))
-                        volume = _safe_float(item.get("f5", 0))
-                        if code and name and price > 0:
-                            result.append({
-                                "code": code,
-                                "name": name,
-                                "price": price,
-                                "pct": pct,
-                                "change": change,
-                                "volume": volume,
-                            })
-                    if result:
-                        return result[:8]
+                try:
+                    data = resp.json().get("data", {})
+                    diff = data.get("diff", [])
+                    if diff:
+                        result = []
+                        for item in diff:
+                            code = str(item.get("f12", ""))
+                            name = str(item.get("f14", ""))
+                            price = _safe_float(item.get("f2", 0))
+                            pct = _safe_float(item.get("f3", 0))
+                            change = _safe_float(item.get("f4", 0))
+                            volume = _safe_float(item.get("f5", 0))
+                            if code and name and price > 0:
+                                result.append({
+                                    "code": code,
+                                    "name": name,
+                                    "price": price,
+                                    "pct": pct,
+                                    "change": change,
+                                    "volume": volume,
+                                })
+                        if result:
+                            EastMoneySource._reset_circuit("hot")  # Reset circuit on success
+                            return result[:8]
+                except json.JSONDecodeError:
+                    logger.debug(f"EastMoney hot stocks JSON decode error")
             EastMoneySource._trip_circuit("hot", 60)
         except Exception as e:
             logger.debug(f"EastMoney hot stocks error: {e}")
             EastMoneySource._trip_circuit("hot", 60)
-        return None
-
-
-class YahooFinanceSource:
-    NAME = "Yahoo Finance"
-
-    @staticmethod
-    def fetch_realtime(code: str, market: str) -> Optional[dict]:
-        if market != "US":
-            return None
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}"
-            params = {"range": "1d", "interval": "1m", "includePrePost": "false"}
-            headers = {
-                "User-Agent": _UA,
-            }
-            resp = _http_get(url, params=params, headers=headers, timeout=8)
-            if resp:
-                d = resp.json()
-                meta = d.get("chart", {}).get("result", [{}])[0].get("meta", {})
-                if meta and meta.get("regularMarketPrice"):
-                    price = _safe_float(meta["regularMarketPrice"])
-                    prev = _safe_float(meta.get("chartPreviousClose", meta.get("previousClose", 0)))
-                    change = round(price - prev, 2) if prev > 0 else 0
-                    pct = round(change / prev * 100, 2) if prev > 0 else 0
-                    return {
-                        "name": meta.get("shortName", code),
-                        "price": price,
-                        "change": change,
-                        "pct": pct,
-                        "volume": _safe_float(meta.get("regularMarketVolume", 0)),
-                        "high": _safe_float(meta.get("regularMarketDayHigh", 0)),
-                        "low": _safe_float(meta.get("regularMarketDayLow", 0)),
-                        "open": _safe_float(meta.get("regularMarketOpen", 0)),
-                        "prev_close": prev,
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                    }
-        except Exception as e:
-            logger.debug(f"Yahoo Finance realtime error for {code}: {e}")
-        return None
-
-    @staticmethod
-    def fetch_history(code: str, market: str, start: str, end: str) -> Optional[pd.DataFrame]:
-        if market != "US":
-            return None
-        try:
-            s1 = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
-            e1 = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}"
-            params = {"period1": str(int(datetime.strptime(s1, "%Y-%m-%d").timestamp())),
-                      "period2": str(int(datetime.strptime(e1, "%Y-%m-%d").timestamp())),
-                      "interval": "1d"}
-            headers = {"User-Agent": _UA}
-            resp = _http_get(url, params=params, headers=headers, timeout=15)
-            if resp:
-                d = resp.json()
-                result = d.get("chart", {}).get("result", [{}])[0]
-                timestamps = result.get("timestamp", [])
-                quote = result.get("indicators", {}).get("quote", [{}])[0]
-                if timestamps and quote:
-                    rows = []
-                    for i, ts in enumerate(timestamps):
-                        o = _safe_float(quote.get("open", [])[i]) if i < len(quote.get("open", [])) else 0
-                        h = _safe_float(quote.get("high", [])[i]) if i < len(quote.get("high", [])) else 0
-                        l = _safe_float(quote.get("low", [])[i]) if i < len(quote.get("low", [])) else 0
-                        c = _safe_float(quote.get("close", [])[i]) if i < len(quote.get("close", [])) else 0
-                        v = _safe_float(quote.get("volume", [])[i]) if i < len(quote.get("volume", [])) else 0
-                        if c > 0:
-                            rows.append({
-                                "date": datetime.fromtimestamp(ts).strftime("%Y-%m-%d"),
-                                "open": o, "high": h, "low": l, "close": c, "volume": v,
-                            })
-                    if rows:
-                        return pd.DataFrame(rows)
-        except Exception as e:
-            logger.debug(f"Yahoo Finance history error for {code}: {e}")
         return None
 
 
@@ -686,7 +819,10 @@ class AkshareSource:
             elif market == "US":
                 df = _akshare_retry(ak.stock_us_spot_em)
                 if df is not None and not df.empty:
-                    row = df[df["代码"] == code]
+                    code_upper = code.upper()
+                    row = df[df["代码"].str.upper() == code_upper]
+                    if row.empty:
+                        row = df[df["代码"].str.upper().str.startswith(code_upper)]
                     if not row.empty:
                         r = row.iloc[0]
                         return {
@@ -707,20 +843,23 @@ class AkshareSource:
         return None
 
     @staticmethod
-    def fetch_history(code: str, market: str, start: str, end: str) -> Optional[pd.DataFrame]:
+    def fetch_history(code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
         if not AkshareSource.is_available():
             return None
         try:
             import akshare as ak
             if market == "A":
-                return _akshare_retry(ak.stock_zh_a_hist, symbol=code, period="daily",
-                                      start_date=start, end_date=end, adjust="qfq")
+                ak_period = kline_type if kline_type in ("daily", "weekly", "monthly") else "daily"
+                return _akshare_retry(ak.stock_zh_a_hist, symbol=code, period=ak_period,
+                                      start_date=start, end_date=end, adjust=adjust)
             elif market == "HK":
-                return _akshare_retry(ak.stock_hk_hist, symbol=code, period="daily",
-                                      start_date=start, end_date=end, adjust="qfq")
+                ak_period = kline_type if kline_type in ("daily", "weekly", "monthly") else "daily"
+                return _akshare_retry(ak.stock_hk_hist, symbol=code, period=ak_period,
+                                      start_date=start, end_date=end, adjust=adjust if adjust in ("qfq", "hfq", "") else "")
             elif market == "US":
-                return _akshare_retry(ak.stock_us_hist, symbol=code, period="daily",
-                                      start_date=start, end_date=end, adjust="qfq")
+                ak_period = "daily"
+                return _akshare_retry(ak.stock_us_hist, symbol=code, period=ak_period,
+                                      start_date=start, end_date=end, adjust=adjust if adjust in ("qfq", "hfq", "") else "")
         except Exception as e:
             logger.debug(f"Akshare history error for {code}: {e}")
             AkshareSource.mark_failed(30)
@@ -820,7 +959,7 @@ class BaostockSource:
             logger.debug(f"Baostock realtime error: {e}")
         return None
 
-    def fetch_history(self, code: str, market: str, start: str, end: str) -> Optional[pd.DataFrame]:
+    def fetch_history(self, code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
         if market != "A":
             return None
         try:
@@ -831,13 +970,15 @@ class BaostockSource:
             bs_code = f"{prefix}.{code}"
             start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
             end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
+            freq_map = {"daily": "d", "weekly": "w", "monthly": "m"}
+            freq = freq_map.get(kline_type, "d")
             rs = bs.query_history_k_data_plus(
                 bs_code,
                 "date,open,high,low,close,volume",
                 start_date=start_fmt,
                 end_date=end_fmt,
-                frequency="d",
-                adjustflag="2",
+                frequency=freq,
+                adjustflag="1" if adjust == "hfq" else "3" if adjust == "" else "2",
             )
             if rs is None:
                 return None
@@ -857,6 +998,7 @@ class BaostockSource:
 def _akshare_retry(func, *args, **kwargs):
     for i in range(3):
         try:
+            _AKSHARE_BUCKET.wait()
             result = func(*args, **kwargs)
             if result is not None and not (isinstance(result, pd.DataFrame) and result.empty):
                 return result
@@ -868,72 +1010,397 @@ def _akshare_retry(func, *args, **kwargs):
     return None
 
 
+class NeteaseSource:
+    NAME = "网易财经"
+
+    @staticmethod
+    def fetch_realtime(code: str, market: str) -> Optional[dict]:
+        try:
+            if market == "A":
+                prefix = "sh" if code.startswith(("6", "9")) else "sz"
+                nt_code = f"{prefix}{code}"
+            else:
+                return None
+
+            url = f"http://quotes.money.163.com/service/chddata.html"
+            params = {
+                "code": nt_code,
+                "start": (datetime.now() - timedelta(days=10)).strftime("%Y%m%d"),
+                "end": datetime.now().strftime("%Y%m%d"),
+            }
+            resp = _http_get(url, params=params, headers=_SINA_HEADERS, timeout=8)
+            if resp and resp.text:
+                lines = resp.text.strip().split('\n')
+                if len(lines) >= 2:
+                    latest = lines[1].split(',')
+                    if len(latest) >= 6:
+                        return {
+                            "name": latest[0],
+                            "price": _safe_float(latest[3]),
+                            "change": round(_safe_float(latest[3]) - _safe_float(latest[2]), 2),
+                            "pct": round((_safe_float(latest[3]) - _safe_float(latest[2])) / _safe_float(latest[2]) * 100, 2) if _safe_float(latest[2]) > 0 else 0,
+                            "volume": _safe_float(latest[4]),
+                            "high": _safe_float(latest[5]),
+                            "low": _safe_float(latest[6]) if len(latest) > 6 else _safe_float(latest[3]),
+                            "open": _safe_float(latest[1]),
+                            "prev_close": _safe_float(latest[2]),
+                            "time": latest[0].split()[0] if ' ' in latest[0] else datetime.now().strftime("%Y-%m-%d"),
+                        }
+        except Exception as e:
+            logger.debug(f"Netease realtime error for {code}: {e}")
+        return None
+
+    @staticmethod
+    def fetch_history(code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
+        try:
+            if market != "A":
+                return None
+            prefix = "sh" if code.startswith(("6", "9")) else "sz"
+            nt_code = f"{prefix}{code}"
+            
+            url = f"http://quotes.money.163.com/service/chddata.html"
+            params = {
+                "code": nt_code,
+                "start": start,
+                "end": end,
+            }
+            resp = _http_get(url, params=params, headers=_SINA_HEADERS, timeout=10)
+            if resp and resp.text:
+                lines = resp.text.strip().split('\n')
+                if len(lines) > 1:
+                    rows = []
+                    for line in lines[1:]:
+                        parts = line.split(',')
+                        if len(parts) >= 6:
+                            rows.append({
+                                "date": parts[0],
+                                "open": _safe_float(parts[1]),
+                                "close": _safe_float(parts[3]),
+                                "high": _safe_float(parts[5]),
+                                "low": _safe_float(parts[6]) if len(parts) > 6 else _safe_float(parts[3]),
+                                "volume": _safe_float(parts[4]),
+                            })
+                    if rows:
+                        return pd.DataFrame(rows)
+        except Exception as e:
+            logger.debug(f"Netease history error for {code}: {e}")
+        return None
+
+
 class SmartDataFetcher:
     def __init__(self):
         self._bs = BaostockSource()
+        self._db = get_db()
+        self._quality_checker = DataQualityChecker()
+        self._health_monitor = DataSourceHealthMonitor()
         self._source_stats: dict = {}
+        self._major_indices = {
+            "000001": {"name": "上证指数", "market": "INDEX"},
+            "399001": {"name": "深证成指", "market": "INDEX"},
+            "399006": {"name": "创业板指", "market": "INDEX"},
+            "000300": {"name": "沪深300", "market": "INDEX"},
+            "000905": {"name": "中证500", "market": "INDEX"},
+            ".DJI": {"name": "道琼斯工业指数", "market": "US"},
+            ".IXIC": {"name": "纳斯达克指数", "market": "US"},
+            ".INX": {"name": "标普500", "market": "US"},
+        }
+        self._bootstrap_reference_assets()
 
-    def _record_source(self, source: str, success: bool):
-        key = source
+    def _bootstrap_reference_assets(self) -> None:
+        rows = []
+        for symbol, meta in self._major_indices.items():
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "market": meta["market"],
+                    "name": meta["name"],
+                    "instrument_type": "index",
+                    "industry": "指数",
+                    "concepts": "",
+                    "market_value": 0,
+                    "float_market_value": 0,
+                    "list_date": "",
+                    "extra_json": meta,
+                }
+            )
+        self._db.upsert_stock_info_rows(rows)
+
+    def _record_source(
+        self,
+        source: str,
+        success: bool,
+        request_type: str,
+        latency_ms: float = 0,
+        error: str = "",
+    ) -> None:
+        key = f"{request_type}:{source}"
         if key not in self._source_stats:
             self._source_stats[key] = {"ok": 0, "fail": 0}
         if success:
             self._source_stats[key]["ok"] += 1
         else:
             self._source_stats[key]["fail"] += 1
+        self._health_monitor.record(source, request_type, success, latency_ms, error)
 
     def _get_realtime_sources(self, market: str) -> list:
-        sources = [
-            ("tencent", TencentSource.fetch_realtime),
-            ("eastmoney", EastMoneySource.fetch_realtime),
-            ("sina", SinaSource.fetch_realtime),
-            ("akshare", AkshareSource.fetch_realtime),
-        ]
         if market == "A":
-            sources.append(("baostock", self._bs.fetch_realtime))
-        if market == "US":
-            sources.insert(0, ("yahoo", YahooFinanceSource.fetch_realtime))
-        return sources
+            sources = [
+                ("tencent", TencentSource.fetch_realtime),
+                ("netease", NeteaseSource.fetch_realtime),
+                ("akshare", AkshareSource.fetch_realtime),
+                ("sina", SinaSource.fetch_realtime),
+                ("baostock", self._bs.fetch_realtime),
+                ("eastmoney", EastMoneySource.fetch_realtime),
+            ]
+        elif market == "HK":
+            sources = [
+                ("tencent", TencentSource.fetch_realtime),
+                ("akshare", AkshareSource.fetch_realtime),
+                ("eastmoney", EastMoneySource.fetch_realtime),
+            ]
+        elif market == "US":
+            sources = [
+                ("tencent", TencentSource.fetch_realtime),
+                ("akshare", AkshareSource.fetch_realtime),
+                ("eastmoney", EastMoneySource.fetch_realtime),
+            ]
+        else:
+            sources = [
+                ("tencent", TencentSource.fetch_realtime),
+                ("netease", NeteaseSource.fetch_realtime),
+                ("akshare", AkshareSource.fetch_realtime),
+                ("sina", SinaSource.fetch_realtime),
+                ("eastmoney", EastMoneySource.fetch_realtime),
+            ]
+        return self._health_monitor.rank_sources("realtime", sources)
 
     def _get_history_sources(self, market: str) -> list:
-        sources = [
-            ("tencent", TencentSource.fetch_history),
-            ("eastmoney", EastMoneySource.fetch_history),
-            ("sina", SinaSource.fetch_history),
-            ("akshare", AkshareSource.fetch_history),
-        ]
         if market == "A":
-            sources.append(("baostock", self._bs.fetch_history))
-        if market == "US":
-            sources.insert(0, ("yahoo", YahooFinanceSource.fetch_history))
-        return sources
+            sources = [
+                ("tencent", TencentSource.fetch_history),
+                ("netease", NeteaseSource.fetch_history),
+                ("akshare", AkshareSource.fetch_history),
+                ("sina", SinaSource.fetch_history),
+                ("baostock", self._bs.fetch_history),
+                ("eastmoney", EastMoneySource.fetch_history),
+            ]
+        elif market == "HK":
+            sources = [
+                ("tencent", TencentSource.fetch_history),
+                ("akshare", AkshareSource.fetch_history),
+                ("eastmoney", EastMoneySource.fetch_history),
+            ]
+        elif market == "US":
+            sources = [
+                ("akshare", AkshareSource.fetch_history),
+                ("eastmoney", EastMoneySource.fetch_history),
+            ]
+        else:
+            sources = [
+                ("tencent", TencentSource.fetch_history),
+                ("netease", NeteaseSource.fetch_history),
+                ("akshare", AkshareSource.fetch_history),
+                ("sina", SinaSource.fetch_history),
+                ("eastmoney", EastMoneySource.fetch_history),
+            ]
+        return self._health_monitor.rank_sources("history", sources)
 
-    async def get_history(self, symbol: str, period: str = "1y") -> pd.DataFrame:
-        cache_key = f"{symbol}:{period}"
+    def _resolve_period_range(self, period: str) -> tuple[str, str]:
+        trading_days = PERIOD_MAP.get(period, 370)
+        end_date = datetime.now().strftime("%Y%m%d")
+        if trading_days is None:
+            return "20000101", end_date
+        start_date = (datetime.now() - timedelta(days=trading_days)).strftime("%Y%m%d")
+        return start_date, end_date
+
+    def _needs_today_refresh(self, symbol: str, market: str, kline_type: str, adjust: str) -> bool:
+        today_key = datetime.now().strftime("%Y-%m-%d")
+        updated_at = self._db.get_last_update_time(symbol, market, kline_type, adjust=adjust, trade_date=today_key)
+        if not updated_at:
+            return True
+        try:
+            age = (datetime.now() - datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")).total_seconds()
+            return age >= _TODAY_CACHE_TTL_SECONDS
+        except ValueError:
+            return True
+
+    def _prepare_frame_for_storage(self, df: pd.DataFrame, source: str) -> pd.DataFrame:
+        result = _normalize(df)
+        if result.empty:
+            return result
+        result = self._quality_checker.run(result)
+        result["source"] = source
+        if "adjusted_factor" not in result.columns:
+            result["adjusted_factor"] = 1.0
+        else:
+            result["adjusted_factor"] = result["adjusted_factor"].fillna(1.0)
+        result["date"] = result["date"].apply(_date_to_key)
+        return result
+
+    def _store_history_frame(
+        self,
+        symbol: str,
+        market: str,
+        kline_type: str,
+        adjust: str,
+        df: pd.DataFrame,
+        source: str,
+        instrument_type: str = "stock",
+    ) -> None:
+        if df.empty:
+            return
+        rows = df.to_dict("records")
+        conn = None
+        try:
+            conn = _get_db_connection()
+            self._db.upsert_kline_rows(symbol, market, kline_type, rows, adjust=adjust, instrument_type=instrument_type, conn=conn)
+        finally:
+            if conn:
+                _return_db_connection(conn)
+
+    async def _fetch_history_from_network(
+        self,
+        symbol: str,
+        market: str,
+        start_date: str,
+        end_date: str,
+        kline_type: str,
+        adjust: str,
+        instrument_type: str = "stock",
+    ) -> pd.DataFrame:
+        sources = self._get_history_sources(market)
+        
+        # 并行尝试多个数据源
+        async def fetch_from_source(name, fetch_fn):
+            for attempt in range(2):
+                started = time.perf_counter()
+                try:
+                    df = await asyncio.to_thread(fetch_fn, symbol, market, start_date, end_date, kline_type, adjust)
+                    latency_ms = (time.perf_counter() - started) * 1000
+                    if df is not None and not df.empty:
+                        result = self._prepare_frame_for_storage(df, name)
+                        if _validate_history_df(result):
+                            self._store_history_frame(symbol, market, kline_type, adjust, result, name, instrument_type)
+                            self._record_source(name, True, "history", latency_ms)
+                            logger.info(f"History data for {symbol} from {name}")
+                            return result, name
+                    if attempt == 0:
+                        logger.debug(f"Source {name} attempt {attempt+1} failed for {symbol}, retrying...")
+                        await asyncio.sleep(0.3)  # 减少等待时间
+                except Exception as e:
+                    latency_ms = (time.perf_counter() - started) * 1000
+                    logger.debug(f"Source {name} attempt {attempt+1} failed for {symbol}: {e}")
+                    if attempt == 1:
+                        self._record_source(name, False, "history", latency_ms, str(e))
+                    if attempt == 0:
+                        await asyncio.sleep(0.3)  # 减少等待时间
+            return None, name
+        
+        # 创建并行任务
+        tasks = []
+        for name, fetch_fn in sources[:3]:  # 只并行尝试前3个数据源
+            tasks.append(fetch_from_source(name, fetch_fn))
+        
+        # 等待所有任务完成
+        results = await asyncio.gather(*tasks)
+        
+        # 找到第一个成功的结果
+        for result, name in results:
+            if result is not None:
+                return result
+        
+        # 如果并行尝试失败，顺序尝试剩余数据源
+        for name, fetch_fn in sources[3:]:
+            result, _ = await fetch_from_source(name, fetch_fn)
+            if result is not None:
+                return result
+        
+        logger.warning(f"All history sources failed for {symbol}")
+        return pd.DataFrame()
+
+    def _load_cached_history(
+        self,
+        symbol: str,
+        market: str,
+        kline_type: str,
+        start_date: str,
+        end_date: str,
+        adjust: str,
+    ) -> pd.DataFrame:
+        start_key = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
+        end_key = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+        conn = None
+        try:
+            conn = _get_db_connection()
+            return self._db.load_kline_rows(symbol, market, kline_type, start_key, end_key, adjust, conn=conn)
+        finally:
+            if conn:
+                _return_db_connection(conn)
+
+    async def _fetch_index_history(self, symbol: str, start_date: str, end_date: str, kline_type: str) -> pd.DataFrame:
+        try:
+            import akshare as ak
+            period = kline_type if kline_type in ("daily", "weekly", "monthly") else "daily"
+            df = await asyncio.to_thread(
+                _akshare_retry,
+                ak.index_zh_a_hist,
+                symbol=symbol,
+                period=period,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            return df if df is not None else pd.DataFrame()
+        except Exception as e:
+            logger.debug(f"Index history fetch failed for {symbol}: {e}")
+            return pd.DataFrame()
+
+    async def get_history(
+        self,
+        symbol: str,
+        period: str = "1y",
+        kline_type: str = "daily",
+        adjust: str = "qfq",
+        instrument_type: str = "stock",
+    ) -> pd.DataFrame:
+        if kline_type == "intraday":
+            return await self.get_intraday_data(symbol, period=1, adjust="" if adjust == "qfq" else adjust)
+
+        cache_key = f"{symbol}:{period}:{kline_type}:{adjust}:{instrument_type}"
         cached = _cache_get(_history_cache, cache_key)
         if cached is not None:
             return cached.copy()
 
-        market = MarketDetector.detect(symbol)
+        market = "INDEX" if instrument_type == "index" or symbol in self._major_indices and self._major_indices[symbol]["market"] == "INDEX" else MarketDetector.detect(symbol)
         norm = MarketDetector.normalize_symbol(symbol)
-        delta = PERIOD_MAP.get(period, timedelta(days=370))
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - delta).strftime("%Y%m%d") if delta else "19900101"
+        start_date, end_date = self._resolve_period_range(period)
+        today_key = datetime.now().strftime("%Y-%m-%d")
+        cached_df = self._load_cached_history(norm, market, kline_type, start_date, end_date, adjust)
 
-        sources = self._get_history_sources(market)
-        for name, fetch_fn in sources:
-            try:
-                df = await asyncio.to_thread(fetch_fn, norm, market, start_date, end_date)
-                if df is not None and not df.empty:
-                    result = _normalize(df)
-                    if _validate_history_df(result):
-                        _cache_set(_history_cache, cache_key, result.copy(), ttl=_HIST_CACHE_TTL)
-                        self._record_source(name, True)
-                        logger.info(f"History data for {symbol} from {name}")
-                        return result
-            except Exception as e:
-                logger.debug(f"Source {name} history failed for {symbol}: {e}")
-                self._record_source(name, False)
+        fetch_start = ""
+        if cached_df.empty:
+            fetch_start = start_date
+        else:
+            latest_date = cached_df["date"].iloc[-1]
+            latest_key = _date_to_key(latest_date)[:10]
+            if latest_key < today_key:
+                fetch_start = (pd.to_datetime(latest_key) + timedelta(days=1)).strftime("%Y%m%d")
+            elif latest_key == today_key and self._needs_today_refresh(norm, market, kline_type, adjust):
+                fetch_start = datetime.now().strftime("%Y%m%d")
+
+        if fetch_start:
+            if market == "INDEX" and norm in {"000001", "399001", "399006", "000300", "000905"}:
+                index_df = await self._fetch_index_history(norm, fetch_start, end_date, kline_type)
+                if not index_df.empty:
+                    result = self._prepare_frame_for_storage(index_df, "akshare_index")
+                    self._store_history_frame(norm, market, kline_type, adjust, result, "akshare_index", "index")
+            else:
+                await self._fetch_history_from_network(norm, market, fetch_start, end_date, kline_type, adjust, instrument_type)
+            cached_df = self._load_cached_history(norm, market, kline_type, start_date, end_date, adjust)
+
+        if not cached_df.empty:
+            ttl = _HIST_CACHE_TTL if (cached_df["date"].iloc[-1].strftime("%Y-%m-%d") if hasattr(cached_df["date"].iloc[-1], "strftime") else str(cached_df["date"].iloc[-1])[:10]) != today_key else min(_HIST_CACHE_TTL, _TODAY_CACHE_TTL_SECONDS)
+            _cache_set(_history_cache, cache_key, cached_df.copy(), ttl=ttl)
+            return cached_df
 
         logger.warning(f"All history sources failed for {symbol}")
         return pd.DataFrame()
@@ -944,64 +1411,303 @@ class SmartDataFetcher:
         if cached is not None:
             return cached
 
-        market = MarketDetector.detect(symbol)
+        info = self._db.get_stock_info(symbol)
+        instrument_type = (info or {}).get("instrument_type", "stock")
+        market = (info or {}).get("market") or MarketDetector.detect(symbol)
         norm = MarketDetector.normalize_symbol(symbol)
 
+        if instrument_type == "ETF":
+            etf_spot = await self.get_etf_spot(norm)
+            if etf_spot:
+                _cache_set(_realtime_cache, cache_key, etf_spot, ttl=_RT_CACHE_TTL)
+                return etf_spot
+        if instrument_type == "bond":
+            bond_spot = await self.get_convertible_bond_spot(norm)
+            if bond_spot:
+                _cache_set(_realtime_cache, cache_key, bond_spot, ttl=_RT_CACHE_TTL)
+                return bond_spot
+        if instrument_type == "future":
+            future_spot = await self.get_futures_spot(norm)
+            if future_spot:
+                _cache_set(_realtime_cache, cache_key, future_spot, ttl=_RT_CACHE_TTL)
+                return future_spot
+        if instrument_type == "index" and market == "INDEX":
+            index_spot = await self.get_index_spot(norm)
+            if index_spot:
+                _cache_set(_realtime_cache, cache_key, index_spot, ttl=_RT_CACHE_TTL)
+                return index_spot
+
         sources = self._get_realtime_sources(market)
-        for name, fetch_fn in sources:
-            try:
-                data = await asyncio.to_thread(fetch_fn, norm, market)
-                if data and _validate_realtime(data):
-                    if not data.get("name"):
-                        db_name = get_stock_name(symbol)
-                        if db_name:
-                            data["name"] = db_name
-                    _cache_set(_realtime_cache, cache_key, data, ttl=_RT_CACHE_TTL)
-                    self._record_source(name, True)
-                    logger.info(f"Realtime data for {symbol} from {name}")
-                    return data
-            except Exception as e:
-                logger.debug(f"Source {name} realtime failed for {symbol}: {e}")
-                self._record_source(name, False)
+        
+        # 并行尝试多个数据源
+        async def fetch_from_source(name, fetch_fn):
+            for attempt in range(2):
+                started = time.perf_counter()
+                try:
+                    data = await asyncio.to_thread(fetch_fn, norm, market)
+                    latency_ms = (time.perf_counter() - started) * 1000
+                    if data and _validate_realtime(data):
+                        if not data.get("name"):
+                            db_name = get_stock_name(symbol)
+                            if db_name:
+                                data["name"] = db_name
+                        self._record_source(name, True, "realtime", latency_ms)
+                        logger.info(f"Realtime data for {symbol} from {name}")
+                        return data, name
+                    if attempt == 0:
+                        logger.debug(f"Source {name} attempt {attempt+1} failed for {symbol}, retrying...")
+                        await asyncio.sleep(0.2)  # 减少等待时间
+                except Exception as e:
+                    latency_ms = (time.perf_counter() - started) * 1000
+                    logger.debug(f"Source {name} attempt {attempt+1} failed for {symbol}: {e}")
+                    if attempt == 1:
+                        self._record_source(name, False, "realtime", latency_ms, str(e))
+                    if attempt == 0:
+                        await asyncio.sleep(0.2)  # 减少等待时间
+            return None, name
+        
+        # 创建并行任务
+        tasks = []
+        for name, fetch_fn in sources[:3]:  # 只并行尝试前3个数据源
+            tasks.append(fetch_from_source(name, fetch_fn))
+        
+        # 等待所有任务完成
+        results = await asyncio.gather(*tasks)
+        
+        # 找到第一个成功的结果
+        for data, name in results:
+            if data:
+                _cache_set(_realtime_cache, cache_key, data, ttl=_RT_CACHE_TTL)
+                return data
+        
+        # 如果并行尝试失败，顺序尝试剩余数据源
+        for name, fetch_fn in sources[3:]:
+            data, _ = await fetch_from_source(name, fetch_fn)
+            if data:
+                _cache_set(_realtime_cache, cache_key, data, ttl=_RT_CACHE_TTL)
+                return data
 
         if cache_key in _realtime_cache:
             return _realtime_cache[cache_key]["data"]
 
+        conn = None
+        try:
+            conn = _get_db_connection()
+            latest_daily = self._db.load_kline_rows(norm, market, "daily", adjust="qfq", conn=conn)
+            if not latest_daily.empty:
+                last_row = latest_daily.iloc[-1]
+                result = {
+                    "name": (info or {}).get("name") or get_stock_name(symbol) or symbol,
+                    "price": _safe_float(last_row.get("close", 0)),
+                    "change": 0,
+                    "pct": 0,
+                    "volume": _safe_float(last_row.get("volume", 0)),
+                    "high": _safe_float(last_row.get("high", 0)),
+                    "low": _safe_float(last_row.get("low", 0)),
+                    "open": _safe_float(last_row.get("open", 0)),
+                    "prev_close": _safe_float(last_row.get("close", 0)),
+                    "time": _date_to_key(last_row.get("date")),
+                    "offline": True,
+                }
+                _cache_set(_realtime_cache, cache_key, result, ttl=_RT_CACHE_TTL)
+                return result
+        finally:
+            if conn:
+                _return_db_connection(conn)
+
         db_name = get_stock_name(symbol)
-        fallback = {"name": db_name or symbol}
+        fallback = {"name": db_name or symbol, "offline": True}
+        _cache_set(_realtime_cache, cache_key, fallback, ttl=_RT_CACHE_TTL)
         logger.warning(f"All realtime sources failed for {symbol}")
         return fallback
+
+    def _pick_frame_value(self, frame: pd.DataFrame, patterns: list[str], default: Any = 0) -> Any:
+        if frame is None or frame.empty:
+            return default
+        text_patterns = [re.compile(pattern, re.I) for pattern in patterns]
+        for column in frame.columns:
+            for pattern in text_patterns:
+                if pattern.search(str(column)):
+                    value = frame[column].iloc[0]
+                    if isinstance(default, str):
+                        return "" if pd.isna(value) else str(value)
+                    return _safe_float(value, default)
+        return default
 
     async def get_fundamentals(self, symbol: str, market: str) -> dict:
         if market != "A":
             return {}
+
+        norm = MarketDetector.normalize_symbol(symbol)
+        cached_rows = self._db.get_financials(norm)
+        if cached_rows:
+            latest_row = cached_rows[0]
+            try:
+                updated_at = datetime.strptime(latest_row["updated_at"], "%Y-%m-%d %H:%M:%S")
+                if (datetime.now() - updated_at).days <= 100:
+                    payload = json.loads(latest_row.get("payload", "{}")) if latest_row.get("payload") else {}
+                    payload.update(
+                        {
+                            "revenue": latest_row.get("revenue", 0),
+                            "net_profit": latest_row.get("net_profit", 0),
+                            "gross_margin": latest_row.get("gross_margin", 0),
+                            "net_margin": latest_row.get("net_margin", 0),
+                            "roe": latest_row.get("roe", 0),
+                            "roa": latest_row.get("roa", 0),
+                            "debt_ratio": latest_row.get("debt_ratio", 0),
+                            "report_date": latest_row.get("report_date", ""),
+                        }
+                    )
+                    return payload
+            except Exception:
+                pass
+
         try:
             import akshare as ak
-            norm = MarketDetector.normalize_symbol(symbol)
-            df = _akshare_retry(ak.stock_individual_info_em, symbol=norm)
-            if df is not None and not df.empty:
-                result = {}
-                for _, row in df.iterrows():
-                    result[str(row.iloc[0])] = str(row.iloc[1])
-                return result
+
+            analysis_df = await asyncio.to_thread(
+                _akshare_retry,
+                ak.stock_financial_analysis_indicator,
+                symbol=norm,
+                start_year=str(max(datetime.now().year - 2, 2020)),
+            )
+            info_df = await asyncio.to_thread(_akshare_retry, ak.stock_individual_info_em, symbol=norm)
+            result = {
+                "symbol": norm,
+                "report_date": "",
+                "revenue": self._pick_frame_value(analysis_df, [r"营业总收入", r"营业收入"], 0.0),
+                "net_profit": self._pick_frame_value(analysis_df, [r"净利润"], 0.0),
+                "gross_margin": self._pick_frame_value(analysis_df, [r"销售毛利率", r"毛利率"], 0.0),
+                "net_margin": self._pick_frame_value(analysis_df, [r"销售净利率", r"净利率"], 0.0),
+                "roe": self._pick_frame_value(analysis_df, [r"净资产收益率", r"ROE"], 0.0),
+                "roa": self._pick_frame_value(analysis_df, [r"总资产净利率", r"ROA"], 0.0),
+                "debt_ratio": self._pick_frame_value(analysis_df, [r"资产负债率"], 0.0),
+                "industry": self._pick_frame_value(info_df, [r"行业"], ""),
+                "market_value": self._pick_frame_value(info_df, [r"总市值"], 0.0),
+                "float_market_value": self._pick_frame_value(info_df, [r"流通市值"], 0.0),
+                "list_date": self._pick_frame_value(info_df, [r"上市时间", r"上市日期"], ""),
+            }
+            if analysis_df is not None and not analysis_df.empty:
+                date_column = next((col for col in analysis_df.columns if "日期" in str(col) or "报告期" in str(col)), None)
+                if date_column:
+                    result["report_date"] = str(analysis_df[date_column].iloc[0])
+            self._db.upsert_financial_rows(norm, [result])
+            await self.refresh_stock_info_for_symbol(norm)
+            return result
         except Exception as e:
             logger.debug(f"Fundamentals fetch failed: {e}")
         return {}
 
+    async def refresh_stock_info(self, force: bool = False) -> dict:
+        existing = self._db.fetchone("SELECT COUNT(*) AS total FROM stock_info")
+        if not force and existing and int(existing["total"]) >= 500:
+            return {"success": True, "count": int(existing["total"]), "cached": True}
+
+        try:
+            import akshare as ak
+
+            rows: list[dict] = []
+            code_name_df = await asyncio.to_thread(_akshare_retry, ak.stock_info_a_code_name)
+            if code_name_df is not None and not code_name_df.empty:
+                for _, row in code_name_df.iterrows():
+                    rows.append(
+                        {
+                            "symbol": str(row.get("code") or row.get("证券代码") or row.iloc[0]),
+                            "market": "A",
+                            "name": str(row.get("name") or row.get("证券简称") or row.iloc[1]),
+                            "instrument_type": "stock",
+                            "industry": "",
+                        }
+                    )
+
+            etf_df = await asyncio.to_thread(_akshare_retry, ak.fund_etf_spot_em)
+            if etf_df is not None and not etf_df.empty:
+                for _, row in etf_df.iterrows():
+                    rows.append(
+                        {
+                            "symbol": str(row.get("代码", "")),
+                            "market": "A",
+                            "name": str(row.get("名称", "")),
+                            "instrument_type": "ETF",
+                            "industry": "ETF",
+                            "market_value": _safe_float(row.get("总市值", 0)),
+                            "extra_json": row.to_dict(),
+                        }
+                    )
+
+            bond_df = await asyncio.to_thread(_akshare_retry, ak.bond_zh_cov)
+            if bond_df is not None and not bond_df.empty:
+                for _, row in bond_df.iterrows():
+                    rows.append(
+                        {
+                            "symbol": str(row.get("债券代码", row.get("代码", ""))),
+                            "market": "A",
+                            "name": str(row.get("债券简称", row.get("名称", ""))),
+                            "instrument_type": "bond",
+                            "industry": "可转债",
+                            "extra_json": row.to_dict(),
+                        }
+                    )
+
+            if rows:
+                self._db.upsert_stock_info_rows(rows)
+            return {"success": True, "count": len(rows), "cached": False}
+        except Exception as e:
+            logger.debug(f"Stock info refresh failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def refresh_stock_info_for_symbol(self, symbol: str) -> dict:
+        try:
+            import akshare as ak
+
+            info_df = await asyncio.to_thread(_akshare_retry, ak.stock_individual_info_em, symbol=symbol)
+            info_map = {}
+            if info_df is not None and not info_df.empty:
+                for _, row in info_df.iterrows():
+                    info_map[str(row.iloc[0])] = row.iloc[1]
+            current = self._db.get_stock_info(symbol) or {"code": symbol, "market": "A", "name": get_stock_name(symbol) or symbol}
+            row = {
+                "symbol": symbol,
+                "market": current.get("market", "A"),
+                "name": current.get("name", get_stock_name(symbol) or symbol),
+                "instrument_type": current.get("instrument_type", "stock"),
+                "industry": str(info_map.get("行业", current.get("sector", ""))),
+                "market_value": _safe_float(info_map.get("总市值", current.get("market_value", 0))),
+                "float_market_value": _safe_float(info_map.get("流通市值", current.get("float_market_value", 0))),
+                "list_date": str(info_map.get("上市时间", current.get("list_date", ""))),
+                "extra_json": info_map,
+            }
+            self._db.upsert_stock_info_rows([row])
+            return {"success": True, "data": row}
+        except Exception as e:
+            logger.debug(f"Stock info enrich failed for {symbol}: {e}")
+            return {"success": False, "error": str(e)}
+
     async def get_hot_stocks(self) -> list:
+        try:
+            data = await asyncio.to_thread(AkshareSource.fetch_hot_stocks)
+            if data:
+                self._db.upsert_stock_info_rows(
+                    [
+                        {
+                            "symbol": item["code"],
+                            "market": "A",
+                            "name": item["name"],
+                            "instrument_type": "stock",
+                        }
+                        for item in data
+                    ]
+                )
+                return data
+        except Exception as e:
+            logger.debug(f"Akshare hot stocks failed: {e}")
+
         try:
             data = await asyncio.to_thread(EastMoneySource.fetch_hot_stocks)
             if data:
                 return data
         except Exception as e:
             logger.debug(f"EastMoney hot stocks failed: {e}")
-
-        try:
-            data = await asyncio.to_thread(AkshareSource.fetch_hot_stocks)
-            if data:
-                return data
-        except Exception as e:
-            logger.debug(f"Akshare hot stocks failed: {e}")
 
         try:
             data = await asyncio.to_thread(TencentSource.fetch_hot_stocks)
@@ -1012,24 +1718,470 @@ class SmartDataFetcher:
 
         return _default_hot_stocks()
 
+    async def get_index_spot(self, symbol: str) -> dict:
+        try:
+            import akshare as ak
 
-def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+            if symbol in {"000001", "399001", "399006", "000300", "000905"}:
+                frames = []
+                for group in ["上证系列指数", "深证系列指数", "中证系列指数"]:
+                    df = await asyncio.to_thread(_akshare_retry, ak.stock_zh_index_spot_em, symbol=group)
+                    if df is not None and not df.empty:
+                        frames.append(df)
+                if frames:
+                    merged = pd.concat(frames, ignore_index=True)
+                    row = merged[merged["代码"].astype(str) == symbol]
+                    if not row.empty:
+                        item = row.iloc[0]
+                        return {
+                            "name": str(item.get("名称", self._major_indices.get(symbol, {}).get("name", symbol))),
+                            "price": _safe_float(item.get("最新价", 0)),
+                            "change": _safe_float(item.get("涨跌额", 0)),
+                            "pct": _safe_float(item.get("涨跌幅", 0)),
+                            "open": _safe_float(item.get("今开", 0)),
+                            "high": _safe_float(item.get("最高", 0)),
+                            "low": _safe_float(item.get("最低", 0)),
+                            "prev_close": _safe_float(item.get("昨收", 0)),
+                            "volume": _safe_float(item.get("成交量", 0)),
+                            "time": _date_to_key(datetime.now()),
+                        }
+            if symbol in {".DJI", ".IXIC", ".INX"}:
+                df = await asyncio.to_thread(_akshare_retry, ak.stock_us_spot_em)
+                if df is not None and not df.empty:
+                    code_col = next((col for col in df.columns if "代码" in str(col)), None)
+                    name_col = next((col for col in df.columns if "名称" in str(col)), None)
+                    if code_col:
+                        row = df[df[code_col].astype(str).str.upper() == symbol.upper()]
+                        if row.empty:
+                            row = df[df[code_col].astype(str).str.upper().str.endswith(symbol.upper())]
+                        if not row.empty:
+                            item = row.iloc[0]
+                            return {
+                                "name": str(item.get(name_col, self._major_indices.get(symbol, {}).get("name", symbol))) if name_col else self._major_indices.get(symbol, {}).get("name", symbol),
+                                "price": _safe_float(item.get("最新价", 0)),
+                                "change": _safe_float(item.get("涨跌额", 0)),
+                                "pct": _safe_float(item.get("涨跌幅", 0)),
+                                "volume": _safe_float(item.get("成交量", 0)),
+                                "high": _safe_float(item.get("最高价", item.get("最高", 0))),
+                                "low": _safe_float(item.get("最低价", item.get("最低", 0))),
+                                "open": _safe_float(item.get("开盘价", item.get("今开", 0))),
+                                "prev_close": _safe_float(item.get("昨收", 0)),
+                                "time": _date_to_key(datetime.now()),
+                            }
+        except Exception as e:
+            logger.debug(f"Index spot fetch failed for {symbol}: {e}")
+
+        conn = None
+        try:
+            conn = _get_db_connection()
+            hist = self._db.load_kline_rows(symbol, "INDEX", "daily", adjust="qfq", conn=conn)
+            if not hist.empty:
+                last = hist.iloc[-1]
+                prev_close = _safe_float(hist.iloc[-2]["close"], _safe_float(last["close"])) if len(hist) > 1 else _safe_float(last["close"])
+                price = _safe_float(last["close"])
+                change = price - prev_close
+                pct = change / prev_close * 100 if prev_close else 0
+                return {
+                    "name": self._major_indices.get(symbol, {}).get("name", symbol),
+                    "price": price,
+                    "change": round(change, 2),
+                    "pct": round(pct, 2),
+                    "open": _safe_float(last["open"]),
+                    "high": _safe_float(last["high"]),
+                    "low": _safe_float(last["low"]),
+                    "prev_close": prev_close,
+                    "volume": _safe_float(last.get("volume", 0)),
+                    "time": _date_to_key(last["date"]),
+                    "offline": True,
+                }
+        finally:
+            if conn:
+                _return_db_connection(conn)
+        return {}
+
+    async def get_intraday_data(
+        self,
+        symbol: str,
+        period: int = 1,
+        market: Optional[str] = None,
+        adjust: str = "",
+    ) -> pd.DataFrame:
+        period = int(period)
+        if period not in {1, 5, 15, 30, 60}:
+            return pd.DataFrame()
+
+        market = market or (self._db.get_stock_info(symbol) or {}).get("market") or MarketDetector.detect(symbol)
+        norm = MarketDetector.normalize_symbol(symbol)
+        if market == "US" and not norm.startswith("105."):
+            norm = f"105.{norm.upper()}"
+        kline_type = f"min{period}"
+        cache_key = f"intraday:{market}:{norm}:{period}:{adjust}"
+        cached = _cache_get(_history_cache, cache_key)
+        if cached is not None:
+            return cached.copy()
+
+        today_key = datetime.now().strftime("%Y-%m-%d")
+        conn = None
+        try:
+            conn = _get_db_connection()
+            cached_df = self._db.load_kline_rows(norm, market, kline_type, start_date=today_key, adjust=adjust, conn=conn)
+            if not cached_df.empty and not self._needs_today_refresh(norm, market, kline_type, adjust):
+                _cache_set(_history_cache, cache_key, cached_df.copy(), ttl=_HIST_CACHE_TTL)
+                return cached_df
+        finally:
+            if conn:
+                _return_db_connection(conn)
+
+        try:
+            import akshare as ak
+
+            start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S")
+            end_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if market == "A":
+                df = await asyncio.to_thread(
+                    _akshare_retry,
+                    ak.stock_zh_a_hist_min_em,
+                    symbol=norm,
+                    start_date=start_date,
+                    end_date=end_date,
+                    period=str(period),
+                    adjust=adjust if adjust in ("qfq", "hfq", "") else "",
+                )
+            elif market == "HK":
+                df = await asyncio.to_thread(
+                    _akshare_retry,
+                    ak.stock_hk_hist_min_em,
+                    symbol=norm,
+                    period=str(period),
+                    adjust=adjust if adjust in ("qfq", "hfq", "") else "",
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            else:
+                df = await asyncio.to_thread(
+                    _akshare_retry,
+                    ak.stock_us_hist_min_em,
+                    symbol=norm,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            if df is not None and not df.empty:
+                result = self._prepare_frame_for_storage(df, "akshare_intraday")
+                self._store_history_frame(norm, market, kline_type, adjust, result, "akshare_intraday")
+                final_df = self._db.load_kline_rows(norm, market, kline_type, start_date=today_key, adjust=adjust)
+                _cache_set(_history_cache, cache_key, final_df.copy(), ttl=_HIST_CACHE_TTL)
+                return final_df
+        except Exception as e:
+            logger.debug(f"Intraday fetch failed for {symbol}: {e}")
+
+        return cached_df
+
+    async def get_etf_spot(self, symbol: str) -> dict:
+        try:
+            import akshare as ak
+
+            df = await asyncio.to_thread(_akshare_retry, ak.fund_etf_spot_em)
+            if df is None or df.empty:
+                return {}
+            row = df[df["代码"].astype(str) == str(symbol)]
+            if row.empty:
+                return {}
+            item = row.iloc[0]
+            self._db.upsert_stock_info_rows(
+                [{
+                    "symbol": str(symbol),
+                    "market": "A",
+                    "name": str(item.get("名称", symbol)),
+                    "instrument_type": "ETF",
+                    "industry": "ETF",
+                    "extra_json": item.to_dict(),
+                }]
+            )
+            return {
+                "name": str(item.get("名称", symbol)),
+                "price": _safe_float(item.get("最新价", 0)),
+                "change": _safe_float(item.get("涨跌额", 0)),
+                "pct": _safe_float(item.get("涨跌幅", 0)),
+                "volume": _safe_float(item.get("成交量", 0)),
+                "high": _safe_float(item.get("最高价", item.get("最高", 0))),
+                "low": _safe_float(item.get("最低价", item.get("最低", 0))),
+                "open": _safe_float(item.get("开盘价", item.get("今开", 0))),
+                "prev_close": _safe_float(item.get("昨收", 0)),
+                "time": _date_to_key(datetime.now()),
+                "instrument_type": "ETF",
+            }
+        except Exception as e:
+            logger.debug(f"ETF spot fetch failed for {symbol}: {e}")
+        return {}
+
+    async def get_etf_history(self, symbol: str, period: str = "1y", adjust: str = "qfq") -> pd.DataFrame:
+        start_date, end_date = self._resolve_period_range(period)
+        conn = None
+        try:
+            conn = _get_db_connection()
+            cached_df = self._db.load_kline_rows(symbol, "A", "daily", start_date=f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}", end_date=f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}", adjust=adjust, conn=conn)
+            if not cached_df.empty and not self._needs_today_refresh(symbol, "A", "daily", adjust):
+                return cached_df
+        finally:
+            if conn:
+                _return_db_connection(conn)
+        try:
+            import akshare as ak
+
+            df = await asyncio.to_thread(
+                _akshare_retry,
+                ak.fund_etf_hist_em,
+                symbol=symbol,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust=adjust if adjust in ("qfq", "hfq", "") else "",
+            )
+            if df is not None and not df.empty:
+                result = self._prepare_frame_for_storage(df, "akshare_etf")
+                self._store_history_frame(symbol, "A", "daily", adjust, result, "akshare_etf", instrument_type="ETF")
+                return self._db.load_kline_rows(symbol, "A", "daily", start_date=f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}", end_date=f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}", adjust=adjust)
+        except Exception as e:
+            logger.debug(f"ETF history fetch failed for {symbol}: {e}")
+        return cached_df
+
+    async def get_convertible_bond_spot(self, symbol: str) -> dict:
+        try:
+            import akshare as ak
+
+            df = await asyncio.to_thread(_akshare_retry, ak.bond_zh_cov)
+            if df is None or df.empty:
+                return {}
+            code_col = next((col for col in df.columns if "代码" in str(col)), df.columns[0])
+            row = df[df[code_col].astype(str) == str(symbol)]
+            if row.empty:
+                return {}
+            item = row.iloc[0]
+            return {
+                "name": str(item.get("债券简称", item.get("名称", symbol))),
+                "price": _safe_float(item.get("最新价", item.get("现价", 0))),
+                "change": _safe_float(item.get("涨跌额", 0)),
+                "pct": _safe_float(item.get("涨跌幅", 0)),
+                "volume": _safe_float(item.get("成交量", 0)),
+                "time": _date_to_key(datetime.now()),
+                "instrument_type": "bond",
+            }
+        except Exception as e:
+            logger.debug(f"Bond spot fetch failed for {symbol}: {e}")
+        return {}
+
+    async def get_convertible_bond_detail(self, symbol: str) -> dict:
+        try:
+            import akshare as ak
+
+            df = await asyncio.to_thread(_akshare_retry, ak.bond_zh_cov_value_analysis, symbol=symbol)
+            if df is None or df.empty:
+                return {}
+            latest = df.iloc[-1].to_dict()
+            return {str(k): (float(v) if isinstance(v, (int, float, np.floating)) else v) for k, v in latest.items()}
+        except Exception as e:
+            logger.debug(f"Bond detail fetch failed for {symbol}: {e}")
+        return {}
+
+    async def get_futures_spot(self, symbol: str) -> dict:
+        try:
+            import akshare as ak
+
+            market_code = "".join(ch for ch in symbol if ch.isalpha()).upper()[:2] or "CF"
+            df = await asyncio.to_thread(_akshare_retry, ak.futures_zh_spot, symbol=symbol, market=market_code, adjust="0")
+            if df is None or df.empty:
+                return {}
+            row = df.iloc[0].to_dict()
+            return {
+                "name": str(row.get("symbol", symbol)),
+                "price": _safe_float(row.get("current_price", row.get("最新价", 0))),
+                "change": _safe_float(row.get("change", row.get("涨跌", 0))),
+                "pct": _safe_float(row.get("change_percent", row.get("涨跌幅", 0))),
+                "basis": _safe_float(row.get("basis", row.get("基差", 0))),
+                "open_interest": _safe_float(row.get("open_interest", row.get("持仓量", 0))),
+                "open_interest_change": _safe_float(row.get("open_interest_change", row.get("仓差", 0))),
+                "time": _date_to_key(datetime.now()),
+                "instrument_type": "future",
+                "raw": row,
+            }
+        except Exception as e:
+            logger.debug(f"Futures spot fetch failed for {symbol}: {e}")
+        return {}
+
+    async def get_bid_ask(self, symbol: str) -> dict:
+        try:
+            import akshare as ak
+
+            df = await asyncio.to_thread(_akshare_retry, ak.stock_bid_ask_em, symbol=symbol)
+            if df is None or df.empty:
+                return {}
+            result = {}
+            for _, row in df.iterrows():
+                label = str(row.iloc[0])
+                result[label] = row.iloc[1]
+            return result
+        except Exception as e:
+            logger.debug(f"Bid/ask fetch failed for {symbol}: {e}")
+        return {}
+
+    async def get_zt_pool(self, trade_date: Optional[str] = None) -> dict:
+        trade_date = trade_date or datetime.now().strftime("%Y%m%d")
+        cached = self._db.get_zt_pool(trade_date)
+        if cached:
+            return {
+                "limit_up": [row for row in cached if row["pool_type"] == "limit_up"],
+                "broken_board": [row for row in cached if row["pool_type"] == "broken_board"],
+                "strong": [row for row in cached if row["pool_type"] == "strong"],
+            }
+
+        try:
+            import akshare as ak
+
+            mapping = {
+                "limit_up": ak.stock_zt_pool_em,
+                "broken_board": ak.stock_zt_pool_dtgc_em,
+                "strong": ak.stock_zt_pool_strong_em,
+            }
+            output = {}
+            for pool_type, func in mapping.items():
+                df = await asyncio.to_thread(_akshare_retry, func, date=trade_date)
+                rows = [] if df is None or df.empty else df.to_dict("records")
+                self._db.upsert_zt_pool_rows(trade_date, pool_type, rows)
+                output[pool_type] = self._db.get_zt_pool(trade_date, pool_type)
+            return output
+        except Exception as e:
+            logger.debug(f"ZT pool fetch failed: {e}")
+        return {"limit_up": [], "broken_board": [], "strong": []}
+
+    async def get_northbound_flow(self, limit: int = 10) -> list[dict]:
+        cached = self._db.get_northbound(limit)
+        if cached:
+            latest_date = cached[0]["trade_date"]
+            if latest_date == datetime.now().strftime("%Y-%m-%d"):
+                return cached
+        try:
+            import akshare as ak
+
+            df = await asyncio.to_thread(_akshare_retry, ak.stock_hsgt_hist_em, symbol="北向资金")
+            rows = []
+            if df is not None and not df.empty:
+                date_col = next((col for col in df.columns if "日期" in str(col)), df.columns[0])
+                sh_col = next((col for col in df.columns if "沪股通" in str(col)), None)
+                sz_col = next((col for col in df.columns if "深股通" in str(col)), None)
+                total_col = next((col for col in df.columns if "当日成交净买额" in str(col) or "净流入" in str(col)), df.columns[-1])
+                for _, row in df.tail(max(limit, 20)).iterrows():
+                    rows.append(
+                        {
+                            "trade_date": _date_to_key(row[date_col])[:10],
+                            "sh_connect": _safe_float(row[sh_col], 0) if sh_col else 0,
+                            "sz_connect": _safe_float(row[sz_col], 0) if sz_col else 0,
+                            "total_flow": _safe_float(row[total_col], 0),
+                            "net_buy": _safe_float(row[total_col], 0),
+                            "top_stocks": [],
+                        }
+                    )
+            self._db.upsert_northbound(rows)
+            return self._db.get_northbound(limit)
+        except Exception as e:
+            logger.debug(f"Northbound flow fetch failed: {e}")
+        return cached
+
+    async def get_market_temperature(self) -> dict:
+        today_key = datetime.now().strftime("%Y-%m-%d")
+        cached = self._db.get_market_sentiment(1)
+        if cached and cached[0]["trade_date"] == today_key:
+            return cached[0]
+        try:
+            import akshare as ak
+
+            spot_df = await asyncio.to_thread(_akshare_retry, ak.stock_zh_a_spot_em)
+            if spot_df is None or spot_df.empty:
+                return cached[0] if cached else {}
+            advancers = int((pd.to_numeric(spot_df.get("涨跌幅"), errors="coerce").fillna(0) > 0).sum())
+            decliners = int((pd.to_numeric(spot_df.get("涨跌幅"), errors="coerce").fillna(0) < 0).sum())
+            turnover_amount = float(pd.to_numeric(spot_df.get("成交额"), errors="coerce").fillna(0).sum())
+            ratio = advancers / max(decliners, 1)
+            history = self._db.get_market_sentiment(39)
+            recent_net = [int(item.get("advancers", 0)) - int(item.get("decliners", 0)) for item in reversed(history)]
+            recent_net.append(advancers - decliners)
+            ema19 = pd.Series(recent_net).ewm(span=19, adjust=False).mean().iloc[-1]
+            ema39 = pd.Series(recent_net).ewm(span=39, adjust=False).mean().iloc[-1]
+            ad_line = sum(recent_net)
+            new_high_low_index = (advancers - decliners) / max(advancers + decliners, 1)
+            row = {
+                "trade_date": today_key,
+                "advancers": advancers,
+                "decliners": decliners,
+                "up_down_ratio": round(ratio, 4),
+                "turnover_amount": turnover_amount,
+                "margin_balance_change": 0,
+                "new_high_low_ratio": round(new_high_low_index, 4),
+                "mcclellan": round(float(ema19 - ema39), 4),
+                "ad_line": round(float(ad_line), 4),
+                "new_high_low_index": round(float(new_high_low_index), 4),
+            }
+            self._db.upsert_market_sentiment(row)
+            return row
+        except Exception as e:
+            logger.debug(f"Market temperature fetch failed: {e}")
+        return cached[0] if cached else {}
+
+    async def get_market_overview(self) -> dict:
+        overview = []
+        for symbol, meta in self._major_indices.items():
+            spot = await self.get_index_spot(symbol)
+            if spot:
+                overview.append({"symbol": symbol, **spot})
+        return {
+            "indices": overview,
+            "northbound": await self.get_northbound_flow(10),
+            "temperature": await self.get_market_temperature(),
+        }
+
+    async def export_history_csv(
+        self,
+        symbol: str,
+        period: str = "1y",
+        kline_type: str = "daily",
+        adjust: str = "qfq",
+    ) -> Path:
+        df = await self.get_history(symbol, period=period, kline_type=kline_type, adjust=adjust)
+        export_dir = self._db.db_path.parent / "cache"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        file_path = export_dir / f"{symbol}_{period}_{kline_type}_{adjust or 'raw'}.csv"
+        df.to_csv(file_path, index=False, encoding="utf-8-sig")
+        return file_path
+
+    def get_data_source_health(self) -> list[dict]:
+        return self._health_monitor.get_stats()
+
+
+def _normalize(df: pd.DataFrame, market: str = "A") -> pd.DataFrame:
     col_map = {
-        "日期": "date", "date": "date",
+        "日期": "date", "时间": "date", "date": "date", "datetime": "date", "day": "date",
         "开盘": "open", "open": "open",
         "收盘": "close", "close": "close",
         "最高": "high", "high": "high",
         "最低": "low", "low": "low",
         "成交量": "volume", "volume": "volume",
+        "成交额": "amount",
     }
     df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+    keep_cols = [c for c in ["date", "open", "high", "low", "close", "volume", "amount"] if c in df.columns]
+    df = df[keep_cols]
     for c in ["open", "high", "low", "close", "volume"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"])
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date"])
         df = df.sort_values("date").reset_index(drop=True)
+    for c in ["open", "high", "low", "close", "volume"]:
+        if c in df.columns:
+            df[c] = df[c].replace([None, ""], np.nan)
     df = df.dropna(subset=["close"])
+    df = df[df["close"] != 0]
+    df = df[~df["close"].isna()]
     return df
 
 

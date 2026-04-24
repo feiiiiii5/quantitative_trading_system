@@ -27,131 +27,53 @@ from api.monitor_routes import router as monitor_router
 from api.research_routes import router as research_router
 from api.ai_routes import router as ai_router
 from api.platform_routes import router as platform_router
+from api.analysis_routes import router as analysis_router
+from core.logger import setup_logger
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+setup_logger(logging.INFO)
 
 BASE_DIR = Path(__file__).parent
+
+logger = logging.getLogger(__name__)
+
+_lazy_registry = {}
+
+
+def _lazy_state(app, attr, module_path, class_name, *args, **kwargs):
+    if not hasattr(app.state, attr) or getattr(app.state, attr) is None:
+        key = f"{module_path}.{class_name}"
+        if key not in _lazy_registry:
+            mod = __import__(module_path, fromlist=[class_name])
+            _lazy_registry[key] = getattr(mod, class_name)
+        setattr(app.state, attr, _lazy_registry[key](*args, **kwargs))
+    return getattr(app.state, attr)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger = logging.getLogger(__name__)
     logger.info("QuantVision starting up...")
 
+    from core.database import get_db
     from core.data_fetcher import SmartDataFetcher
-    from core.ai.adaptive_params import AdaptiveParamOptimizer
-    from core.ai.nl_strategy import NLStrategyGenerator
-    from core.ai.pattern_detect import AnomalyPatternDetector
-    from core.ai.portfolio_ai import PortfolioAIAdvisor
-    from core.ai.prediction_models import PredictionModelPlatform
-    from core.monitor.heartbeat import StrategyHeartbeatMonitor
-    from core.monitor.alert_system import SmartAlertSystem
-    from core.monitor.anomaly_detect import AnomalyDetector
-    from core.monitor.perf_dashboard import PerformanceDashboard
-    from core.monitor.audit_log import ComplianceAuditLog
-    from core.risk.var_monitor import VaRMonitor
-    from core.risk.position_manager import DynamicPositionManager
-    from core.risk.stop_loss import MultiDimensionStopLoss
-    from core.risk.stress_test import RiskStressTest
-    from core.risk.risk_attribution import RiskAttribution
-    from core.portfolio.capital_allocator import CapitalAllocator
-    from core.portfolio.rebalance import RebalanceEngine
-    from core.research.fundamental import FundamentalFactorLibrary
-    from core.platform.scheduler import TaskScheduler
-    from core.platform.env_manager import EnvironmentManager
-    from core.platform.auth_security import AuthSecurityManager
-    from core.backtest_v2.event_engine import EventBacktestEngine
-    from core.backtest_v2.microstructure import MicrostructureSimulator
-    from core.backtest_v2.portfolio_backtest import PortfolioBacktester
-    from core.backtest_v2.param_optimizer import ParamOptimizer
-    from core.backtest_v2.monte_carlo import MonteCarloStressTest
-    from core.research.sentiment import MarketSentimentAnalyzer
-    from core.research.sector import SectorResearch
-    from core.research.report_ai import ReportAIAssistant
-    from core.portfolio.attribution import PerformanceAttribution
-    from core.portfolio.derivatives import DerivativesManager
-    from core.portfolio.tearsheet import TearsheetGenerator
-    from core.platform.microservice import MicroserviceManager
-    from core.platform.workspace import WorkspaceManager
-    from core.execution.order_router import SmartOrderRouter
-    from core.execution.algo_engine import AlgoExecutionEngine
-    from core.execution.multi_account import MultiAccountManager
-    from core.execution.paper_live import PaperLiveSwitch
-    from core.strategy_v2.visual_builder import VisualStrategyBuilder
-    from core.strategy_v2.signal_execution import SignalExecutionDecoupler
-    from core.strategy_v2.ml_strategy import MLStrategyModule
-    from core.strategy_v2.factor_research import FactorResearchWorkbench
-    from core.strategy_v2.strategy_version import StrategyVersionControl
+    from core.analysis_service import AnalysisService
     from core.backtest import BacktestEngine
     from core.strategies import CompositeStrategy
     from core.simulated_trading import SimulatedTrading
-    from core.data_infra.alt_data import AltDataPipeline
-    from core.data_infra.tick_store import TickStore
-    from core.data_infra.data_adapter import UnifiedDataAdapter
-    from core.data_infra.realtime_stream import RealtimeStreamManager
-    from core.data_infra.history_manager import HistoryDataManager
 
+    app.state.db = get_db()
     app.state.fetcher = SmartDataFetcher()
-    app.state.adaptive_optimizer = AdaptiveParamOptimizer()
-    app.state.nl_generator = NLStrategyGenerator()
-    app.state.pattern_detector = AnomalyPatternDetector()
-    app.state.portfolio_ai = PortfolioAIAdvisor()
-    app.state.prediction_platform = PredictionModelPlatform()
-    app.state.heartbeat = StrategyHeartbeatMonitor()
-    app.state.alert_system = SmartAlertSystem()
-    app.state.anomaly_detector = AnomalyDetector()
-    app.state.perf_dashboard = PerformanceDashboard()
-    app.state.audit_log = ComplianceAuditLog()
-    app.state.var_monitor = VaRMonitor()
-    app.state.position_mgr = DynamicPositionManager()
-    app.state.stop_loss_mgr = MultiDimensionStopLoss()
-    app.state.stress_test = RiskStressTest()
-    app.state.risk_attr = RiskAttribution()
-    app.state.capital_allocator = CapitalAllocator()
-    app.state.rebalance_engine = RebalanceEngine()
-    app.state.fundamental_lib = FundamentalFactorLibrary()
-    app.state.scheduler = TaskScheduler()
-    app.state.env_manager = EnvironmentManager()
-    app.state.auth_manager = AuthSecurityManager()
-    app.state.event_engine = EventBacktestEngine()
-    app.state.micro_sim = MicrostructureSimulator()
-    app.state.portfolio_bt = PortfolioBacktester()
-    app.state.param_optimizer = ParamOptimizer()
-    app.state.mc_stress = MonteCarloStressTest()
-    app.state.sentiment_analyzer = MarketSentimentAnalyzer()
-    app.state.sector_research = SectorResearch()
-    app.state.report_ai = ReportAIAssistant()
-    app.state.attribution = PerformanceAttribution()
-    app.state.derivatives_mgr = DerivativesManager()
-    app.state.tearsheet_gen = TearsheetGenerator()
-    app.state.microservice_mgr = MicroserviceManager()
-    app.state.workspace_mgr = WorkspaceManager()
-    app.state.order_router = SmartOrderRouter()
-    app.state.algo_engine = AlgoExecutionEngine()
-    app.state.account_mgr = MultiAccountManager()
-    app.state.paper_live = PaperLiveSwitch()
-    app.state.builder = VisualStrategyBuilder()
-    app.state.decoupler = SignalExecutionDecoupler()
-    app.state.ml_module = MLStrategyModule()
-    app.state.factor_wb = FactorResearchWorkbench()
-    app.state.version_ctrl = StrategyVersionControl()
+    app.state.analysis_service = AnalysisService()
     app.state.backtest_engine = BacktestEngine()
     app.state.composite_strategy = CompositeStrategy()
     app.state.sim_trading = SimulatedTrading()
-    app.state.alt_pipeline = AltDataPipeline()
-    app.state.tick_store = TickStore()
-    app.state.data_adapter = UnifiedDataAdapter()
-    app.state.stream_manager = RealtimeStreamManager()
-    app.state.history_manager = HistoryDataManager()
-
+    app.state.start_time = time.time()
     app.state.write_lock = asyncio.Lock()
 
     try:
-        from core.stock_search import _build_index
-        _build_index()
-        logger.info("Stock search index built")
+        from core.stock_search import _STOCK_INDEX
+        logger.info(f"Stock search index loaded with {len(_STOCK_INDEX)} entries")
     except Exception as e:
-        logger.warning(f"Failed to build search index: {e}")
+        logger.warning(f"Failed to load search index: {e}")
 
     try:
         asyncio.create_task(_warm_cache(app.state.fetcher))
@@ -171,6 +93,7 @@ async def lifespan(app: FastAPI):
 async def _warm_cache(fetcher):
     await asyncio.sleep(2)
     try:
+        await fetcher.refresh_stock_info()
         await fetcher.get_hot_stocks()
         logging.getLogger(__name__).info("Hot stocks cache warmed")
     except Exception as e:
@@ -184,9 +107,76 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def lazy_state_middleware(request, call_next):
+    state = request.app.state
+    if not hasattr(state, "write_lock"):
+        state.write_lock = asyncio.Lock()
+
+    lazy_map = {
+        "heartbeat": ("core.monitor.heartbeat", "StrategyHeartbeatMonitor"),
+        "alert_system": ("core.monitor.alert_system", "SmartAlertSystem"),
+        "anomaly_detector": ("core.monitor.anomaly_detect", "AnomalyDetector"),
+        "perf_dashboard": ("core.monitor.perf_dashboard", "PerformanceDashboard"),
+        "audit_log": ("core.monitor.audit_log", "ComplianceAuditLog"),
+        "var_monitor": ("core.risk.var_monitor", "VaRMonitor"),
+        "position_mgr": ("core.risk.position_manager", "DynamicPositionManager"),
+        "stop_loss_mgr": ("core.risk.stop_loss", "MultiDimensionStopLoss"),
+        "stress_test": ("core.risk.stress_test", "RiskStressTest"),
+        "risk_attr": ("core.risk.risk_attribution", "RiskAttribution"),
+        "capital_allocator": ("core.portfolio.capital_allocator", "CapitalAllocator"),
+        "rebalance_engine": ("core.portfolio.rebalance", "RebalanceEngine"),
+        "fundamental_lib": ("core.research.fundamental", "FundamentalFactorLibrary"),
+        "scheduler": ("core.platform.scheduler", "TaskScheduler"),
+        "env_manager": ("core.platform.env_manager", "EnvironmentManager"),
+        "auth_manager": ("core.platform.auth_security", "AuthSecurityManager"),
+        "event_engine": ("core.backtest_v2.event_engine", "EventBacktestEngine"),
+        "micro_sim": ("core.backtest_v2.microstructure", "MicrostructureSimulator"),
+        "portfolio_bt": ("core.backtest_v2.portfolio_backtest", "PortfolioBacktester"),
+        "param_optimizer": ("core.backtest_v2.param_optimizer", "ParamOptimizer"),
+        "mc_stress": ("core.backtest_v2.monte_carlo", "MonteCarloStressTest"),
+        "sentiment_analyzer": ("core.research.sentiment", "MarketSentimentAnalyzer"),
+        "sector_research": ("core.research.sector", "SectorResearch"),
+        "report_ai": ("core.research.report_ai", "ReportAIAssistant"),
+        "attribution": ("core.portfolio.attribution", "PerformanceAttribution"),
+        "derivatives_mgr": ("core.portfolio.derivatives", "DerivativesManager"),
+        "tearsheet_gen": ("core.portfolio.tearsheet", "TearsheetGenerator"),
+        "microservice_mgr": ("core.platform.microservice", "MicroserviceManager"),
+        "workspace_mgr": ("core.platform.workspace", "WorkspaceManager"),
+        "order_router": ("core.execution.order_router", "SmartOrderRouter"),
+        "algo_engine": ("core.execution.algo_engine", "AlgoExecutionEngine"),
+        "account_mgr": ("core.execution.multi_account", "MultiAccountManager"),
+        "paper_live": ("core.execution.paper_live", "PaperLiveSwitch"),
+        "builder": ("core.strategy_v2.visual_builder", "VisualStrategyBuilder"),
+        "decoupler": ("core.strategy_v2.signal_execution", "SignalExecutionDecoupler"),
+        "ml_module": ("core.strategy_v2.ml_strategy", "MLStrategyModule"),
+        "factor_wb": ("core.strategy_v2.factor_research", "FactorResearchWorkbench"),
+        "version_ctrl": ("core.strategy_v2.strategy_version", "StrategyVersionControl"),
+        "adaptive_optimizer": ("core.ai.adaptive_params", "AdaptiveParamOptimizer"),
+        "nl_generator": ("core.ai.nl_strategy", "NLStrategyGenerator"),
+        "pattern_detector": ("core.ai.pattern_detect", "AnomalyPatternDetector"),
+        "portfolio_ai": ("core.ai.portfolio_ai", "PortfolioAIAdvisor"),
+        "prediction_platform": ("core.ai.prediction_models", "PredictionModelPlatform"),
+        "alt_pipeline": ("core.data_infra.alt_data", "AltDataPipeline"),
+        "tick_store": ("core.data_infra.tick_store", "TickStore"),
+        "data_adapter": ("core.data_infra.data_adapter", "UnifiedDataAdapter"),
+        "stream_manager": ("core.data_infra.realtime_stream", "RealtimeStreamManager"),
+        "history_manager": ("core.data_infra.history_manager", "HistoryDataManager"),
+    }
+
+    path = request.url.path
+    for attr, (mod_path, cls_name) in lazy_map.items():
+        if not hasattr(state, attr) or getattr(state, attr) is None:
+            if attr in path or any(attr in seg for seg in path.split("/")):
+                _lazy_state(request.app, attr, mod_path, cls_name)
+
+    return await call_next(request)
+
 
 app.include_router(router, prefix="/api")
 app.include_router(ws_router)
@@ -200,6 +190,7 @@ app.include_router(monitor_router, prefix="/api")
 app.include_router(research_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
 app.include_router(platform_router, prefix="/api")
+app.include_router(analysis_router, prefix="/api")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
@@ -210,18 +201,12 @@ def index():
 
 @app.post("/shutdown")
 async def shutdown_server():
-    try:
-        from core.simulated_trading import SimulatedTrading
-        logging.getLogger(__name__).info("Graceful shutdown initiated, saving state...")
-    except Exception:
-        pass
     shutdown_event.set()
     return {"success": True, "message": "Server shutting down..."}
 
 
 @app.post("/client-disconnect")
 async def client_disconnect():
-    logging.getLogger(__name__).info("Client browser closed, initiating shutdown...")
     shutdown_event.set()
     return {"success": True, "message": "Shutdown initiated"}
 
