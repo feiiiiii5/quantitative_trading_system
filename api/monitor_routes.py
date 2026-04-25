@@ -397,3 +397,6 @@ async def get_compliance_report(request: Request, date: str = Query("")):
 async def trace_event_chain(request: Request, event_id: str):
     chain = request.app.state.audit_log.get_full_chain(event_id)
     return _resp(True, data=chain)
+
+
+router = monitor_router

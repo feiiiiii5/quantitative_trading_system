@@ -279,3 +279,6 @@ async def run_ab_test(
 async def get_ab_results(request: Request):
     result = request.app.state.prediction_platform.get_ab_results()
     return _resp(True, data=result)
+
+
+router = ai_router

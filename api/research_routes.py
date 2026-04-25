@@ -231,3 +231,6 @@ async def get_report_aggregation(request: Request, symbol: str = Query(""), days
 async def get_report_sentiment_trend(request: Request, days: int = Query(30)):
     result = request.app.state.report_ai.get_sentiment_trend(days)
     return _resp(True, data=result)
+
+
+router = research_router

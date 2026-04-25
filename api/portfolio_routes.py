@@ -291,3 +291,6 @@ async def export_tearsheet(
         return _resp(False, msg=f"不支持的格式: {format}")
     except Exception as e:
         return _resp(False, msg=str(e))
+
+
+router = portfolio_router

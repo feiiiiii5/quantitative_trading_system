@@ -375,3 +375,6 @@ async def remove_shortcut(request: Request, key: str):
 async def reset_shortcuts(request: Request):
     result = request.app.state.workspace_mgr.reset_shortcuts()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
+
+
+router = platform_router
