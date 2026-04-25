@@ -1,14 +1,10 @@
-import json
 import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-import numpy as np
-import pandas as pd
 
-from core.strategies import BaseStrategy, SignalType, TradeSignal, StrategyResult
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +190,7 @@ class VisualStrategyBuilder:
             "from core.strategies import BaseStrategy, SignalType, TradeSignal, StrategyResult",
             "",
             f"class {strategy_name.replace(' ', '')}Strategy(BaseStrategy):",
-            f"    def __init__(self):",
+            "    def __init__(self):",
             f'        super().__init__("{strategy_name}", "{strategy.description}")',
             "",
             "    def get_default_params(self) -> dict:",
@@ -211,24 +207,23 @@ class VisualStrategyBuilder:
 
         for node in strategy.nodes:
             if node.type == NodeType.INDICATOR:
-                params_str = ", ".join(f"{k}={v}" for k, v in node.params.items())
                 if node.name == "SMA":
                     lines.append(f"        {node.id}_val = pd.Series(c).rolling({node.params.get('period', 20)}).mean().values")
                 elif node.name == "EMA":
                     lines.append(f"        {node.id}_val = pd.Series(c).ewm(span={node.params.get('span', 20)}).mean().values")
                 elif node.name == "RSI":
-                    lines.append(f"        # RSI calculation")
-                    lines.append(f"        delta = np.diff(c, prepend=c[0])")
-                    lines.append(f"        gain = np.where(delta > 0, delta, 0)")
-                    lines.append(f"        loss = np.where(delta < 0, -delta, 0)")
+                    lines.append("        # RSI calculation")
+                    lines.append("        delta = np.diff(c, prepend=c[0])")
+                    lines.append("        gain = np.where(delta > 0, delta, 0)")
+                    lines.append("        loss = np.where(delta < 0, -delta, 0)")
                     lines.append(f"        avg_gain = pd.Series(gain).ewm(alpha=1/{node.params.get('period', 14)}, min_periods={node.params.get('period', 14)}).mean().values")
                     lines.append(f"        avg_loss = pd.Series(loss).ewm(alpha=1/{node.params.get('period', 14)}, min_periods={node.params.get('period', 14)}).mean().values")
-                    lines.append(f"        rs = np.where(avg_loss != 0, avg_gain / avg_loss, 100)")
+                    lines.append("        rs = np.where(avg_loss != 0, avg_gain / avg_loss, 100)")
                     lines.append(f"        {node.id}_val = 100 - 100 / (1 + rs)")
             elif node.type == NodeType.CONDITION:
                 if node.name == "CROSS_ABOVE":
                     lines.append(f"        {node.id}_val = np.zeros(len(c))")
-                    lines.append(f"        for i in range(1, len(c)):")
+                    lines.append("        for i in range(1, len(c)):")
                     lines.append(f"            if {node.inputs[0]}[i-1] < {node.inputs[1]}[i-1] and {node.inputs[0]}[i] > {node.inputs[1]}[i]:")
                     lines.append(f"                {node.id}_val[i] = 1")
 

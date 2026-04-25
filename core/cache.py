@@ -5,16 +5,13 @@ L2: Redis缓存 - 分钟级行情 (可选)
 L3: Parquet文件 - 全量历史数据
 DuckDB: 本地分析数据库 - 直接查询Parquet
 """
-import asyncio
 import logging
 import os
 import shutil
-import tempfile
 import time
 from collections import OrderedDict
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd

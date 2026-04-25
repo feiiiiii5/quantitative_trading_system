@@ -187,7 +187,6 @@ class TickStore:
             return
 
         ts_col = df["timestamp"].values
-        base_ts = ts_col[0]
         for i, row in df.iterrows():
             if i > 0 and speed > 0:
                 delay_ns = (ts_col[i] - ts_col[i - 1]) / speed

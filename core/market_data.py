@@ -1,13 +1,9 @@
-import asyncio
 import json
 import logging
 import re
 import threading
 import time
-from collections import OrderedDict
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter

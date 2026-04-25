@@ -124,7 +124,7 @@ def _return_db_connection(conn):
     except Exception:
         try:
             conn.close()
-        except:
+        except Exception:
             pass
 
 
@@ -782,7 +782,7 @@ class EastMoneySource:
                             EastMoneySource._reset_circuit("hot")
                             return result[:8]
                 except json.JSONDecodeError:
-                    logger.debug(f"EastMoney hot stocks JSON decode error")
+                    logger.debug("EastMoney hot stocks JSON decode error")
             EastMoneySource._trip_circuit("hot", 60)
         except Exception as e:
             logger.debug(f"EastMoney hot stocks error: {e}")

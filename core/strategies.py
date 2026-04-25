@@ -2,7 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -57,9 +57,9 @@ class BaseStrategy(ABC):
         required = {"close", "high", "low"}
         return required.issubset(set(df.columns))
 
-    def _calc_atr(self, h: np.ndarray, l: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
-        tr = np.maximum(h - l, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(l - np.roll(c, 1))))
-        tr[0] = h[0] - l[0]
+    def _calc_atr(self, h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
+        tr = np.maximum(h - low_arr, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(low_arr - np.roll(c, 1))))
+        tr[0] = h[0] - low_arr[0]
         atr = pd.Series(tr).ewm(alpha=1 / period, min_periods=period).mean().values
         return atr
 
@@ -89,11 +89,11 @@ class DualMAStrategy(BaseStrategy):
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
+        low_arr = df["low"].values.astype(float)
 
         ma_fast = pd.Series(c).rolling(self.fast).mean().values
         ma_slow = pd.Series(c).rolling(self.slow).mean().values
-        atr = self._calc_atr(h, l, c, self.atr_period)
+        atr = self._calc_atr(h, low_arr, c, self.atr_period)
 
         signals = []
         for i in range(self.slow + 1, len(c)):
@@ -166,8 +166,8 @@ class MACDStrategy(BaseStrategy):
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
 
         s = pd.Series(c)
         ema_fast = s.ewm(span=self.fast, adjust=False).mean()
@@ -247,8 +247,8 @@ class RSIMeanReversionStrategy(BaseStrategy):
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
 
         delta = np.diff(c, prepend=c[0])
         gain = np.where(delta > 0, delta, 0)
@@ -328,10 +328,10 @@ class SuperTrendStrategy(BaseStrategy):
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
+        low_arr = df["low"].values.astype(float)
 
-        tr = np.maximum(h - l, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(l - np.roll(c, 1))))
-        tr[0] = h[0] - l[0]
+        tr = np.maximum(h - low_arr, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(low_arr - np.roll(c, 1))))
+        tr[0] = h[0] - low_arr[0]
         atr = pd.Series(tr).rolling(self.period).mean().values
 
         n = len(c)
@@ -340,7 +340,7 @@ class SuperTrendStrategy(BaseStrategy):
         st = np.zeros(n)
         direction = np.ones(n)
 
-        hl2 = (h + l) / 2
+        hl2 = (h + low_arr) / 2
         upper_band = hl2 + self.multiplier * atr
         lower_band = hl2 - self.multiplier * atr
 
@@ -435,11 +435,11 @@ class KDJStrategy(BaseStrategy):
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
 
         hh = pd.Series(h).rolling(self.n).max().values
-        ll = pd.Series(l).rolling(self.n).min().values
+        ll = pd.Series(low_arr).rolling(self.n).min().values
         rsv = np.where(
             np.isfinite(hh) & np.isfinite(ll) & (hh != ll),
             (c - ll) / (hh - ll) * 100, 50.0,
@@ -529,8 +529,8 @@ class BollingerBreakoutStrategy(BaseStrategy):
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
 
         s = pd.Series(c)
         mid = s.rolling(self.period).mean().values
@@ -606,8 +606,8 @@ class MomentumStrategy(BaseStrategy):
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
 
         momentum = np.zeros(len(c))
         for i in range(self.lookback, len(c)):
@@ -677,15 +677,15 @@ class VolumeBreakoutStrategy(BaseStrategy):
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
+        low_arr = df["low"].values.astype(float)
         v = df["volume"].values.astype(float) if "volume" in df.columns else np.ones(len(c))
-        atr = self._calc_atr(h, l, c)
+        atr = self._calc_atr(h, low_arr, c)
 
         vol_ma = pd.Series(v).rolling(self.vol_period).mean().values
         vol_ratio = np.where(vol_ma > 0, v / vol_ma, 1.0)
 
         hh20 = pd.Series(h).rolling(20).max().values
-        ll20 = pd.Series(l).rolling(20).min().values
+        ll20 = pd.Series(low_arr).rolling(20).min().values
 
         signals = []
         for i in range(self.vol_period + 1, len(c)):

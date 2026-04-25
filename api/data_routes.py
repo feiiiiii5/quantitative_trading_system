@@ -1,14 +1,10 @@
-import asyncio
 import logging
 from typing import Optional
 
 from fastapi import APIRouter, Query, Request
 
-from core.data_infra.tick_store import TickStore, DataType
-from core.data_infra.data_adapter import UnifiedDataAdapter
-from core.data_infra.realtime_stream import RealtimeStreamManager
-from core.data_infra.history_manager import HistoryDataManager, AdjustType, CorporateAction
-from core.data_infra.alt_data import AltDataPipeline
+from core.data_infra.tick_store import DataType
+from core.data_infra.history_manager import AdjustType, CorporateAction
 
 logger = logging.getLogger(__name__)
 data_router = APIRouter(prefix="/data", tags=["数据基础设施"])

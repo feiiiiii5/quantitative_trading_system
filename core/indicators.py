@@ -10,28 +10,28 @@ class TechnicalIndicators:
             return {}
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
+        low_arr = df["low"].values.astype(float)
         v = df["volume"].values.astype(float) if "volume" in df.columns else np.zeros(len(df))
 
         ma = TechnicalIndicators._ma(c)
         ema = TechnicalIndicators._ema(c)
         boll = TechnicalIndicators._boll(c)
         macd = TechnicalIndicators._macd(c)
-        supertrend = TechnicalIndicators._supertrend(h, l, c)
-        ichimoku = TechnicalIndicators._ichimoku(h, l, c)
+        supertrend = TechnicalIndicators._supertrend(h, low_arr, c)
+        ichimoku = TechnicalIndicators._ichimoku(h, low_arr, c)
 
         rsi = TechnicalIndicators._rsi(c)
-        kdj = TechnicalIndicators._kdj(h, l, c)
-        cci = TechnicalIndicators._cci(h, l, c)
-        williams_r = TechnicalIndicators._williams_r(h, l, c)
+        kdj = TechnicalIndicators._kdj(h, low_arr, c)
+        cci = TechnicalIndicators._cci(h, low_arr, c)
+        williams_r = TechnicalIndicators._williams_r(h, low_arr, c)
         roc = TechnicalIndicators._roc(c)
 
-        vwap = TechnicalIndicators._vwap(h, l, c, v)
+        vwap = TechnicalIndicators._vwap(h, low_arr, c, v)
         obv = TechnicalIndicators._obv(c, v)
         volume_ratio = TechnicalIndicators._volume_ratio(v)
-        cmf = TechnicalIndicators._cmf(h, l, c, v)
+        cmf = TechnicalIndicators._cmf(h, low_arr, c, v)
 
-        atr = TechnicalIndicators._atr(h, l, c)
+        atr = TechnicalIndicators._atr(h, low_arr, c)
         hist_vol = TechnicalIndicators._hist_vol(c)
         bb_position = TechnicalIndicators._bb_position(c, boll)
 
@@ -100,11 +100,11 @@ class TechnicalIndicators:
         }
 
     @staticmethod
-    def _supertrend(h: np.ndarray, l: np.ndarray, c: np.ndarray,
+    def _supertrend(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray,
                     period: int = 10, multiplier: float = 3.0) -> dict:
-        tr = np.maximum(h - l, np.maximum(np.abs(h - np.roll(c, 1)),
-                                           np.abs(l - np.roll(c, 1))))
-        tr[0] = h[0] - l[0]
+        tr = np.maximum(h - low_arr, np.maximum(np.abs(h - np.roll(c, 1)),
+                                           np.abs(low_arr - np.roll(c, 1))))
+        tr[0] = h[0] - low_arr[0]
         atr = pd.Series(tr).rolling(period).mean().values
         n = len(c)
         upper_band = np.zeros(n)
@@ -112,7 +112,7 @@ class TechnicalIndicators:
         supertrend = np.zeros(n)
         direction = np.ones(n)
 
-        hl2 = (h + l) / 2
+        hl2 = (h + low_arr) / 2
         upper_band = hl2 + multiplier * atr
         lower_band = hl2 - multiplier * atr
 
@@ -149,16 +149,16 @@ class TechnicalIndicators:
         }
 
     @staticmethod
-    def _ichimoku(h: np.ndarray, l: np.ndarray, c: np.ndarray) -> dict:
+    def _ichimoku(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray) -> dict:
         def _mid(high, low, period):
             roll_h = pd.Series(high).rolling(period).max()
             roll_l = pd.Series(low).rolling(period).min()
             return ((roll_h + roll_l) / 2).values
 
-        tenkan = _mid(h, l, 9)
-        kijun = _mid(h, l, 26)
+        tenkan = _mid(h, low_arr, 9)
+        kijun = _mid(h, low_arr, 26)
         senkou_a = (tenkan + kijun) / 2
-        senkou_b = _mid(h, l, 52)
+        senkou_b = _mid(h, low_arr, 52)
         return {
             "tenkan": _to_list(tenkan),
             "kijun": _to_list(kijun),
@@ -181,10 +181,10 @@ class TechnicalIndicators:
         return result
 
     @staticmethod
-    def _kdj(h: np.ndarray, l: np.ndarray, c: np.ndarray,
+    def _kdj(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray,
              n: int = 9, m1: int = 3, m2: int = 3) -> dict:
         hh = pd.Series(h).rolling(n).max().values
-        ll = pd.Series(l).rolling(n).min().values
+        ll = pd.Series(low_arr).rolling(n).min().values
         rsv = np.where(
             np.isfinite(hh) & np.isfinite(ll) & (hh != ll),
             (c - ll) / (hh - ll) * 100,
@@ -199,8 +199,8 @@ class TechnicalIndicators:
         return {"k": _to_list(k), "d": _to_list(d), "j": _to_list(j)}
 
     @staticmethod
-    def _cci(h: np.ndarray, l: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
-        tp = (h + l + c) / 3
+    def _cci(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
+        tp = (h + low_arr + c) / 3
         ma = pd.Series(tp).rolling(period).mean().values
         md = pd.Series(tp).rolling(period).apply(
             lambda x: np.abs(x - x.mean()).mean(), raw=True
@@ -209,9 +209,9 @@ class TechnicalIndicators:
         return cci
 
     @staticmethod
-    def _williams_r(h: np.ndarray, l: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
+    def _williams_r(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
         hh = pd.Series(h).rolling(period).max().values
-        ll = pd.Series(l).rolling(period).min().values
+        ll = pd.Series(low_arr).rolling(period).min().values
         wr = np.where(np.isfinite(hh) & np.isfinite(ll) & (hh != ll), (hh - c) / (hh - ll) * -100, -50)
         return wr
 
@@ -225,8 +225,8 @@ class TechnicalIndicators:
         return result
 
     @staticmethod
-    def _vwap(h: np.ndarray, l: np.ndarray, c: np.ndarray, v: np.ndarray) -> np.ndarray:
-        tp = (h + l + c) / 3
+    def _vwap(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, v: np.ndarray) -> np.ndarray:
+        tp = (h + low_arr + c) / 3
         cum_tp_v = np.cumsum(tp * v)
         cum_v = np.cumsum(v)
         return np.where(cum_v != 0, cum_tp_v / cum_v, c)
@@ -243,18 +243,18 @@ class TechnicalIndicators:
         return np.where(avg != 0, v / avg, 1)
 
     @staticmethod
-    def _cmf(h: np.ndarray, l: np.ndarray, c: np.ndarray, v: np.ndarray,
+    def _cmf(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, v: np.ndarray,
              period: int = 20) -> np.ndarray:
-        clv = np.where((h - l) != 0, ((c - l) - (h - c)) / (h - l), 0)
+        clv = np.where((h - low_arr) != 0, ((c - low_arr) - (h - c)) / (h - low_arr), 0)
         mfv = clv * v
         cmf = pd.Series(mfv).rolling(period).sum() / pd.Series(v).rolling(period).sum()
         return cmf.values
 
     @staticmethod
-    def _atr(h: np.ndarray, l: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
-        tr = np.maximum(h - l, np.maximum(np.abs(h - np.roll(c, 1)),
-                                           np.abs(l - np.roll(c, 1))))
-        tr[0] = h[0] - l[0]
+    def _atr(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
+        tr = np.maximum(h - low_arr, np.maximum(np.abs(h - np.roll(c, 1)),
+                                           np.abs(low_arr - np.roll(c, 1))))
+        tr[0] = h[0] - low_arr[0]
         return pd.Series(tr).ewm(alpha=1 / period, min_periods=period).mean().values
 
     @staticmethod
@@ -421,7 +421,6 @@ class KLinePatternRecognizer:
                 c = row
                 a_body = abs(float(a["close"]) - float(a["open"]))
                 b_body = abs(float(b["close"]) - float(b["open"]))
-                c_body = abs(float(c["close"]) - float(c["open"]))
                 midpoint_a = (float(a["open"]) + float(a["close"])) / 2
                 if float(a["close"]) < float(a["open"]) and b_body < a_body * 0.5 and float(c["close"]) > float(c["open"]) and float(c["close"]) > midpoint_a:
                     result.append({"index": i, "date": str(row["date"]), "pattern": "morning_star", "label": "早晨之星", "price": float(c["close"])})
@@ -523,9 +522,9 @@ class IndicatorAnalysis:
         if df is None or len(df) < 25:
             return {}
         h = df["high"].astype(float).values
-        l = df["low"].astype(float).values
+        low_arr = df["low"].astype(float).values
         c = df["close"].astype(float).values
-        atr = TechnicalIndicators._atr(h, l, c, period=14)
+        atr = TechnicalIndicators._atr(h, low_arr, c, period=14)
         atr20 = pd.Series(atr).rolling(20).mean().iloc[-1]
         last_close = float(c[-1])
         return {

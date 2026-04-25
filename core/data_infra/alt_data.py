@@ -8,8 +8,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import numpy as np
-import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +61,6 @@ class NewsSentimentAnalyzer:
             from cachetools import TTLCache
             self._cache = TTLCache(maxsize=1000, ttl=3600)
         except ImportError:
-            from functools import lru_cache
             self._cache = {}
             self._cache_maxsize = 1000
         self._keyword_weights = {

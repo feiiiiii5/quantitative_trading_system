@@ -1,13 +1,7 @@
 import logging
-from typing import Optional
 
-import numpy as np
 from fastapi import APIRouter, Query, Request
 
-from core.research.fundamental import FundamentalFactorLibrary
-from core.research.sentiment import MarketSentimentAnalyzer
-from core.research.sector import SectorResearch
-from core.research.report_ai import ReportAIAssistant
 
 logger = logging.getLogger(__name__)
 research_router = APIRouter(prefix="/research", tags=["研究与分析"])

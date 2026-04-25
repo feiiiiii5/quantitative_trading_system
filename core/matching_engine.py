@@ -8,13 +8,12 @@ A股: T+1限制, 涨跌停限制, 集合竞价
 """
 import asyncio
 import logging
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -254,7 +253,6 @@ class MatchingEngine:
         # A股涨跌停检查
         if market == "A" and order.symbol in self._prev_close:
             prev = self._prev_close[order.symbol]
-            current = self._market_prices.get(order.symbol, Decimal("0"))
             limit_up = prev * Decimal("1.1")
             limit_down = prev * Decimal("0.9")
             if order.order_type == OrderType.LIMIT:

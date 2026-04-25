@@ -1,10 +1,9 @@
 import asyncio
-import json
 import logging
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +149,7 @@ class RealtimeStreamManager:
     async def _dispatch_loop(self):
         while self._running:
             try:
-                msg = await asyncio.wait_for(self._message_queue.get(), timeout=1.0)
+                await asyncio.wait_for(self._message_queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
             except Exception:

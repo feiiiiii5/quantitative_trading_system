@@ -1,6 +1,5 @@
 import logging
 from datetime import date, datetime, time, timedelta
-from typing import Optional
 import pytz
 
 logger = logging.getLogger(__name__)

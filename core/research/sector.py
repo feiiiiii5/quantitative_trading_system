@@ -2,9 +2,8 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import List, Optional
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ numpy向量化 + Numba JIT加速
 10万根K线指标计算 < 100ms
 """
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 _NUMBA_AVAILABLE = False
 try:
-    from numba import jit, prange
+    from numba import jit
     _NUMBA_AVAILABLE = True
 except ImportError:
     pass
@@ -52,14 +52,14 @@ def _sma_numba(arr: np.ndarray, period: int) -> np.ndarray:
 
 
 @_jit
-def _atr_numba(h: np.ndarray, l: np.ndarray, c: np.ndarray, period: int) -> np.ndarray:
+def _atr_numba(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int) -> np.ndarray:
     n = len(h)
     tr = np.empty(n)
-    tr[0] = h[0] - l[0]
+    tr[0] = h[0] - low_arr[0]
     for i in range(1, n):
-        a = h[i] - l[i]
+        a = h[i] - low_arr[i]
         b = abs(h[i] - c[i - 1])
-        d = abs(l[i] - c[i - 1])
+        d = abs(low_arr[i] - c[i - 1])
         tr[i] = max(a, max(b, d))
     return _ema_numba(tr, period)
 
@@ -107,18 +107,18 @@ def _macd_numba(c: np.ndarray, fast: int, slow: int, signal: int) -> Tuple[np.nd
 
 
 @_jit
-def _kdj_numba(h: np.ndarray, l: np.ndarray, c: np.ndarray, n: int, m1: int, m2: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _kdj_numba(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, n: int, m1: int, m2: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     length = len(c)
     k = np.full(length, 50.0)
     d = np.full(length, 50.0)
     for i in range(n - 1, length):
         hh = h[i]
-        ll = l[i]
+        ll = low_arr[i]
         for j in range(i - n + 1, i):
             if h[j] > hh:
                 hh = h[j]
-            if l[j] < ll:
-                ll = l[j]
+            if low_arr[j] < ll:
+                ll = low_arr[j]
         rsv = (c[i] - ll) / (hh - ll) * 100 if hh != ll else 50.0
         k[i] = (2.0 / m1) * k[i - 1] + (1.0 / m1) * rsv
         d[i] = (2.0 / m2) * d[i - 1] + (1.0 / m2) * k[i]
@@ -145,26 +145,26 @@ def _boll_numba(c: np.ndarray, period: int, nbdev: float) -> Tuple[np.ndarray, n
 
 
 @_jit
-def _williams_r_numba(h: np.ndarray, l: np.ndarray, c: np.ndarray, period: int) -> np.ndarray:
+def _williams_r_numba(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int) -> np.ndarray:
     n = len(c)
     result = np.empty(n)
     result[:period - 1] = np.nan
     for i in range(period - 1, n):
         hh = h[i]
-        ll = l[i]
+        ll = low_arr[i]
         for j in range(i - period + 1, i):
             if h[j] > hh:
                 hh = h[j]
-            if l[j] < ll:
-                ll = l[j]
+            if low_arr[j] < ll:
+                ll = low_arr[j]
         result[i] = (hh - c[i]) / (hh - ll) * -100 if hh != ll else -50.0
     return result
 
 
 @_jit
-def _cci_numba(h: np.ndarray, l: np.ndarray, c: np.ndarray, period: int) -> np.ndarray:
+def _cci_numba(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int) -> np.ndarray:
     n = len(c)
-    tp = (h + l + c) / 3
+    tp = (h + low_arr + c) / 3
     result = np.empty(n)
     result[:period - 1] = np.nan
     for i in range(period - 1, n):
@@ -196,9 +196,9 @@ def _obv_numba(c: np.ndarray, v: np.ndarray) -> np.ndarray:
 
 
 @_jit
-def _vwap_numba(h: np.ndarray, l: np.ndarray, c: np.ndarray, v: np.ndarray) -> np.ndarray:
+def _vwap_numba(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, v: np.ndarray) -> np.ndarray:
     n = len(c)
-    tp = (h + l + c) / 3
+    tp = (h + low_arr + c) / 3
     cum_tp_v = np.empty(n)
     cum_v = np.empty(n)
     cum_tp_v[0] = tp[0] * v[0]
@@ -213,11 +213,11 @@ def _vwap_numba(h: np.ndarray, l: np.ndarray, c: np.ndarray, v: np.ndarray) -> n
 
 
 @_jit
-def _supertrend_numba(h: np.ndarray, l: np.ndarray, c: np.ndarray,
+def _supertrend_numba(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray,
                       period: int, multiplier: float) -> Tuple[np.ndarray, np.ndarray]:
     n = len(c)
-    atr = _atr_numba(h, l, c, period)
-    hl2 = (h + l) / 2
+    atr = _atr_numba(h, low_arr, c, period)
+    hl2 = (h + low_arr) / 2
     upper = hl2 + multiplier * atr
     lower = hl2 - multiplier * atr
     direction = np.ones(n)
@@ -308,7 +308,7 @@ class FastIndicators:
         """一次性计算所有常用指标"""
         c = df["close"].values.astype(np.float64)
         h = df["high"].values.astype(np.float64) if "high" in df.columns else c
-        l = df["low"].values.astype(np.float64) if "low" in df.columns else c
+        low_arr = df["low"].values.astype(np.float64) if "low" in df.columns else c
         v = df["volume"].values.astype(np.float64) if "volume" in df.columns else np.ones(len(c))
 
         result = {}
@@ -326,7 +326,7 @@ class FastIndicators:
         result["rsi14"] = _rsi_numba(c, 14)
         result["rsi6"] = _rsi_numba(c, 6)
 
-        kdj_data = FastIndicators.kdj(h, l, c)
+        kdj_data = FastIndicators.kdj(h, low_arr, c)
         result["kdj_k"] = kdj_data["k"]
         result["kdj_d"] = kdj_data["d"]
         result["kdj_j"] = kdj_data["j"]
@@ -336,13 +336,13 @@ class FastIndicators:
         result["boll_upper"] = boll_data["upper"]
         result["boll_lower"] = boll_data["lower"]
 
-        result["atr14"] = _atr_numba(h, l, c, 14)
-        result["willr"] = _williams_r_numba(h, l, c, 14)
-        result["cci"] = _cci_numba(h, l, c, 14)
+        result["atr14"] = _atr_numba(h, low_arr, c, 14)
+        result["willr"] = _williams_r_numba(h, low_arr, c, 14)
+        result["cci"] = _cci_numba(h, low_arr, c, 14)
         result["obv"] = _obv_numba(c, v)
-        result["vwap"] = _vwap_numba(h, l, c, v)
+        result["vwap"] = _vwap_numba(h, low_arr, c, v)
 
-        st_data = FastIndicators.supertrend(h, l, c)
+        st_data = FastIndicators.supertrend(h, low_arr, c)
         result["supertrend"] = st_data["supertrend"]
         result["st_direction"] = st_data["direction"]
 

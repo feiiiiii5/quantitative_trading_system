@@ -1,7 +1,6 @@
 """
 QuantCore 配置系统 - Pydantic Settings + YAML
 """
-import os
 from pathlib import Path
 from typing import List, Optional
 from pydantic import Field

@@ -3,7 +3,7 @@ import logging
 import logging.handlers
 import time
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Optional
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 LOG_DIR = DATA_DIR / "logs"

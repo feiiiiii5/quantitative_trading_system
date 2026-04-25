@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 import numpy as np
 from fastapi import APIRouter, Query, Request

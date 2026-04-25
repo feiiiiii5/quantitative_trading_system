@@ -1,14 +1,13 @@
 import logging
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-from core.strategies import BaseStrategy, SignalType, TradeSignal, StrategyResult
+from core.strategies import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -142,9 +141,6 @@ class EventBacktestEngine:
         data = event.data
         symbol = data.get("symbol", "")
         signal_type = data.get("signal_type", "hold")
-        strength = data.get("strength", 0)
-        stop_loss = data.get("stop_loss", 0)
-        take_profit = data.get("take_profit", 0)
 
         if signal_type == "buy" and symbol not in self._account.positions:
             price = self._current_prices.get(symbol, 0)
@@ -214,7 +210,7 @@ class EventBacktestEngine:
 
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
+        low_arr = df["low"].values.astype(float)
         dates = df["date"].values if "date" in df.columns else np.arange(len(df))
         date_strs = [str(pd.Timestamp(d).date()) if not isinstance(d, str) else d for d in dates]
 
@@ -237,10 +233,9 @@ class EventBacktestEngine:
                         "stop_loss": sig.stop_loss, "take_profit": sig.take_profit,
                     }
 
-        start_time = time.time()
         for i in range(len(c)):
             bar_event = Event(EventType.BAR, {
-                "symbol": symbol, "close": c[i], "high": h[i], "low": l[i],
+                "symbol": symbol, "close": c[i], "high": h[i], "low": low_arr[i],
                 "open": df["open"].values[i] if "open" in df.columns else c[i],
                 "date": date_strs[i] if i < len(date_strs) else "",
             })
@@ -268,9 +263,6 @@ class EventBacktestEngine:
                     "exit_reason": "end_of_data",
                 })
                 del self._account.positions[sym]
-
-        elapsed = time.time() - start_time
-        bars_per_sec = len(c) / elapsed if elapsed > 0 else 0
 
         return self._calculate_result(symbol, c)
 

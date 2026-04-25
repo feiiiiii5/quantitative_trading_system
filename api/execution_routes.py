@@ -1,12 +1,8 @@
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Query, Request
 
-from core.execution.order_router import SmartOrderRouter, OrderRequest, OrderSide, OrderType
-from core.execution.algo_engine import AlgoExecutionEngine, AlgoType
-from core.execution.multi_account import MultiAccountManager
-from core.execution.paper_live import PaperLiveSwitch
+from core.execution.order_router import OrderRequest, OrderSide, OrderType
 
 logger = logging.getLogger(__name__)
 execution_router = APIRouter(prefix="/exec", tags=["执行与交易"])

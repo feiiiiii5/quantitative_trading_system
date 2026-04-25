@@ -1,8 +1,7 @@
 import logging
 import os
-import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 import numpy as np
 import pandas as pd
@@ -57,7 +56,7 @@ class FeatureEngineeringPipeline:
         df = df.copy()
         c = df["close"].values.astype(float) if "close" in df.columns else np.array([])
         h = df["high"].values.astype(float) if "high" in df.columns else np.array([])
-        l = df["low"].values.astype(float) if "low" in df.columns else np.array([])
+        low_arr = df["low"].values.astype(float) if "low" in df.columns else np.array([])
         v = df["volume"].values.astype(float) if "volume" in df.columns else np.array([])
 
         for feat in self._features:
@@ -88,9 +87,9 @@ class FeatureEngineeringPipeline:
                     df[feat.name] = np.where(avg_v > 0, v / avg_v, 1)
                 elif feat.function == "atr_ratio":
                     p = feat.params.get("period", 14)
-                    if len(h) > 0 and len(l) > 0 and len(c) > 0:
-                        tr = np.maximum(h - l, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(l - np.roll(c, 1))))
-                        tr[0] = h[0] - l[0] if len(h) > 0 else 0
+                    if len(h) > 0 and len(low_arr) > 0 and len(c) > 0:
+                        tr = np.maximum(h - low_arr, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(low_arr - np.roll(c, 1))))
+                        tr[0] = h[0] - low_arr[0] if len(h) > 0 else 0
                         atr = pd.Series(tr).rolling(p).mean().values
                         df[feat.name] = np.where(c > 0, atr / c, 0)
                 elif feat.function == "bb_position":
@@ -423,16 +422,9 @@ class MLStrategyModule:
             {"name": "lightgbm", "display_name": "LightGBM", "available": False},
             {"name": "xgboost", "display_name": "XGBoost", "available": False},
         ]
-        try:
-            import lightgbm
-            models[0]["available"] = True
-        except ImportError:
-            pass
-        try:
-            import xgboost
-            models[1]["available"] = True
-        except ImportError:
-            pass
+        import importlib
+        models[0]["available"] = importlib.util.find_spec("lightgbm") is not None
+        models[1]["available"] = importlib.util.find_spec("xgboost") is not None
         return models
 
     def get_features_info(self) -> List[dict]:

@@ -19,6 +19,20 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
+from api.routes import router
+from api.websocket import ws_router
+from api.data_routes import data_router
+from api.backtest_routes import backtest_router
+from api.risk_routes import risk_router
+from api.strategy_routes import strategy_router
+from api.execution_routes import execution_router
+from api.portfolio_routes import portfolio_router
+from api.monitor_routes import monitor_router
+from api.research_routes import research_router
+from api.ai_routes import ai_router
+from api.platform_routes import platform_router
+from api.analysis_routes import analysis_router
+
 from core.logger import setup_logger
 
 setup_logger(logging.INFO)
@@ -211,56 +225,18 @@ async def lazy_state_middleware(request, call_next):
 
 
 # ==================== 路由注册 ====================
-# 主路由
-from api.routes import router
 app.include_router(router, prefix="/api")
-
-# WebSocket
-from api.websocket import ws_router
 app.include_router(ws_router)
-
-# 数据路由
-from api.data_routes import data_router
 app.include_router(data_router, prefix="/api")
-
-# 回测路由
-from api.backtest_routes import backtest_router
 app.include_router(backtest_router, prefix="/api")
-
-# 风控路由
-from api.risk_routes import risk_router
 app.include_router(risk_router, prefix="/api")
-
-# 策略路由
-from api.strategy_routes import strategy_router
 app.include_router(strategy_router, prefix="/api")
-
-# 执行路由
-from api.execution_routes import execution_router
 app.include_router(execution_router, prefix="/api")
-
-# 组合路由
-from api.portfolio_routes import portfolio_router
 app.include_router(portfolio_router, prefix="/api")
-
-# 监控路由
-from api.monitor_routes import monitor_router
 app.include_router(monitor_router, prefix="/api")
-
-# 研究路由
-from api.research_routes import research_router
 app.include_router(research_router, prefix="/api")
-
-# AI路由
-from api.ai_routes import ai_router
 app.include_router(ai_router, prefix="/api")
-
-# 平台路由
-from api.platform_routes import platform_router
 app.include_router(platform_router, prefix="/api")
-
-# 分析路由
-from api.analysis_routes import analysis_router
 app.include_router(analysis_router, prefix="/api")
 
 # 静态文件

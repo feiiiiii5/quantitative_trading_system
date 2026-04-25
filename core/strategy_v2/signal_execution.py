@@ -1,14 +1,12 @@
 import logging
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-from core.strategies import SignalType, TradeSignal, StrategyResult
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +155,6 @@ class RiskParityPortfolio(PortfolioModel):
         symbols = alpha.target_symbols or list(current_weights.keys())
         if not symbols:
             return PortfolioOutput()
-        n = len(symbols)
         inv_vol = {s: 1.0 / max(0.01, alpha.strength) for s in symbols}
         total = sum(inv_vol.values())
         target = {s: v / total for s, v in inv_vol.items()}

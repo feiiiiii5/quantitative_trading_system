@@ -4,8 +4,6 @@ QuantCore 内置策略集 - 8+策略
 所有策略参数通过YAML配置文件调整, 不硬编码
 """
 import logging
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
 
 import numpy as np
 import pandas as pd
@@ -32,10 +30,10 @@ class DualMACrossStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
+        low_arr = df["low"].values.astype(float)
         ma_fast = pd.Series(c).rolling(self.fast).mean().values
         ma_slow = pd.Series(c).rolling(self.slow).mean().values
-        atr = self._calc_atr(h, l, c, self.atr_period)
+        atr = self._calc_atr(h, low_arr, c, self.atr_period)
         signals = []
         for i in range(self.slow + 1, len(c)):
             if np.isnan(ma_fast[i]) or np.isnan(ma_slow[i]):
@@ -77,8 +75,8 @@ class MACDStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
         s = pd.Series(c)
         ema_fast = s.ewm(span=self.fast, adjust=False).mean()
         ema_slow = s.ewm(span=self.slow, adjust=False).mean()
@@ -127,8 +125,8 @@ class RSIMeanReversionStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
         delta = np.diff(c, prepend=c[0])
         gain = np.where(delta > 0, delta, 0)
         loss = np.where(delta < 0, -delta, 0)
@@ -177,15 +175,15 @@ class SuperTrendStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        tr = np.maximum(h - l, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(l - np.roll(c, 1))))
-        tr[0] = h[0] - l[0]
+        low_arr = df["low"].values.astype(float)
+        tr = np.maximum(h - low_arr, np.maximum(np.abs(h - np.roll(c, 1)), np.abs(low_arr - np.roll(c, 1))))
+        tr[0] = h[0] - low_arr[0]
         atr = pd.Series(tr).rolling(self.period).mean().values
         n = len(c)
         upper_band = np.zeros(n)
         lower_band = np.zeros(n)
         direction = np.ones(n)
-        hl2 = (h + l) / 2
+        hl2 = (h + low_arr) / 2
         upper_band = hl2 + self.multiplier * atr
         lower_band = hl2 - self.multiplier * atr
         for i in range(1, n):
@@ -235,10 +233,10 @@ class KDJStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
         hh = pd.Series(h).rolling(self.n).max().values
-        ll = pd.Series(l).rolling(self.n).min().values
+        ll = pd.Series(low_arr).rolling(self.n).min().values
         rsv = np.where(np.isfinite(hh) & np.isfinite(ll) & (hh != ll), (c - ll) / (hh - ll) * 100, 50.0)
         k = np.full(len(c), 50.0)
         d = np.full(len(c), 50.0)
@@ -280,8 +278,8 @@ class BollingerBreakoutStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
         s = pd.Series(c)
         mid = s.rolling(self.period).mean().values
         std = s.rolling(self.period).std().values
@@ -324,8 +322,8 @@ class MomentumStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
         momentum = np.zeros(len(c))
         for i in range(self.lookback, len(c)):
             momentum[i] = (c[i] - c[i - self.lookback]) / c[i - self.lookback] * 100
@@ -364,13 +362,13 @@ class VolumeBreakoutStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
+        low_arr = df["low"].values.astype(float)
         v = df["volume"].values.astype(float) if "volume" in df.columns else np.ones(len(c))
-        atr = self._calc_atr(h, l, c)
+        atr = self._calc_atr(h, low_arr, c)
         vol_ma = pd.Series(v).rolling(self.vol_period).mean().values
         vol_ratio = np.where(vol_ma > 0, v / vol_ma, 1.0)
         hh20 = pd.Series(h).rolling(20).max().values
-        ll20 = pd.Series(l).rolling(20).min().values
+        ll20 = pd.Series(low_arr).rolling(20).min().values
         signals = []
         for i in range(self.vol_period + 1, len(c)):
             if np.isnan(vol_ratio[i]) or np.isnan(hh20[i]) or np.isnan(ll20[i]):
@@ -408,8 +406,8 @@ class GridTradingStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
         window = c[-60:] if len(c) >= 60 else c
         price_high = np.max(window)
         price_low = np.min(window)
@@ -453,25 +451,20 @@ class MultiFactorStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
+        low_arr = df["low"].values.astype(float)
         v = df["volume"].values.astype(float) if "volume" in df.columns else np.ones(len(c))
-        atr = self._calc_atr(h, l, c)
-        # 动量因子
+        atr = self._calc_atr(h, low_arr, c)
         mom_20 = (c[-1] / c[-21] - 1) * 100 if len(c) > 20 else 0
         mom_score = min(100, max(-100, mom_20 * 5))
-        # 波动率因子 (低波动率得分高)
         rets = np.diff(c[-20:]) / c[-20:-1] if len(c) > 20 else np.array([0.0])
         vol = np.std(rets) * np.sqrt(252) * 100
         vol_score = max(-100, min(100, (30 - vol) * 5))
-        # 成交量因子
         vol_ma = np.mean(v[-20:]) if len(v) >= 20 else v[-1]
         vol_ratio = v[-1] / vol_ma if vol_ma > 0 else 1
         volume_score = min(100, max(-100, (vol_ratio - 1) * 50))
-        # 趋势因子
         ma5 = np.mean(c[-5:])
         ma20 = np.mean(c[-20:])
         trend_score = 80 if ma5 > ma20 else -80
-        # 综合评分
         composite = (mom_score * self.momentum_weight + vol_score * self.volatility_weight +
                      volume_score * self.volume_weight + trend_score * self.trend_weight)
         signals = []
@@ -507,9 +500,8 @@ class PairTradingStrategy(BaseStrategy):
             return StrategyResult(name=self.name, description=self.description)
         c = df["close"].values.astype(float)
         h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
-        atr = self._calc_atr(h, l, c)
-        # 简化: 使用价格与自身均值的偏离度模拟价差
+        low_arr = df["low"].values.astype(float)
+        atr = self._calc_atr(h, low_arr, c)
         ma = pd.Series(c).rolling(self.lookback).mean().values
         std = pd.Series(c).rolling(self.lookback).std().values
         spread = np.where(std > 0, (c - ma) / std, 0)

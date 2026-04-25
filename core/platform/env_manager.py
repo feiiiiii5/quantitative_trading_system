@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -21,7 +20,6 @@ class EnvironmentConfig:
     custom_config: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        masked_keys = {k: v[:4] + "****" if len(v) > 4 else "****" for k, v in self.api_keys.items()}
         return {
             "env_name": self.env_name,
             "api_keys": list(self.api_keys.keys()),

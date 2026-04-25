@@ -4,7 +4,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +99,7 @@ class MarketSentimentAnalyzer:
     async def _fetch_margin_data(self, symbol: str) -> Optional[dict]:
         try:
             import requests
-            url = f"https://datacenter-web.eastmoney.com/api/data/v1/get"
+            url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
             params = {
                 "reportName": "RPT_MARGIN_TRADING",
                 "columns": "RQYE,RQYEMRJZB",

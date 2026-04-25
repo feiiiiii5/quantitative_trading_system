@@ -26,8 +26,6 @@ class PricePredictor:
         if not indicators:
             return PricePredictor._empty_prediction()
         c = df["close"].values.astype(float)
-        h = df["high"].values.astype(float)
-        l = df["low"].values.astype(float)
         v = df["volume"].values.astype(float) if "volume" in df.columns else np.ones(len(df))
 
         trend_score = PricePredictor._trend_momentum_score(c, indicators)

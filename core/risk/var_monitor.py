@@ -1,7 +1,6 @@
 import logging
-import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -161,7 +160,6 @@ class VaRMonitor:
     ) -> GreeksResult:
         try:
             from scipy.stats import norm
-            from scipy import stats
         except ImportError:
             return GreeksResult(symbol=symbol)
 

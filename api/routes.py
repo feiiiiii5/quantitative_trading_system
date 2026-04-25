@@ -8,15 +8,13 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Query, Request
 
-from core.backtest import BacktestEngine
 from core.data_fetcher import SmartDataFetcher, KLINE_TYPE_MAP
 from core.indicators import TechnicalIndicators
 from core.market_detector import MarketDetector
 from core.market_hours import MarketHours
 from core.prediction import PricePredictor
 from core.stock_search import search_stocks, get_stock_info, get_all_industries, get_hot_search_terms, get_stocks_by_market, get_market_summary
-from core.market_data import get_market_page, get_stock_list, refresh_stock_list
-from core.strategies import CompositeStrategy
+from core.market_data import get_market_page, refresh_stock_list
 from core.simulated_trading import SimulatedTrading
 from core.file_cache import get as file_cache_get, set as file_cache_set
 

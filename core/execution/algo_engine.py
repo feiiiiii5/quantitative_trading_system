@@ -2,9 +2,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import List, Optional
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +218,6 @@ class AlgoExecutionEngine:
                 order.filled_quantity += qty
                 order.total_slippage += qty * delay_slip
 
-        is_cost = abs(order.avg_fill_price - arrival_price) * quantity if quantity > 0 else 0
         order.progress = 1.0
         order.status = "completed"
         order.avg_fill_price = price + (order.total_slippage / quantity if quantity > 0 else 0)

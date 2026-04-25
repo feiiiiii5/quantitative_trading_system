@@ -2,7 +2,6 @@ import logging
 
 from fastapi import APIRouter, Query, Request
 
-from core.analysis_service import AnalysisService
 
 logger = logging.getLogger(__name__)
 analysis_router = APIRouter(prefix="/analysis", tags=["技术分析与研究增强"])

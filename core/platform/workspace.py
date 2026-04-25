@@ -385,8 +385,7 @@ class WorkspaceManager:
         return {"code": 0, "data": shortcuts, "msg": ""}
 
     def set_shortcut(self, key: str, action: str, description: str = "", scope: str = "global") -> dict:
-        existing = None
-        for k, sc in self._shortcuts.items():
+        for k, sc in list(self._shortcuts.items()):
             if sc.action == action and k != key:
                 del self._shortcuts[k]
                 break

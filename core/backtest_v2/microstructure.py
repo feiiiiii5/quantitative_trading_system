@@ -2,9 +2,8 @@ import logging
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +166,7 @@ class MicrostructureSimulator:
             if self.orderbook_mechanism == OrderBookMechanism.FIFO:
                 fill_qty = min(remaining, int(level.volume))
             else:
-                fill_qty = min(remaining, int(level.volume * remaining / max(sum(l.volume for l in levels), 1)))
+                fill_qty = min(remaining, int(level.volume * remaining / max(sum(lv.volume for lv in levels), 1)))
 
             total_cost += fill_qty * level.price
             total_filled += fill_qty

@@ -3,11 +3,10 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -294,12 +293,8 @@ class SinaAdapter(DataSourceAdapter):
 
 class YFinanceAdapter(DataSourceAdapter):
     def __init__(self):
-        self._available = False
-        try:
-            import yfinance
-            self._available = True
-        except ImportError:
-            pass
+        import importlib.util
+        self._available = importlib.util.find_spec("yfinance") is not None
 
     @property
     def name(self) -> str:

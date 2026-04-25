@@ -1,18 +1,13 @@
 import logging
-from typing import Optional
 
 import numpy as np
 from fastapi import APIRouter, Query, Request
 
-from core.strategy_v2.visual_builder import VisualStrategyBuilder
 from core.strategy_v2.signal_execution import (
     SignalExecutionDecoupler, MomentumAlpha, MeanReversionAlpha,
     EqualWeightPortfolio, RiskParityPortfolio, BasicRiskModel,
     TWAPExecution, VWAPExecution,
 )
-from core.strategy_v2.ml_strategy import MLStrategyModule
-from core.strategy_v2.factor_research import FactorResearchWorkbench
-from core.strategy_v2.strategy_version import StrategyVersionControl
 
 logger = logging.getLogger(__name__)
 strategy_router = APIRouter(prefix="/strategy", tags=["策略开发框架"])

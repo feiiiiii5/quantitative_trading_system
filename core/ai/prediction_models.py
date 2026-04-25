@@ -1,6 +1,6 @@
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -56,7 +56,6 @@ class LSTMPredictor:
 
         try:
             from sklearn.preprocessing import MinMaxScaler
-            from sklearn.model_selection import train_test_split
 
             scaler = MinMaxScaler()
             scaled = scaler.fit_transform(prices.reshape(-1, 1))
@@ -67,26 +66,25 @@ class LSTMPredictor:
                 y.append(scaled[i, 0])
             X, y = np.array(X), np.array(y)
 
-            try:
-                import tensorflow as tf
-                from tensorflow.keras.models import Sequential
-                from tensorflow.keras.layers import LSTM, Dense, Dropout
-
-                X = X.reshape(X.shape[0], X.shape[1], 1)
-                model = Sequential([
-                    LSTM(50, return_sequences=True, input_shape=(self.lookback, 1)),
-                    Dropout(0.2),
-                    LSTM(50),
-                    Dropout(0.2),
-                    Dense(1),
-                ])
-                model.compile(optimizer="adam", loss="mse")
-                model.fit(X, y, epochs=10, batch_size=32, verbose=0)
-                self._model = model
-                self._scaler = scaler
-                return {"success": True, "model": "lstm", "samples": len(y)}
-            except ImportError:
+            import importlib.util
+            if importlib.util.find_spec("tensorflow.keras.models") is None:
                 return {"success": False, "error": "需要安装tensorflow"}
+            from tensorflow.keras.models import Sequential
+            from tensorflow.keras.layers import LSTM, Dense, Dropout
+
+            X = X.reshape(X.shape[0], X.shape[1], 1)
+            model = Sequential([
+                LSTM(50, return_sequences=True, input_shape=(self.lookback, 1)),
+                Dropout(0.2),
+                LSTM(50),
+                Dropout(0.2),
+                Dense(1),
+            ])
+            model.compile(optimizer="adam", loss="mse")
+            model.fit(X, y, epochs=10, batch_size=32, verbose=0)
+            self._model = model
+            self._scaler = scaler
+            return {"success": True, "model": "lstm", "samples": len(y)}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -149,16 +147,9 @@ class PredictionModelPlatform:
             {"name": "garch", "display": "GARCH", "available": False, "type": "volatility"},
             {"name": "transformer", "display": "Transformer", "available": False, "type": "price"},
         ]
-        try:
-            import tensorflow
-            models[0]["available"] = True
-        except ImportError:
-            pass
-        try:
-            import arch
-            models[1]["available"] = True
-        except ImportError:
-            pass
+        import importlib.util
+        models[0]["available"] = importlib.util.find_spec("tensorflow") is not None
+        models[1]["available"] = importlib.util.find_spec("arch") is not None
         return models
 
     def train_model(self, model_name: str, data: np.ndarray, **kwargs) -> dict:

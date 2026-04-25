@@ -3,7 +3,6 @@
 """
 import numpy as np
 from typing import Optional, List, Dict, Any
-from datetime import datetime
 
 from strategy.base import Strategy, Bar, Signal, SignalType
 

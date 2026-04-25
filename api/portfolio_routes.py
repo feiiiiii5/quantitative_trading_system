@@ -1,14 +1,8 @@
 import logging
-from typing import Optional
 
 import numpy as np
 from fastapi import APIRouter, Query, Request
 
-from core.portfolio.capital_allocator import CapitalAllocator
-from core.portfolio.rebalance import RebalanceEngine
-from core.portfolio.attribution import PerformanceAttribution
-from core.portfolio.derivatives import DerivativesManager
-from core.portfolio.tearsheet import TearsheetGenerator
 
 logger = logging.getLogger(__name__)
 portfolio_router = APIRouter(prefix="/portfolio", tags=["组合管理"])

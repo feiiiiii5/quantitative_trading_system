@@ -84,10 +84,7 @@ class SmartAlertSystem:
         webhook = self._channel_config.get("dingtalk_webhook")
         if not webhook:
             return
-        
-        level_color = {"info": "#007FFF", "warning": "#FFA500", "critical": "#FF0000", "emergency": "#8B0000"}
-        color = level_color.get(alert.level.value, "#007FFF")
-        
+
         data = {
             "msgtype": "markdown",
             "markdown": {
@@ -245,7 +242,6 @@ class SmartAlertSystem:
         self._alerts = deque([a for a in self._alerts if a.created_at >= cutoff], maxlen=1000)
         
         # 清理过期的告警组
-        now = time.time()
         self._group_tracker = {
             k: v for k, v in self._group_tracker.items()
             if any(a.created_at >= cutoff for a in v)

@@ -66,7 +66,7 @@ def _return_db_connection(conn):
     except Exception:
         try:
             conn.close()
-        except:
+        except Exception:
             pass
 
 

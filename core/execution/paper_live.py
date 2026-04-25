@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
