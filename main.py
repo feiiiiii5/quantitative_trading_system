@@ -239,10 +239,10 @@ app.include_router(ai_router, prefix="/api")
 app.include_router(platform_router, prefix="/api")
 app.include_router(analysis_router, prefix="/api")
 
-# 静态文件
-static_dir = BASE_DIR / "static"
-if static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+# 静态文件 - assets目录
+assets_dir = BASE_DIR / "static" / "assets"
+if assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
 
 # ==================== 根路由 ====================
@@ -258,6 +258,23 @@ def index():
         "status": "running",
         "docs": "/docs"
     }
+
+
+# SPA fallback - 非API/非静态路由返回index.html (必须在所有API路由之后)
+from starlette.responses import Response as StarletteResponse
+
+
+@app.middleware("http")
+async def spa_middleware(request, call_next):
+    """SPA路由中间件 - 未匹配的前端路由返回index.html"""
+    response = await call_next(request)
+    path = request.url.path
+    if response.status_code == 404 and not path.startswith("/api") and not path.startswith("/docs") and not path.startswith("/redoc") and not path.startswith("/openapi"):
+        if "text/html" in request.headers.get("accept", ""):
+            index_file = BASE_DIR / "static" / "index.html"
+            if index_file.exists():
+                return FileResponse(str(index_file))
+    return response
 
 
 @app.get("/health")
