@@ -253,7 +253,7 @@ class SmartAlertSystem:
 
     def send_heartbeat(self, source: str = "system"):
         """发送心跳告警"""
-        self.send_alert(
+        return self.send_alert(
             title="系统心跳",
             message="系统运行正常",
             level=AlertLevel.INFO,

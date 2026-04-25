@@ -74,6 +74,37 @@ class DerivativesManager:
     def add_option(self, position: OptionPosition):
         self._options[position.symbol] = position
 
+    def add_futures_position(self, symbol: str, quantity: int, entry_price: float,
+                             contract_month: str = "", multiplier: float = 1.0,
+                             margin_rate: float = 0.1) -> dict:
+        pos = FuturesPosition(
+            symbol=symbol, contract=contract_month, quantity=quantity,
+            entry_price=entry_price, current_price=entry_price,
+            multiplier=multiplier, margin_rate=margin_rate,
+        )
+        self.add_future(pos)
+        return pos.to_dict()
+
+    def add_option_position(self, symbol: str, quantity: int, entry_price: float,
+                            option_type: str = "call", strike: float = 0.0,
+                            expiry: str = "", underlying: str = "",
+                            delta: float = 0.0, gamma: float = 0.0,
+                            theta: float = 0.0, vega: float = 0.0) -> dict:
+        pos = OptionPosition(
+            symbol=symbol, option_type=option_type, strike=strike,
+            expiry=expiry, quantity=quantity, entry_price=entry_price,
+            underlying_price=0.0, delta=delta, gamma=gamma,
+            theta=theta, vega=vega,
+        )
+        self.add_option(pos)
+        return pos.to_dict()
+
+    def check_roll_dates(self) -> List[dict]:
+        return self.check_roll_reminders()
+
+    def get_greeks_summary(self) -> dict:
+        return self.calculate_option_greeks_summary()
+
     def remove_future(self, symbol: str):
         self._futures.pop(symbol, None)
 

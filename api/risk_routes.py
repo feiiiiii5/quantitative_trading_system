@@ -11,14 +11,14 @@ from core.risk.stress_test import RiskStressTest
 from core.risk.risk_attribution import RiskAttribution
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/risk", tags=["风险管理"])
+risk_router = APIRouter(prefix="/risk", tags=["风险管理"])
 
 
 def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-@router.post("/var/calculate")
+@risk_router.post("/var/calculate")
 async def calculate_var(
     request: Request,
     returns: str = Query(..., description="逗号分隔的收益率序列"),
@@ -35,7 +35,7 @@ async def calculate_var(
         return _resp(False, msg=str(e))
 
 
-@router.post("/var/portfolio")
+@risk_router.post("/var/portfolio")
 async def calculate_portfolio_var(
     request: Request,
     symbols: str = Query(..., description="逗号分隔的股票代码"),
@@ -55,7 +55,7 @@ async def calculate_portfolio_var(
         return _resp(False, msg=str(e))
 
 
-@router.post("/var/greeks")
+@risk_router.post("/var/greeks")
 async def calculate_greeks(
     request: Request,
     symbol: str = Query(...),
@@ -70,7 +70,7 @@ async def calculate_greeks(
     return _resp(True, data=result.to_dict())
 
 
-@router.post("/position/calculate")
+@risk_router.post("/position/calculate")
 async def calculate_position(
     request: Request,
     symbol: str = Query(...),
@@ -90,12 +90,12 @@ async def calculate_position(
         return _resp(False, msg=f"不支持的仓位模式: {mode}")
 
 
-@router.get("/position/mode-info")
+@risk_router.get("/position/mode-info")
 async def get_position_mode_info(request: Request):
     return _resp(True, data=request.app.state.position_mgr.get_mode_info())
 
 
-@router.post("/position/set-constraints")
+@risk_router.post("/position/set-constraints")
 async def set_position_constraints(
     request: Request,
     max_single_pct: float = Query(0.3),
@@ -113,7 +113,7 @@ async def set_position_constraints(
     return _resp(True, msg="约束已更新")
 
 
-@router.post("/position/portfolio-risk")
+@risk_router.post("/position/portfolio-risk")
 async def get_portfolio_risk(request: Request, positions: str = Query(..., description="JSON格式的持仓数据")):
     try:
         import json
@@ -124,7 +124,7 @@ async def get_portfolio_risk(request: Request, positions: str = Query(..., descr
         return _resp(False, msg=str(e))
 
 
-@router.post("/stoploss/set")
+@risk_router.post("/stoploss/set")
 async def set_stop_loss(
     request: Request,
     symbol: str = Query(...),
@@ -145,7 +145,7 @@ async def set_stop_loss(
         return _resp(False, msg=f"不支持的止损类型: {stop_type}")
 
 
-@router.post("/stoploss/set-take-profit")
+@risk_router.post("/stoploss/set-take-profit")
 async def set_take_profit(
     request: Request,
     symbol: str = Query(...),
@@ -157,7 +157,7 @@ async def set_take_profit(
     return _resp(True, data=order.to_dict())
 
 
-@router.post("/stoploss/check")
+@risk_router.post("/stoploss/check")
 async def check_stop_loss(
     request: Request,
     symbol: str = Query(...),
@@ -169,7 +169,7 @@ async def check_stop_loss(
     return _resp(True, data={"stop_loss": sl_result, "take_profit": tp_result})
 
 
-@router.post("/stoploss/circuit-breaker")
+@risk_router.post("/stoploss/circuit-breaker")
 async def check_circuit_breaker(
     request: Request,
     current_equity: float = Query(...),
@@ -179,19 +179,19 @@ async def check_circuit_breaker(
     return _resp(True, data=result)
 
 
-@router.get("/stoploss/orders")
+@risk_router.get("/stoploss/orders")
 async def get_active_orders(request: Request):
     orders = request.app.state.stop_loss_mgr.get_active_orders()
     return _resp(True, data=orders)
 
 
-@router.get("/stress/scenarios")
+@risk_router.get("/stress/scenarios")
 async def get_stress_scenarios(request: Request):
     scenarios = request.app.state.stress_test.get_scenarios()
     return _resp(True, data=scenarios)
 
 
-@router.post("/stress/run")
+@risk_router.post("/stress/run")
 async def run_stress_test(
     request: Request,
     scenario_name: str = Query(...),
@@ -206,7 +206,7 @@ async def run_stress_test(
         return _resp(False, msg=str(e))
 
 
-@router.post("/stress/run-all")
+@risk_router.post("/stress/run-all")
 async def run_all_stress_tests(request: Request, positions: str = Query(..., description="JSON格式的持仓数据")):
     try:
         import json
@@ -217,7 +217,7 @@ async def run_all_stress_tests(request: Request, positions: str = Query(..., des
         return _resp(False, msg=str(e))
 
 
-@router.post("/stress/custom")
+@risk_router.post("/stress/custom")
 async def run_custom_stress(
     request: Request,
     positions: str = Query(..., description="JSON格式的持仓数据"),
@@ -234,7 +234,7 @@ async def run_custom_stress(
         return _resp(False, msg=str(e))
 
 
-@router.post("/attribution/brinson")
+@risk_router.post("/attribution/brinson")
 async def brinson_attribution(
     request: Request,
     portfolio_returns: str = Query(..., description="JSON"),
@@ -254,7 +254,7 @@ async def brinson_attribution(
         return _resp(False, msg=str(e))
 
 
-@router.post("/attribution/barra")
+@risk_router.post("/attribution/barra")
 async def barra_exposures(request: Request, returns: str = Query(..., description="逗号分隔的收益率序列")):
     try:
         ret_array = np.array([float(r) for r in returns.split(",") if r.strip()])
@@ -264,7 +264,7 @@ async def barra_exposures(request: Request, returns: str = Query(..., descriptio
         return _resp(False, msg=str(e))
 
 
-@router.post("/attribution/report")
+@risk_router.post("/attribution/report")
 async def generate_risk_report(request: Request, returns: str = Query(..., description="逗号分隔的收益率序列")):
     try:
         ret_array = np.array([float(r) for r in returns.split(",") if r.strip()])

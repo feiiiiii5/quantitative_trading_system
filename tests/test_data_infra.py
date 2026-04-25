@@ -109,38 +109,34 @@ class TestDataSourceHealth:
 
 
 class TestRealtimeStreamManager:
-    @pytest.mark.asyncio
-    async def test_subscribe(self):
+    def test_subscribe(self):
         mgr = RealtimeStreamManager()
         assert mgr.subscribe("600519")
         assert "600519" in mgr._subscriptions
 
-    @pytest.mark.asyncio
-    async def test_unsubscribe(self):
+    def test_unsubscribe(self):
         mgr = RealtimeStreamManager()
         mgr.subscribe("600519")
         mgr.unsubscribe("600519")
         assert "600519" not in mgr._subscriptions
 
-    @pytest.mark.asyncio
-    async def test_max_subscriptions(self):
+    def test_max_subscriptions(self):
         mgr = RealtimeStreamManager(max_subscriptions=2)
         assert mgr.subscribe("A")
         assert mgr.subscribe("B")
         assert not mgr.subscribe("C")
 
-    @pytest.mark.asyncio
-    async def test_push_data(self):
+    def test_push_data(self):
         mgr = RealtimeStreamManager()
         mgr.subscribe("600519")
         received = []
         mgr._subscriptions["600519"].callback = lambda msg: received.append(msg)
-        await mgr.push_data("600519", {"price": 1800})
+        import asyncio
+        asyncio.run(mgr.push_data("600519", {"price": 1800}))
         assert len(received) == 1
         assert received[0].data["price"] == 1800
 
-    @pytest.mark.asyncio
-    async def test_get_status(self):
+    def test_get_status(self):
         mgr = RealtimeStreamManager()
         mgr.subscribe("600519")
         status = mgr.get_status()

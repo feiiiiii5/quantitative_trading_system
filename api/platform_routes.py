@@ -11,44 +11,44 @@ from core.platform.auth_security import AuthSecurityManager, Role
 from core.platform.workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/platform", tags=["平台工程"])
+platform_router = APIRouter(prefix="/platform", tags=["平台工程"])
 
 
 def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-@router.post("/microservice/start")
+@platform_router.post("/microservice/start")
 async def start_microservices(request: Request):
     result = await request.app.state.microservice_mgr.start()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/microservice/stop")
+@platform_router.post("/microservice/stop")
 async def stop_microservices(request: Request):
     result = await request.app.state.microservice_mgr.stop()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.get("/microservice/status")
+@platform_router.get("/microservice/status")
 async def get_microservice_status(request: Request):
     result = request.app.state.microservice_mgr.get_status()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.get("/microservice/topology")
+@platform_router.get("/microservice/topology")
 async def get_service_topology(request: Request):
     result = request.app.state.microservice_mgr.get_topology()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/microservice/heartbeat/{service_name}")
+@platform_router.post("/microservice/heartbeat/{service_name}")
 async def service_heartbeat(request: Request, service_name: str):
     result = request.app.state.microservice_mgr.heartbeat(service_name)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/microservice/send-message")
+@platform_router.post("/microservice/send-message")
 async def send_service_message(
     request: Request,
     source: str = Query(...),
@@ -65,13 +65,13 @@ async def send_service_message(
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.get("/microservice/messages")
+@platform_router.get("/microservice/messages")
 async def get_service_messages(request: Request, topic: str = Query(""), limit: int = Query(100)):
     result = request.app.state.microservice_mgr.get_message_log(topic, limit)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/scheduler/add")
+@platform_router.post("/scheduler/add")
 async def add_task(
     request: Request,
     name: str = Query(...),
@@ -90,26 +90,26 @@ async def add_task(
     return _resp(True, data={"task_id": task_id}, msg="任务已添加")
 
 
-@router.post("/scheduler/run/{task_id}")
+@platform_router.post("/scheduler/run/{task_id}")
 async def run_task(request: Request, task_id: str):
     result = await request.app.state.scheduler.run_task(task_id)
     success = result.get("success", False)
     return _resp(success, data=result, msg="" if success else result.get("error", ""))
 
 
-@router.post("/scheduler/run-pending")
+@platform_router.post("/scheduler/run-pending")
 async def run_pending_tasks(request: Request):
     results = await request.app.state.scheduler.run_pending()
     return _resp(True, data=results)
 
 
-@router.get("/scheduler/list")
+@platform_router.get("/scheduler/list")
 async def list_tasks(request: Request):
     tasks = request.app.state.scheduler.list_tasks()
     return _resp(True, data=tasks)
 
 
-@router.get("/scheduler/status/{task_id}")
+@platform_router.get("/scheduler/status/{task_id}")
 async def get_task_status(request: Request, task_id: str):
     status = request.app.state.scheduler.get_task_status(task_id)
     if status:
@@ -117,27 +117,27 @@ async def get_task_status(request: Request, task_id: str):
     return _resp(False, msg="任务不存在")
 
 
-@router.delete("/scheduler/remove/{task_id}")
+@platform_router.delete("/scheduler/remove/{task_id}")
 async def remove_task(request: Request, task_id: str):
     async with request.app.state.write_lock:
         result = request.app.state.scheduler.remove_task(task_id)
     return _resp(result.get("success", False), data=result)
 
 
-@router.post("/scheduler/reset/{task_id}")
+@platform_router.post("/scheduler/reset/{task_id}")
 async def reset_task(request: Request, task_id: str):
     async with request.app.state.write_lock:
         result = request.app.state.scheduler.reset_task(task_id)
     return _resp(result.get("success", False), data=result)
 
 
-@router.get("/env/list")
+@platform_router.get("/env/list")
 async def list_environments(request: Request):
     envs = request.app.state.env_manager.list_envs()
     return _resp(True, data=envs)
 
 
-@router.get("/env/config/{env_name}")
+@platform_router.get("/env/config/{env_name}")
 async def get_env_config(request: Request, env_name: str):
     config = request.app.state.env_manager.get_env_config(env_name)
     if config:
@@ -145,7 +145,7 @@ async def get_env_config(request: Request, env_name: str):
     return _resp(False, msg="环境不存在")
 
 
-@router.post("/env/create")
+@platform_router.post("/env/create")
 async def create_environment(
     request: Request,
     env_name: str = Query(...),
@@ -158,7 +158,7 @@ async def create_environment(
     return _resp(result.get("success", False), data=result)
 
 
-@router.post("/env/set-config")
+@platform_router.post("/env/set-config")
 async def set_env_config(
     request: Request,
     env_name: str = Query(...),
@@ -170,7 +170,7 @@ async def set_env_config(
     return _resp(result.get("success", False), data=result)
 
 
-@router.post("/env/promote")
+@platform_router.post("/env/promote")
 async def promote_environment(
     request: Request,
     from_env: str = Query(...),
@@ -181,7 +181,7 @@ async def promote_environment(
     return _resp(result.get("success", False), data=result)
 
 
-@router.post("/env/checklist")
+@platform_router.post("/env/checklist")
 async def update_promotion_checklist(
     request: Request,
     from_env: str = Query(...),
@@ -197,13 +197,13 @@ async def update_promotion_checklist(
         return _resp(False, msg=str(e))
 
 
-@router.post("/env/load-vars/{env_name}")
+@platform_router.post("/env/load-vars/{env_name}")
 async def load_env_vars(request: Request, env_name: str):
     result = request.app.state.env_manager.load_env_vars(env_name)
     return _resp(result.get("success", False), data=result)
 
 
-@router.post("/auth/create-user")
+@platform_router.post("/auth/create-user")
 async def create_user(request: Request, username: str = Query(...), role: str = Query("observer")):
     async with request.app.state.write_lock:
         result = request.app.state.auth_manager.create_user(username, role)
@@ -212,7 +212,7 @@ async def create_user(request: Request, username: str = Query(...), role: str = 
     return _resp(False, msg="用户创建失败")
 
 
-@router.post("/auth/authenticate")
+@platform_router.post("/auth/authenticate")
 async def authenticate(request: Request, api_key: str = Query(...)):
     user = request.app.state.auth_manager.authenticate(api_key)
     if user:
@@ -223,27 +223,27 @@ async def authenticate(request: Request, api_key: str = Query(...)):
     return _resp(False, msg="认证失败")
 
 
-@router.post("/auth/check-permission")
+@platform_router.post("/auth/check-permission")
 async def check_permission(request: Request, username: str = Query(...), permission: str = Query(...)):
     has_perm = request.app.state.auth_manager.check_permission(username, permission)
     return _resp(True, data={"has_permission": has_perm})
 
 
-@router.post("/auth/rotate-key")
+@platform_router.post("/auth/rotate-key")
 async def rotate_api_key(request: Request, username: str = Query(...)):
     async with request.app.state.write_lock:
         result = request.app.state.auth_manager.rotate_api_key(username)
     return _resp(result.get("success", False), data=result)
 
 
-@router.post("/auth/set-active")
+@platform_router.post("/auth/set-active")
 async def set_user_active(request: Request, username: str = Query(...), active: bool = Query(True)):
     async with request.app.state.write_lock:
         result = request.app.state.auth_manager.set_user_active(username, active)
     return _resp(result.get("success", False), data=result)
 
 
-@router.get("/auth/roles")
+@platform_router.get("/auth/roles")
 async def get_roles():
     from core.platform.auth_security import ROLE_PERMISSIONS
     roles = {}
@@ -252,55 +252,55 @@ async def get_roles():
     return _resp(True, data=roles)
 
 
-@router.get("/auth/audit-log")
+@platform_router.get("/auth/audit-log")
 async def get_auth_audit_log(request: Request, limit: int = Query(100)):
     log = request.app.state.auth_manager.get_audit_log(limit)
     return _resp(True, data=log)
 
 
-@router.post("/auth/encrypt")
+@platform_router.post("/auth/encrypt")
 async def encrypt_data(request: Request, data: str = Query(...)):
     encrypted = request.app.state.auth_manager.encrypt(data)
     return _resp(True, data={"encrypted": encrypted})
 
 
-@router.post("/auth/decrypt")
+@platform_router.post("/auth/decrypt")
 async def decrypt_data(request: Request, data: str = Query(...)):
     decrypted = request.app.state.auth_manager.decrypt(data)
     return _resp(True, data={"decrypted": decrypted})
 
 
-@router.get("/workspace/presets")
+@platform_router.get("/workspace/presets")
 async def get_workspace_presets(request: Request):
     result = request.app.state.workspace_mgr.get_presets()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/workspace/create")
+@platform_router.post("/workspace/create")
 async def create_workspace(request: Request, name: str = Query(...), preset: str = Query("")):
     result = request.app.state.workspace_mgr.create_layout(name, preset)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.get("/workspace/list")
+@platform_router.get("/workspace/list")
 async def list_workspaces(request: Request):
     result = request.app.state.workspace_mgr.list_layouts()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.get("/workspace/{layout_id}")
+@platform_router.get("/workspace/{layout_id}")
 async def get_workspace(request: Request, layout_id: str):
     result = request.app.state.workspace_mgr.get_layout(layout_id)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.delete("/workspace/{layout_id}")
+@platform_router.delete("/workspace/{layout_id}")
 async def delete_workspace(request: Request, layout_id: str):
     result = request.app.state.workspace_mgr.delete_layout(layout_id)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/workspace/add-panel")
+@platform_router.post("/workspace/add-panel")
 async def add_workspace_panel(
     request: Request,
     layout_id: str = Query(...),
@@ -321,13 +321,13 @@ async def add_workspace_panel(
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.delete("/workspace/{layout_id}/panel/{panel_id}")
+@platform_router.delete("/workspace/{layout_id}/panel/{panel_id}")
 async def remove_workspace_panel(request: Request, layout_id: str, panel_id: str):
     result = request.app.state.workspace_mgr.remove_panel(layout_id, panel_id)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/workspace/move-panel")
+@platform_router.post("/workspace/move-panel")
 async def move_workspace_panel(
     request: Request,
     layout_id: str = Query(...),
@@ -341,25 +341,25 @@ async def move_workspace_panel(
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/workspace/user-layout")
+@platform_router.post("/workspace/user-layout")
 async def set_user_workspace(request: Request, user_id: str = Query(...), layout_id: str = Query(...)):
     result = request.app.state.workspace_mgr.set_user_layout(user_id, layout_id)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.get("/workspace/user/{user_id}")
+@platform_router.get("/workspace/user/{user_id}")
 async def get_user_workspace(request: Request, user_id: str):
     result = request.app.state.workspace_mgr.get_user_layout(user_id)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.get("/workspace/shortcuts")
+@platform_router.get("/workspace/shortcuts")
 async def get_shortcuts(request: Request):
     result = request.app.state.workspace_mgr.get_shortcuts()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/workspace/set-shortcut")
+@platform_router.post("/workspace/set-shortcut")
 async def set_shortcut(
     request: Request,
     key: str = Query(...),
@@ -371,13 +371,13 @@ async def set_shortcut(
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.delete("/workspace/shortcut/{key}")
+@platform_router.delete("/workspace/shortcut/{key}")
 async def remove_shortcut(request: Request, key: str):
     result = request.app.state.workspace_mgr.remove_shortcut(key)
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))
 
 
-@router.post("/workspace/reset-shortcuts")
+@platform_router.post("/workspace/reset-shortcuts")
 async def reset_shortcuts(request: Request):
     result = request.app.state.workspace_mgr.reset_shortcuts()
     return _resp(result["code"] == 0, data=result.get("data"), msg=result.get("msg", ""))

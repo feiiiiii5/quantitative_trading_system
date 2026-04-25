@@ -11,14 +11,14 @@ from core.portfolio.derivatives import DerivativesManager
 from core.portfolio.tearsheet import TearsheetGenerator
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/portfolio", tags=["组合管理"])
+portfolio_router = APIRouter(prefix="/portfolio", tags=["组合管理"])
 
 
 def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-@router.post("/capital/allocate")
+@portfolio_router.post("/capital/allocate")
 async def allocate_capital(
     request: Request,
     strategies: str = Query(..., description="JSON格式策略指标数据"),
@@ -34,7 +34,7 @@ async def allocate_capital(
         return _resp(False, msg=str(e))
 
 
-@router.post("/capital/correlation")
+@portfolio_router.post("/capital/correlation")
 async def update_correlation(
     request: Request,
     strategy_names: str = Query(..., description="逗号分隔的策略名"),
@@ -51,12 +51,12 @@ async def update_correlation(
         return _resp(False, msg=str(e))
 
 
-@router.get("/capital/info")
+@portfolio_router.get("/capital/info")
 async def get_allocator_info(request: Request):
     return _resp(True, data=request.app.state.capital_allocator.get_info())
 
 
-@router.post("/rebalance/calendar")
+@portfolio_router.post("/rebalance/calendar")
 async def calendar_rebalance(
     request: Request,
     positions: str = Query(..., description="JSON格式持仓数据"),
@@ -76,7 +76,7 @@ async def calendar_rebalance(
         return _resp(False, msg=str(e))
 
 
-@router.post("/rebalance/threshold")
+@portfolio_router.post("/rebalance/threshold")
 async def threshold_rebalance(
     request: Request,
     positions: str = Query(..., description="JSON格式持仓数据"),
@@ -93,7 +93,7 @@ async def threshold_rebalance(
         return _resp(False, msg=str(e))
 
 
-@router.post("/rebalance/tax-aware")
+@portfolio_router.post("/rebalance/tax-aware")
 async def tax_aware_rebalance(
     request: Request,
     positions: str = Query(..., description="JSON格式持仓数据"),
@@ -110,7 +110,7 @@ async def tax_aware_rebalance(
         return _resp(False, msg=str(e))
 
 
-@router.post("/rebalance/cost-estimate")
+@portfolio_router.post("/rebalance/cost-estimate")
 async def estimate_rebalance_cost(
     request: Request,
     orders: str = Query(..., description="JSON格式再平衡订单"),
@@ -124,7 +124,7 @@ async def estimate_rebalance_cost(
         return _resp(False, msg=str(e))
 
 
-@router.post("/attribution/daily")
+@portfolio_router.post("/attribution/daily")
 async def daily_attribution(
     request: Request,
     portfolio_returns: str = Query(..., description="JSON格式组合收益"),
@@ -144,7 +144,7 @@ async def daily_attribution(
         return _resp(False, msg=str(e))
 
 
-@router.post("/attribution/rolling")
+@portfolio_router.post("/attribution/rolling")
 async def rolling_attribution(
     request: Request,
     portfolio_returns: str = Query(..., description="JSON格式组合收益"),
@@ -161,7 +161,7 @@ async def rolling_attribution(
         return _resp(False, msg=str(e))
 
 
-@router.post("/attribution/excess-return")
+@portfolio_router.post("/attribution/excess-return")
 async def excess_return_decomposition(
     request: Request,
     portfolio_returns: str = Query(..., description="逗号分隔的组合收益率"),
@@ -176,7 +176,7 @@ async def excess_return_decomposition(
         return _resp(False, msg=str(e))
 
 
-@router.post("/derivatives/add-futures")
+@portfolio_router.post("/derivatives/add-futures")
 async def add_futures_position(
     request: Request,
     symbol: str = Query(...),
@@ -186,14 +186,17 @@ async def add_futures_position(
     multiplier: float = Query(1),
     margin_rate: float = Query(0.1),
 ):
+    from core.portfolio.derivatives import FuturesPosition
+    pos = FuturesPosition(
+        symbol=symbol, contract=contract_month, quantity=quantity,
+        entry_price=entry_price, current_price=entry_price, multiplier=multiplier, margin_rate=margin_rate,
+    )
     async with request.app.state.write_lock:
-        result = request.app.state.derivatives_mgr.add_futures_position(
-            symbol, quantity, entry_price, contract_month, multiplier, margin_rate,
-        )
-    return _resp(result.get("success", False), data=result)
+        request.app.state.derivatives_mgr.add_future(pos)
+    return _resp(True, data=pos.to_dict())
 
 
-@router.post("/derivatives/add-option")
+@portfolio_router.post("/derivatives/add-option")
 async def add_option_position(
     request: Request,
     symbol: str = Query(...),
@@ -208,44 +211,46 @@ async def add_option_position(
     theta: float = Query(0),
     vega: float = Query(0),
 ):
+    from core.portfolio.derivatives import OptionPosition
+    pos = OptionPosition(
+        symbol=symbol, option_type=option_type, strike=strike, expiry=expiry,
+        quantity=quantity, entry_price=entry_price, underlying_price=0,
+        delta=delta, gamma=gamma, theta=theta, vega=vega,
+    )
     async with request.app.state.write_lock:
-        result = request.app.state.derivatives_mgr.add_option_position(
-            symbol, quantity, entry_price, option_type, strike, expiry,
-            underlying, delta, gamma, theta, vega,
-        )
-    return _resp(result.get("success", False), data=result)
+        request.app.state.derivatives_mgr.add_option(pos)
+    return _resp(True, data=pos.to_dict())
 
 
-@router.get("/derivatives/roll-warnings")
+@portfolio_router.get("/derivatives/roll-warnings")
 async def get_roll_warnings(request: Request):
-    warnings = request.app.state.derivatives_mgr.check_roll_dates()
+    warnings = request.app.state.derivatives_mgr.check_roll_reminders()
     return _resp(True, data=warnings)
 
 
-@router.post("/derivatives/roll")
+@portfolio_router.post("/derivatives/roll")
 async def roll_futures(request: Request, symbol: str = Query(...), new_contract_month: str = Query(...)):
     async with request.app.state.write_lock:
         result = request.app.state.derivatives_mgr.auto_roll(symbol, new_contract_month)
-    return _resp(result.get("success", False), data=result)
+    return _resp(result is not None, data=result)
 
 
-@router.get("/derivatives/greeks-summary")
+@portfolio_router.get("/derivatives/greeks-summary")
 async def get_greeks_summary(request: Request):
-    summary = request.app.state.derivatives_mgr.get_greeks_summary()
+    summary = request.app.state.derivatives_mgr.calculate_option_greeks_summary()
     return _resp(True, data=summary)
 
 
-@router.post("/derivatives/hedge-ratio")
+@portfolio_router.post("/derivatives/hedge-ratio")
 async def calculate_hedge_ratio(
     request: Request,
     portfolio_delta: float = Query(...),
-    hedge_instrument_delta: float = Query(...),
 ):
-    ratio = request.app.state.derivatives_mgr.calculate_hedge_ratio(portfolio_delta, hedge_instrument_delta)
-    return _resp(True, data={"hedge_ratio": ratio})
+    result = request.app.state.derivatives_mgr.calculate_hedge_ratio(portfolio_delta)
+    return _resp(True, data=result)
 
 
-@router.post("/tearsheet/generate")
+@portfolio_router.post("/tearsheet/generate")
 async def generate_tearsheet(
     request: Request,
     equity_curve: str = Query(..., description="逗号分隔的资金曲线"),
@@ -264,7 +269,7 @@ async def generate_tearsheet(
         return _resp(False, msg=str(e))
 
 
-@router.post("/tearsheet/monthly-returns")
+@portfolio_router.post("/tearsheet/monthly-returns")
 async def get_monthly_returns(request: Request, equity_curve: str = Query(..., description="逗号分隔的资金曲线")):
     try:
         ec = np.array([float(v) for v in equity_curve.split(",") if v.strip()])
@@ -274,7 +279,7 @@ async def get_monthly_returns(request: Request, equity_curve: str = Query(..., d
         return _resp(False, msg=str(e))
 
 
-@router.post("/tearsheet/export")
+@portfolio_router.post("/tearsheet/export")
 async def export_tearsheet(
     request: Request,
     equity_curve: str = Query(..., description="逗号分隔的资金曲线"),

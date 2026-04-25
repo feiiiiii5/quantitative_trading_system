@@ -20,3 +20,8 @@ data/
 logs/
 *test*.py
 *_test*.py
+node_modules/
+.coverage
+htmlcov/
+.pytest_cache/
+*.log

@@ -152,6 +152,7 @@ class SimulatedTrading:
         self._auto_strategy = ""
         self._auto_task: Optional[asyncio.Task] = None
         self._fetcher = None
+        self._lock = asyncio.Lock()
         self._load_state()
 
     def _state_path(self) -> Path:
@@ -644,16 +645,17 @@ class SimulatedTrading:
                         current_price = realtime["price"]
                         price_map[symbol] = current_price
 
-                        if symbol in self._positions:
-                            pos = self._positions[symbol]
-                            pos.current_price = current_price
+                        async with self._lock:
+                            if symbol in self._positions:
+                                pos = self._positions[symbol]
+                                pos.current_price = current_price
 
-                            if pos.stop_loss > 0 and current_price <= pos.stop_loss:
-                                self.execute_sell(symbol, current_price, reason=f"止损-{self._auto_strategy}")
-                                continue
-                            if pos.take_profit > 0 and current_price >= pos.take_profit:
-                                self.execute_sell(symbol, current_price, reason=f"止盈-{self._auto_strategy}")
-                                continue
+                                if pos.stop_loss > 0 and current_price <= pos.stop_loss:
+                                    self.execute_sell(symbol, current_price, reason=f"止损-{self._auto_strategy}")
+                                    continue
+                                if pos.take_profit > 0 and current_price >= pos.take_profit:
+                                    self.execute_sell(symbol, current_price, reason=f"止盈-{self._auto_strategy}")
+                                    continue
 
                         df = await self._fetcher.get_history(symbol, "1y", "daily")
                         if df.empty or len(df) < 30:
@@ -666,21 +668,23 @@ class SimulatedTrading:
                         result = strategy.generate_signals(df)
                         if result and result.current_signal:
                             signal = result.current_signal
-                            if signal.signal_type.value == "buy" and symbol not in self._positions:
-                                stop_loss = signal.stop_loss if signal.stop_loss > 0 else current_price * 0.95
-                                take_profit = signal.take_profit if signal.take_profit > 0 else current_price * 1.10
-                                self.execute_buy(
-                                    symbol, item.name, market, current_price,
-                                    strategy=self._auto_strategy, stop_loss=stop_loss,
-                                    take_profit=take_profit,
-                                )
-                            elif signal.signal_type.value == "sell" and symbol in self._positions:
-                                self.execute_sell(symbol, current_price, reason=f"策略卖出-{self._auto_strategy}")
+                            async with self._lock:
+                                if signal.signal_type.value == "buy" and symbol not in self._positions:
+                                    stop_loss = signal.stop_loss if signal.stop_loss > 0 else current_price * 0.95
+                                    take_profit = signal.take_profit if signal.take_profit > 0 else current_price * 1.10
+                                    self.execute_buy(
+                                        symbol, item.name, market, current_price,
+                                        strategy=self._auto_strategy, stop_loss=stop_loss,
+                                        take_profit=take_profit,
+                                    )
+                                elif signal.signal_type.value == "sell" and symbol in self._positions:
+                                    self.execute_sell(symbol, current_price, reason=f"策略卖出-{self._auto_strategy}")
 
                     except Exception as e:
                         logger.debug(f"Auto trading error for {item.symbol}: {e}")
 
-                self.check_pending_orders(price_map)
+                async with self._lock:
+                    self.check_pending_orders(price_map)
 
                 await asyncio.sleep(30)
 

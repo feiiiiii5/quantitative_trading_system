@@ -143,7 +143,7 @@ class AlgoExecutionEngine:
             algo_type=AlgoType.POV, start_time=time.strftime("%Y-%m-%d %H:%M:%S"),
         )
 
-        n_slices = max(1, int(quantity / (market_volume * participation_rate)))
+        n_slices = max(1, int(quantity / max(1, market_volume * participation_rate)))
         n_slices = min(n_slices, 20)
         slice_qty = quantity // n_slices
         remaining = quantity

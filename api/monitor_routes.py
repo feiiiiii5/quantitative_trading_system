@@ -9,14 +9,14 @@ from core.monitor.anomaly_detect import AnomalyDetector
 from core.monitor.perf_dashboard import PerformanceDashboard
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/monitor", tags=["监控与告警"])
+monitor_router = APIRouter(prefix="/monitor", tags=["监控与告警"])
 
 
 def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-@router.post("/heartbeat/register")
+@monitor_router.post("/heartbeat/register")
 async def register_strategy(
     request: Request,
     strategy_name: str = Query(...),
@@ -27,19 +27,19 @@ async def register_strategy(
     return _resp(True, msg=f"策略{strategy_name}已注册")
 
 
-@router.post("/heartbeat/report")
+@monitor_router.post("/heartbeat/report")
 async def report_heartbeat(request: Request, strategy_name: str = Query(...)):
     result = request.app.state.heartbeat.report(strategy_name)
     return _resp(result.get("success", False), data=result)
 
 
-@router.get("/heartbeat/status")
+@monitor_router.get("/heartbeat/status")
 async def get_all_status(request: Request):
     status = request.app.state.heartbeat.get_all_status()
     return _resp(True, data=status)
 
 
-@router.get("/heartbeat/status/{strategy_name}")
+@monitor_router.get("/heartbeat/status/{strategy_name}")
 async def get_strategy_status(request: Request, strategy_name: str):
     status = request.app.state.heartbeat.get_status(strategy_name)
     if status:
@@ -47,13 +47,13 @@ async def get_strategy_status(request: Request, strategy_name: str):
     return _resp(False, msg="策略未注册")
 
 
-@router.get("/heartbeat/history/{strategy_name}")
+@monitor_router.get("/heartbeat/history/{strategy_name}")
 async def get_heartbeat_history(request: Request, strategy_name: str, limit: int = Query(100)):
     history = request.app.state.heartbeat.get_history(strategy_name, limit)
     return _resp(True, data=history)
 
 
-@router.post("/alert/send")
+@monitor_router.post("/alert/send")
 async def send_alert(
     request: Request,
     title: str = Query(...),
@@ -79,7 +79,7 @@ async def send_alert(
     return _resp(True, data=result.to_dict())
 
 
-@router.get("/alert/list")
+@monitor_router.get("/alert/list")
 async def list_alerts(
     request: Request,
     level: str = Query(""),
@@ -98,20 +98,20 @@ async def list_alerts(
     return _resp(True, data=[a.to_dict() for a in alerts])
 
 
-@router.post("/alert/acknowledge/{alert_id}")
+@monitor_router.post("/alert/acknowledge/{alert_id}")
 async def acknowledge_alert(request: Request, alert_id: str):
     async with request.app.state.write_lock:
         result = request.app.state.alert_system.acknowledge(alert_id)
     return _resp(result.get("success", False), data=result)
 
 
-@router.get("/alert/stats")
+@monitor_router.get("/alert/stats")
 async def get_alert_stats(request: Request):
     stats = request.app.state.alert_system.get_stats()
     return _resp(True, data=stats)
 
 
-@router.post("/alert/config-channels")
+@monitor_router.post("/alert/config-channels")
 async def configure_channels(
     request: Request,
     email: str = Query(""),
@@ -130,7 +130,7 @@ async def configure_channels(
     return _resp(True, msg="告警通道已配置")
 
 
-@router.post("/anomaly/check-volume")
+@monitor_router.post("/anomaly/check-volume")
 async def check_volume_anomaly(
     request: Request,
     symbol: str = Query(...),
@@ -143,7 +143,7 @@ async def check_volume_anomaly(
     return _resp(True, data=None, msg="未检测到成交量异常")
 
 
-@router.post("/anomaly/check-price")
+@monitor_router.post("/anomaly/check-price")
 async def check_price_anomaly(
     request: Request,
     symbol: str = Query(...),
@@ -156,7 +156,7 @@ async def check_price_anomaly(
     return _resp(True, data=None, msg="未检测到价格异常")
 
 
-@router.post("/anomaly/check-large-order")
+@monitor_router.post("/anomaly/check-large-order")
 async def check_large_order(
     request: Request,
     symbol: str = Query(...),
@@ -168,7 +168,7 @@ async def check_large_order(
     return _resp(True, data=None, msg="未检测到大单异常")
 
 
-@router.post("/anomaly/check-daily-loss")
+@monitor_router.post("/anomaly/check-daily-loss")
 async def check_daily_loss(
     request: Request,
     symbol: str = Query(...),
@@ -180,7 +180,7 @@ async def check_daily_loss(
     return _resp(True, data=None, msg="未触发日亏损限制")
 
 
-@router.post("/anomaly/check-frequency")
+@monitor_router.post("/anomaly/check-frequency")
 async def check_trade_frequency(request: Request, symbol: str = Query(...)):
     async with request.app.state.write_lock:
         event = request.app.state.anomaly_detector.check_high_frequency(symbol)
@@ -189,7 +189,7 @@ async def check_trade_frequency(request: Request, symbol: str = Query(...)):
     return _resp(True, data=None, msg="未检测到高频交易")
 
 
-@router.post("/anomaly/check-opening-gap")
+@monitor_router.post("/anomaly/check-opening-gap")
 async def check_opening_gap(
     request: Request,
     symbol: str = Query(...),
@@ -202,25 +202,25 @@ async def check_opening_gap(
     return _resp(True, data=None, msg="未检测到开盘跳空")
 
 
-@router.get("/anomaly/events")
+@monitor_router.get("/anomaly/events")
 async def get_anomaly_events(request: Request, limit: int = Query(50)):
     events = request.app.state.anomaly_detector.get_recent_anomalies(limit)
     return _resp(True, data=events)
 
 
-@router.get("/anomaly/stats")
+@monitor_router.get("/anomaly/stats")
 async def get_anomaly_stats(request: Request):
     stats = request.app.state.anomaly_detector.get_anomaly_stats()
     return _resp(True, data=stats)
 
 
-@router.get("/perf/system")
+@monitor_router.get("/perf/system")
 async def get_system_metrics(request: Request):
     metrics = request.app.state.perf_dashboard.get_system_metrics()
     return _resp(True, data=metrics)
 
 
-@router.post("/perf/record-api-latency")
+@monitor_router.post("/perf/record-api-latency")
 async def record_api_latency(
     request: Request,
     endpoint: str = Query(...),
@@ -232,13 +232,13 @@ async def record_api_latency(
     return _resp(True, msg="延迟已记录")
 
 
-@router.get("/perf/api-latency")
+@monitor_router.get("/perf/api-latency")
 async def get_api_latency_stats(request: Request):
     stats = request.app.state.perf_dashboard.get_api_latency_stats()
     return _resp(True, data=stats)
 
 
-@router.post("/perf/record-data-latency")
+@monitor_router.post("/perf/record-data-latency")
 async def record_data_latency(
     request: Request,
     source: str = Query(...),
@@ -250,7 +250,7 @@ async def record_data_latency(
     return _resp(True, msg="数据延迟已记录")
 
 
-@router.post("/perf/record-connection-status")
+@monitor_router.post("/perf/record-connection-status")
 async def record_connection_status(
     request: Request,
     source: str = Query(...),
@@ -262,19 +262,19 @@ async def record_connection_status(
     return _resp(True, msg="连接状态已记录")
 
 
-@router.get("/perf/connection-status")
+@monitor_router.get("/perf/connection-status")
 async def get_connection_status(request: Request):
     status = request.app.state.perf_dashboard.get_connection_status()
     return _resp(True, data=status)
 
 
-@router.get("/perf/health-score")
+@monitor_router.get("/perf/health-score")
 async def get_health_score(request: Request):
     score = request.app.state.perf_dashboard.get_health_score()
     return _resp(True, data={"health_score": score})
 
 
-@router.get("/perf/metric-series")
+@monitor_router.get("/perf/metric-series")
 async def get_metric_series(
     request: Request,
     metric_name: str = Query(...),
@@ -284,25 +284,25 @@ async def get_metric_series(
     return _resp(True, data=series)
 
 
-@router.get("/perf/dashboard")
+@monitor_router.get("/perf/dashboard")
 async def get_perf_dashboard(request: Request):
     dashboard = request.app.state.perf_dashboard.get_dashboard()
     return _resp(True, data=dashboard)
 
 
-@router.get("/perf/data-latency-heatmap")
+@monitor_router.get("/perf/data-latency-heatmap")
 async def get_data_latency_heatmap(request: Request):
     heatmap = request.app.state.perf_dashboard.get_data_latency_heatmap()
     return _resp(True, data=heatmap)
 
 
-@router.get("/perf/summary")
+@monitor_router.get("/perf/summary")
 async def get_perf_summary(request: Request):
     summary = request.app.state.perf_dashboard.get_summary()
     return _resp(True, data=summary)
 
 
-@router.post("/audit/log-signal")
+@monitor_router.post("/audit/log-signal")
 async def log_signal_event(
     request: Request,
     strategy: str = Query(...),
@@ -315,7 +315,7 @@ async def log_signal_event(
     return _resp(True, msg="信号事件已记录")
 
 
-@router.post("/audit/log-risk")
+@monitor_router.post("/audit/log-risk")
 async def log_risk_event(
     request: Request,
     risk_model: str = Query(...),
@@ -332,7 +332,7 @@ async def log_risk_event(
     return _resp(True, msg="风控事件已记录")
 
 
-@router.post("/audit/log-order")
+@monitor_router.post("/audit/log-order")
 async def log_order_event(
     request: Request,
     executor: str = Query(...),
@@ -346,7 +346,7 @@ async def log_order_event(
     return _resp(True, msg="订单事件已记录")
 
 
-@router.post("/audit/log-fill")
+@monitor_router.post("/audit/log-fill")
 async def log_fill_event(
     request: Request,
     broker: str = Query(...),
@@ -359,7 +359,7 @@ async def log_fill_event(
     return _resp(True, msg="成交事件已记录")
 
 
-@router.post("/audit/log-settlement")
+@monitor_router.post("/audit/log-settlement")
 async def log_settlement_event(
     request: Request,
     symbol: str = Query(...),
@@ -371,7 +371,7 @@ async def log_settlement_event(
     return _resp(True, msg="结算事件已记录")
 
 
-@router.get("/audit/query")
+@monitor_router.get("/audit/query")
 async def query_audit_log(
     request: Request,
     event_type: str = Query(""),
@@ -390,13 +390,13 @@ async def query_audit_log(
     return _resp(True, data=entries)
 
 
-@router.get("/audit/compliance-report")
+@monitor_router.get("/audit/compliance-report")
 async def get_compliance_report(request: Request, date: str = Query("")):
     report = request.app.state.audit_log.generate_regulatory_report(date or None)
     return _resp(True, data=report)
 
 
-@router.get("/audit/trace/{event_id}")
+@monitor_router.get("/audit/trace/{event_id}")
 async def trace_event_chain(request: Request, event_id: str):
     chain = request.app.state.audit_log.get_full_chain(event_id)
     return _resp(True, data=chain)

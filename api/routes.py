@@ -361,6 +361,57 @@ async def get_hot_stocks(request: Request):
         return _json_response(False, error=str(e))
 
 
+@router.get("/hot-stocks")
+async def get_hot_stocks_alias(request: Request, limit: int = Query(20, ge=1, le=50)):
+    try:
+        cache_key = f"hot:stocks:{limit}"
+        cached = _cache_get(cache_key)
+        if cached:
+            return _json_response(True, data=cached)
+
+        data = await request.app.state.fetcher.get_hot_stocks()
+        if data and limit < len(data):
+            data = data[:limit]
+        _cache_set(cache_key, data, ttl=60)
+        return _json_response(True, data=data)
+    except Exception as e:
+        logger.error(f"get_hot_stocks error: {e}", exc_info=True)
+        return _json_response(False, error=str(e))
+
+
+@router.get("/market-overview")
+async def get_market_overview(request: Request):
+    try:
+        cache_key = "market:overview"
+        cached = _cache_get(cache_key)
+        if cached:
+            return _json_response(True, data=cached)
+
+        data = await request.app.state.fetcher.get_market_overview()
+        _cache_set(cache_key, data, ttl=30)
+        return _json_response(True, data=data)
+    except Exception as e:
+        logger.error(f"get_market_overview error: {e}", exc_info=True)
+        return _json_response(False, error=str(e))
+
+
+@router.get("/fundamentals")
+async def get_fundamentals(request: Request, symbol: str = Query(...)):
+    try:
+        cache_key = f"fund:{symbol}"
+        cached = _cache_get(cache_key)
+        if cached:
+            return _json_response(True, data=cached)
+
+        market_info = MarketDetector.get_config(symbol)
+        data = await request.app.state.fetcher.get_fundamentals(symbol, market_info["market"])
+        _cache_set(cache_key, data, ttl=300)
+        return _json_response(True, data=data)
+    except Exception as e:
+        logger.error(f"get_fundamentals error: {e}", exc_info=True)
+        return _json_response(False, error=str(e))
+
+
 @router.get("/market-status/{market}")
 async def get_market_status(request: Request, market: str):
     try:
@@ -474,6 +525,64 @@ async def run_backtest(request: Request, symbol: str, period: str = Query("1y"))
         return _json_response(False, error=str(e))
 
 
+@router.post("/backtest/run")
+async def run_backtest_post(
+    request: Request,
+    symbol: str = Query(...),
+    strategy_type: str = Query("momentum"),
+    start_date: str = Query("2023-01-01"),
+    end_date: str = Query("2024-01-01"),
+    initial_capital: float = Query(100000),
+    mode: str = Query("vectorized"),
+):
+    try:
+        kline_type = "daily"
+        cache_key = f"bt:run:{symbol}:{strategy_type}:{start_date}:{end_date}"
+        cached = _cache_get(cache_key)
+        if cached:
+            return _json_response(True, data=cached)
+
+        df = await request.app.state.fetcher.get_history(symbol, "1y", kline_type)
+        if df.empty or len(df) < 30:
+            return _json_response(False, error="数据不足，至少需要30个交易日")
+
+        results = request.app.state.backtest_engine.run_multi(request.app.state.composite_strategy.strategies, df)
+
+        best_name = list(results.keys())[0] if results else None
+        best = results.get(best_name) if best_name else None
+
+        if not best:
+            return _json_response(False, error="回测无结果")
+
+        output = {
+            "strategy_name": best.strategy_name,
+            "total_return": best.total_return,
+            "annual_return": best.annual_return,
+            "sharpe_ratio": best.sharpe_ratio,
+            "max_drawdown": best.max_drawdown,
+            "win_rate": best.win_rate,
+            "profit_factor": best.profit_factor,
+            "total_trades": best.total_trades,
+            "win_trades": best.win_trades,
+            "loss_trades": best.loss_trades,
+            "avg_profit": best.avg_profit,
+            "avg_loss": best.avg_loss,
+            "avg_hold_days": best.avg_hold_days,
+            "benchmark_return": best.benchmark_return,
+            "alpha": best.alpha,
+            "beta": best.beta,
+            "equity_curve": best.equity_curve[-200:] if best.equity_curve else [],
+            "drawdown_curve": best.drawdown_curve[-200:] if best.drawdown_curve else [],
+            "dates": best.dates[-200:] if best.dates else [],
+        }
+
+        _cache_set(cache_key, output, ttl=120)
+        return _json_response(True, data=output)
+    except Exception as e:
+        logger.error(f"backtest run error: {e}", exc_info=True)
+        return _json_response(False, error=str(e))
+
+
 @router.get("/sim/account")
 async def sim_get_account(request: Request):
     try:
@@ -488,6 +597,16 @@ async def sim_get_performance(request: Request):
     try:
         data = request.app.state.sim_trading.get_performance()
         return _json_response(True, data=data)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/sim/positions")
+async def sim_get_positions(request: Request):
+    try:
+        data = request.app.state.sim_trading.get_account_info()
+        positions = data.get("positions", [])
+        return _json_response(True, data=positions)
     except Exception as e:
         return _json_response(False, error=str(e))
 
@@ -511,18 +630,22 @@ async def sim_get_stats(request: Request):
 
 
 @router.post("/sim/buy")
-async def sim_buy(request: Request,
-    symbol: str = Query(...),
-    name: str = Query(""),
-    market: str = Query("A"),
-    price: float = Query(...),
-    strategy: str = Query("manual"),
-    stop_loss: float = Query(0),
-    take_profit: float = Query(0),
-    order_type: str = Query("market"),
-    shares: int = Query(0),
-):
+async def sim_buy(request: Request):
     try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+        symbol = body.get("symbol", "")
+        name = body.get("name", "")
+        market = body.get("market", "A")
+        price = body.get("price", 0)
+        strategy = body.get("strategy", "manual")
+        stop_loss = body.get("stop_loss", 0)
+        take_profit = body.get("take_profit", 0)
+        order_type = body.get("order_type", "market")
+        shares = body.get("shares", 0) or body.get("quantity", 0)
+        if not symbol:
+            return _json_response(False, error="缺少symbol参数")
+        if price <= 0:
+            return _json_response(False, error="价格必须大于0")
         if not name:
             from core.stock_search import get_stock_name
             name = get_stock_name(symbol) or symbol
@@ -538,8 +661,17 @@ async def sim_buy(request: Request,
 
 
 @router.post("/sim/sell")
-async def sim_sell(request: Request, symbol: str = Query(...), price: float = Query(...), reason: str = Query("manual"), shares: int = Query(0)):
+async def sim_sell(request: Request):
     try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+        symbol = body.get("symbol", "")
+        price = body.get("price", 0)
+        reason = body.get("reason", "manual")
+        shares = body.get("shares", 0) or body.get("quantity", 0)
+        if not symbol:
+            return _json_response(False, error="缺少symbol参数")
+        if price <= 0:
+            return _json_response(False, error="价格必须大于0")
         result = request.app.state.sim_trading.execute_sell(symbol, price, reason, shares=shares)
         if result["success"]:
             return _json_response(True, data=result)

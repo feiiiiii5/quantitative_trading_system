@@ -486,7 +486,7 @@ class IndicatorAnalysis:
         up_volume = volume[price_ret > 0].sum()
         down_volume = volume[price_ret <= 0].sum()
         obv = np.cumsum(np.sign(price_ret.values) * volume)
-        obv_ma = pd.Series(obv).rolling(20).mean().fillna(method="bfill")
+        obv_ma = pd.Series(obv).rolling(20).mean().bfill()
         obv_trend = float(obv_ma.iloc[-1] - obv_ma.iloc[0])
         if closes[-1] > closes[0] and volume_ratio > 1:
             conclusion = "量增价涨，强势信号"

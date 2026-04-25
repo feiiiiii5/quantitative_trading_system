@@ -140,34 +140,32 @@ class PerformanceDashboard:
             return status
 
     def get_summary(self) -> dict:
-        with self._lock:
-            return {
-                "system": self.get_system_metrics(),
-                "api_latencies": self.get_api_latency_stats(),
-                "data_latency_heatmap": self.get_data_latency_heatmap(),
-                "connection_status": self.get_connection_status(),
-                "custom_metrics": {name: points[-1].value if points else 0 for name, points in self._metrics.items()},
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            }
+        return {
+            "system": self.get_system_metrics(),
+            "api_latencies": self.get_api_latency_stats(),
+            "data_latency_heatmap": self.get_data_latency_heatmap(),
+            "connection_status": self.get_connection_status(),
+            "custom_metrics": {name: points[-1].value if points else 0 for name, points in self._metrics.items()},
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
     def get_dashboard(self) -> dict:
         return self.get_summary()
 
     def _cleanup(self, name: str):
-        """清理过期的指标数据"""
+        """清理过期的指标数据（调用方已持锁，不可再获取锁）"""
         now = time.time()
-        
+
         # 定期清理所有指标
         if now - self._last_cleanup > 300:  # 每5分钟清理一次
             self._last_cleanup = now
-            with self._lock:
-                for metric_name in list(self._metrics.keys()):
-                    self._metrics[metric_name] = [
-                        p for p in self._metrics[metric_name]
-                        if now - p.timestamp < self.retention_seconds
-                    ]
-                    if not self._metrics[metric_name]:
-                        del self._metrics[metric_name]
+            for metric_name in list(self._metrics.keys()):
+                self._metrics[metric_name] = [
+                    p for p in self._metrics[metric_name]
+                    if now - p.timestamp < self.retention_seconds
+                ]
+                if not self._metrics[metric_name]:
+                    del self._metrics[metric_name]
         else:
             # 只清理指定的指标
             if name in self._metrics:
@@ -185,33 +183,28 @@ class PerformanceDashboard:
             return [p.to_dict() for p in points]
 
     def get_health_score(self) -> float:
-        """计算系统健康得分"""
-        with self._lock:
-            score = 100.0
-            
-            # 系统指标
-            system = self.get_system_metrics()
-            if system.get("cpu_percent", 0) > 80:
-                score -= 20
-            if system.get("memory", {}).get("used_pct", 0) > 85:
-                score -= 20
-            if system.get("disk", {}).get("used_pct", 0) > 90:
-                score -= 20
-            
-            # API延迟
-            api_stats = self.get_api_latency_stats()
-            for endpoint, stats in api_stats.items():
-                if stats.get("avg", 0) > 500:
-                    score -= 5
-                if stats.get("error_count", 0) > 0:
-                    score -= 10
-            
-            # 连接状态
-            conn_status = self.get_connection_status()
-            for source, status in conn_status.items():
-                if status.get("status", "") != "connected":
-                    score -= 15
-                if status.get("latency_ms", 0) > 1000:
-                    score -= 10
-            
-            return max(0, min(100, score))
+        score = 100.0
+
+        system = self.get_system_metrics()
+        if system.get("cpu_percent", 0) > 80:
+            score -= 20
+        if system.get("memory", {}).get("used_pct", 0) > 85:
+            score -= 20
+        if system.get("disk", {}).get("used_pct", 0) > 90:
+            score -= 20
+
+        api_stats = self.get_api_latency_stats()
+        for endpoint, stats in api_stats.items():
+            if stats.get("avg", 0) > 500:
+                score -= 5
+            if stats.get("error_count", 0) > 0:
+                score -= 10
+
+        conn_status = self.get_connection_status()
+        for source, status in conn_status.items():
+            if status.get("status", "") != "connected":
+                score -= 15
+            if status.get("latency_ms", 0) > 1000:
+                score -= 10
+
+        return max(0, min(100, score))

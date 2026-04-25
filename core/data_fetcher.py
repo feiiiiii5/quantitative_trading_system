@@ -1,3 +1,8 @@
+"""
+QuantCore 数据获取模块 - 重构版
+使用中国大陆最稳定的数据源，修复连接断开问题
+"""
+
 import asyncio
 import json
 import logging
@@ -11,7 +16,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
-import os
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from core.database import get_db
 from core.market_detector import MarketDetector
 from core.rate_limit import TokenBucket
@@ -37,15 +44,14 @@ KLINE_TYPE_MAP = {
     "all": "daily",
 }
 
-_MAX_CACHE_SIZE = 500  # Increased cache size
+_MAX_CACHE_SIZE = 500
 _history_cache: OrderedDict = OrderedDict()
 _realtime_cache: OrderedDict = OrderedDict()
-_HIST_CACHE_TTL = 300  # Increased cache TTL
-_RT_CACHE_TTL = 10  # Decreased for more timely data
-_TODAY_CACHE_TTL_SECONDS = 900  # Decreased for fresher daily data
-_AKSHARE_BUCKET = TokenBucket(rate=10, capacity=15)  # Increased rate limit
+_HIST_CACHE_TTL = 300
+_RT_CACHE_TTL = 10
+_TODAY_CACHE_TTL_SECONDS = 900
+_AKSHARE_BUCKET = TokenBucket(rate=10, capacity=15)
 
-# Connection pooling for database
 _DB_CONNECTION_POOL = {}
 _DB_POOL_SIZE = 5
 
@@ -56,18 +62,27 @@ _global_session = None
 def _get_session() -> requests.Session:
     global _global_session
     if _global_session is None:
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
         _global_session = requests.Session()
         retry_strategy = Retry(
             total=3,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=20, pool_maxsize=50)
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=20,
+            pool_maxsize=50,
+            pool_block=False,
+        )
         _global_session.mount("http://", adapter)
         _global_session.mount("https://", adapter)
-        _global_session.headers.update({"Connection": "keep-alive"})
+        _global_session.headers.update({
+            "Connection": "keep-alive",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept": "application/json, text/plain, */*",
+        })
     return _global_session
 
 
@@ -76,33 +91,32 @@ _BASE_DIR = Path(__file__).parent.parent
 def _get_db_connection():
     import sqlite3
     import hashlib
-    
+
     db_path = str(_BASE_DIR / "data" / "market_cache.db")
     key = hashlib.md5(db_path.encode()).hexdigest()
-    
+
     if key in _DB_CONNECTION_POOL and _DB_CONNECTION_POOL[key]:
         return _DB_CONNECTION_POOL[key].pop()
-    
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def _return_db_connection(conn):
-    """Return a database connection to the pool"""
     import sqlite3
     import hashlib
-    
+
     if not conn or not isinstance(conn, sqlite3.Connection):
         return
-    
+
     try:
         db_path = conn.execute("PRAGMA database_list").fetchone()[2]
         key = hashlib.md5(db_path.encode()).hexdigest()
-        
+
         if key not in _DB_CONNECTION_POOL:
             _DB_CONNECTION_POOL[key] = []
-        
+
         if len(_DB_CONNECTION_POOL[key]) < _DB_POOL_SIZE:
             _DB_CONNECTION_POOL[key].append(conn)
         else:
@@ -113,20 +127,24 @@ def _return_db_connection(conn):
         except:
             pass
 
+
 _EM_HEADERS = {
     "User-Agent": _UA,
     "Referer": "https://quote.eastmoney.com/",
-    "Accept": "*/*",
-}
-
-_SINA_HEADERS = {
-    "User-Agent": _UA,
-    "Referer": "https://finance.sina.com.cn/",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
 _TENCENT_HEADERS = {
     "User-Agent": _UA,
     "Referer": "https://guojijj.com/",
+    "Accept": "application/json, text/plain, */*",
+}
+
+_SINA_HEADERS = {
+    "User-Agent": _UA,
+    "Referer": "https://finance.sina.com.cn/",
+    "Accept": "application/javascript, */*",
 }
 
 
@@ -148,28 +166,33 @@ def _cache_set(cache: OrderedDict, key: str, data, ttl: int = 60):
         cache.popitem(last=False)
 
 
-def _http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 8, retries: int = 1) -> Optional[requests.Response]:
+def _http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 10, retries: int = 2) -> Optional[requests.Response]:
     for attempt in range(retries + 1):
         try:
             session = _get_session()
-            resp = session.get(url, params=params, headers=headers, timeout=timeout)
+            resp = session.get(url, params=params, headers=headers, timeout=(5, timeout), stream=False)
             if resp.status_code == 200:
                 return resp
             elif resp.status_code == 429:
-                logger.debug(f"Rate limited for {url}")
-                time.sleep(1)
+                logger.debug(f"Rate limited for {url}, waiting...")
+                time.sleep(2 ** attempt)
             elif resp.status_code in (500, 502, 503, 504):
-                logger.debug(f"Server error {resp.status_code} for {url}")
+                logger.debug(f"Server error {resp.status_code} for {url}, attempt {attempt+1}")
+                time.sleep(1)
             else:
                 logger.debug(f"HTTP {resp.status_code} from {url}")
-        except requests.exceptions.ConnectionError:
-            logger.debug(f"Connection error for {url} (attempt {attempt+1}/{retries+1})")
+        except requests.exceptions.ConnectionError as e:
+            logger.debug(f"Connection error for {url} (attempt {attempt+1}/{retries+1}): {e}")
+            if attempt < retries:
+                time.sleep(1)
         except requests.exceptions.Timeout:
             logger.debug(f"Timeout for {url} (attempt {attempt+1}/{retries+1})")
+            if attempt < retries:
+                time.sleep(1)
         except Exception as e:
             logger.debug(f"HTTP error for {url} (attempt {attempt+1}/{retries+1}): {e}")
-        if attempt < retries:
-            time.sleep(0.3)
+            if attempt < retries:
+                time.sleep(0.5)
     return None
 
 
@@ -231,7 +254,6 @@ class DataQualityChecker:
             mask = df[column].isna()
             if not mask.any():
                 continue
-            # 仅对孤立缺失值使用前向填充，避免整段缺失被误修复。
             isolated = mask & ~mask.shift(1, fill_value=False) & ~mask.shift(-1, fill_value=False)
             if isolated.any():
                 df.loc[isolated, column] = df[column].ffill()
@@ -269,16 +291,25 @@ class DataSourceHealthMonitor:
                 "ts": _date_to_key(datetime.now()),
             }
         )
-        self._db.record_source_request(source_name, request_type, success, latency_ms, error)
+        try:
+            self._db.record_source_request(source_name, request_type, success, latency_ms, error)
+        except Exception as e:
+            logger.debug(f"Health record failed: {e}")
 
     def get_stats(self) -> list[dict]:
-        return self._db.get_source_stats()
+        try:
+            return self._db.get_source_stats()
+        except Exception:
+            return []
 
     def rank_sources(self, request_type: str, sources: list[tuple[str, callable]]) -> list[tuple[str, callable]]:
-        stats = {
-            (row["source_name"], row["request_type"]): row
-            for row in self._db.get_source_stats()
-        }
+        try:
+            stats = {
+                (row["source_name"], row["request_type"]): row
+                for row in self._db.get_source_stats()
+            }
+        except Exception:
+            stats = {}
 
         def _sort_key(item: tuple[str, callable]):
             name, _ = item
@@ -313,7 +344,146 @@ def _validate_history_df(df: pd.DataFrame) -> bool:
     return True
 
 
+class TencentSource:
+    """腾讯财经 - 中国大陆最稳定的实时数据源之一"""
+    NAME = "腾讯财经"
+
+    @staticmethod
+    def fetch_realtime(code: str, market: str) -> Optional[dict]:
+        try:
+            if market == "A":
+                prefix = "sh" if code.startswith(("6", "9")) else "sz"
+                qt_code = f"{prefix}{code}"
+            elif market == "HK":
+                qt_code = f"hk{code}"
+            elif market == "US":
+                qt_code = f"us{code.upper()}"
+            else:
+                return None
+
+            url = f"http://qt.gtimg.cn/q={qt_code}"
+            resp = _http_get(url, headers=_TENCENT_HEADERS, timeout=8)
+            if resp and resp.text:
+                content = resp.text.strip()
+                match = re.search(r'="([^"]*)"', content)
+                if match:
+                    raw = match.group(1)
+                    if not raw:
+                        return None
+                    fields = raw.split("~")
+                    if len(fields) >= 36:
+                        price = _safe_float(fields[3])
+                        name = fields[1] if len(fields) > 1 else ""
+                        prev_close = _safe_float(fields[4])
+                        result = {
+                            "name": name,
+                            "price": price,
+                            "change": _safe_float(fields[31]),
+                            "pct": _safe_float(fields[32]),
+                            "volume": _safe_float(fields[36]),
+                            "high": _safe_float(fields[33]),
+                            "low": _safe_float(fields[34]),
+                            "open": _safe_float(fields[5]),
+                            "prev_close": prev_close,
+                            "time": fields[30] if fields[30] else datetime.now().strftime("%H:%M:%S"),
+                        }
+                        if market == "A" and len(fields) >= 43:
+                            result["turnover"] = _safe_float(fields[38])
+                            result["amplitude"] = _safe_float(fields[43]) if _safe_float(fields[43]) != 0 else None
+                        return result
+        except Exception as e:
+            logger.debug(f"Tencent realtime error for {code}: {e}")
+        return None
+
+    @staticmethod
+    def fetch_history(code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
+        try:
+            if market == "A":
+                prefix = "sh" if code.startswith(("6", "9")) else "sz"
+                qt_code = f"{prefix}{code}"
+            elif market == "HK":
+                qt_code = f"hk{code}"
+            else:
+                return None
+
+            adjust_key = adjust if adjust in ("qfq", "hfq", "") else "qfq"
+            url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,500,{adjust_key}"
+            resp = _http_get(url, headers=_TENCENT_HEADERS, timeout=12)
+            if resp:
+                d = resp.json()
+                data = d.get("data", {})
+                if data:
+                    keys = list(data.keys())
+                    if keys:
+                        kdata = data[keys[0]]
+                        day = kdata.get("qfqday") or kdata.get("day")
+                        if day and len(day) > 1:
+                            rows = []
+                            for item in day:
+                                if len(item) >= 6:
+                                    rows.append({
+                                        "date": item[0],
+                                        "open": _safe_float(item[1]),
+                                        "close": _safe_float(item[2]),
+                                        "high": _safe_float(item[3]),
+                                        "low": _safe_float(item[4]),
+                                        "volume": _safe_float(item[5]),
+                                    })
+                            if rows:
+                                return pd.DataFrame(rows)
+        except Exception as e:
+            logger.debug(f"Tencent history error for {code}: {e}")
+        return None
+
+    @staticmethod
+    def fetch_hot_stocks() -> Optional[list]:
+        try:
+            codes = [
+                ("sh000001", "上证指数"), ("sz399001", "深证成指"),
+                ("sh600519", "贵州茅台"), ("sz000858", "五粮液"),
+                ("sh601318", "中国平安"), ("sz000001", "平安银行"),
+                ("sh600036", "招商银行"), ("sz002594", "比亚迪"),
+                ("sz000333", "美的集团"), ("sh601012", "隆基绿能"),
+            ]
+            qt_codes = [c[0] for c in codes]
+            url = f"http://qt.gtimg.cn/q={','.join(qt_codes)}"
+            resp = _http_get(url, headers=_TENCENT_HEADERS, timeout=8)
+            if resp and resp.text:
+                result = []
+                lines = resp.text.strip().split(";")
+                for line in lines:
+                    match = re.search(r'="([^"]*)"', line)
+                    if match:
+                        raw = match.group(1)
+                        if not raw:
+                            continue
+                        fields = raw.split("~")
+                        if len(fields) >= 36:
+                            code = fields[2] if len(fields) > 2 else ""
+                            name = fields[1] if len(fields) > 1 else ""
+                            price = _safe_float(fields[3])
+                            pct = _safe_float(fields[32])
+                            change = _safe_float(fields[31])
+                            volume = _safe_float(fields[36])
+                            if code and name and price > 0 and not code.endswith(".HK"):
+                                result.append({
+                                    "code": code,
+                                    "name": name,
+                                    "price": price,
+                                    "pct": pct,
+                                    "change": change,
+                                    "volume": volume,
+                                })
+                if result:
+                    result.sort(key=lambda x: x["pct"], reverse=True)
+                    return result[:8]
+        except Exception as e:
+            logger.debug(f"Tencent hot stocks error: {e}")
+        return None
+
+
 class SinaSource:
+    """新浪财经 - 备用数据源"""
     NAME = "新浪财经"
 
     @staticmethod
@@ -405,144 +575,8 @@ class SinaSource:
         return None
 
 
-class TencentSource:
-    NAME = "腾讯财经"
-
-    @staticmethod
-    def fetch_realtime(code: str, market: str) -> Optional[dict]:
-        try:
-            if market == "A":
-                prefix = "sh" if code.startswith(("6", "9")) else "sz"
-                qt_code = f"{prefix}{code}"
-            elif market == "HK":
-                qt_code = f"hk{code}"
-            elif market == "US":
-                qt_code = f"us{code.upper()}"
-            else:
-                return None
-
-            url = f"http://qt.gtimg.cn/q={qt_code}"
-            resp = _http_get(url, headers=_TENCENT_HEADERS, timeout=8)
-            if resp and resp.text:
-                content = resp.text.strip()
-                match = re.search(r'="([^"]*)"', content)
-                if match:
-                    raw = match.group(1)
-                    if not raw:
-                        return None
-                    fields = raw.split("~")
-                    if len(fields) >= 36:
-                        price = _safe_float(fields[3])
-                        name = fields[1] if len(fields) > 1 else ""
-                        prev_close = _safe_float(fields[4])
-                        result = {
-                            "name": name,
-                            "price": price,
-                            "change": _safe_float(fields[31]),
-                            "pct": _safe_float(fields[32]),
-                            "volume": _safe_float(fields[36]),
-                            "high": _safe_float(fields[33]),
-                            "low": _safe_float(fields[34]),
-                            "open": _safe_float(fields[5]),
-                            "prev_close": prev_close,
-                            "time": fields[30] if fields[30] else datetime.now().strftime("%H:%M:%S"),
-                        }
-                        if market == "A" and len(fields) >= 43:
-                            result["turnover"] = _safe_float(fields[38])
-                            result["amplitude"] = _safe_float(fields[43]) if _safe_float(fields[43]) != 0 else None
-                        return result
-        except Exception as e:
-            logger.debug(f"Tencent realtime error for {code}: {e}")
-        return None
-
-    @staticmethod
-    def fetch_history(code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
-        try:
-            if market == "A":
-                prefix = "sh" if code.startswith(("6", "9")) else "sz"
-                qt_code = f"{prefix}{code}"
-            elif market == "HK":
-                qt_code = f"hk{code}"
-            else:
-                return None
-
-            adjust_key = adjust if adjust in ("qfq", "hfq", "") else "qfq"
-            url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={qt_code},day,,,500,{adjust_key}"
-            resp = _http_get(url, headers=_TENCENT_HEADERS, timeout=10)
-            if resp:
-                d = resp.json()
-                data = d.get("data", {})
-                if data:
-                    keys = list(data.keys())
-                    if keys:
-                        kdata = data[keys[0]]
-                        day = kdata.get("qfqday") or kdata.get("day")
-                        if day and len(day) > 1:
-                            rows = []
-                            for item in day:
-                                if len(item) >= 6:
-                                    rows.append({
-                                        "date": item[0],
-                                        "open": _safe_float(item[1]),
-                                        "close": _safe_float(item[2]),
-                                        "high": _safe_float(item[3]),
-                                        "low": _safe_float(item[4]),
-                                        "volume": _safe_float(item[5]),
-                                    })
-                            if rows:
-                                return pd.DataFrame(rows)
-        except Exception as e:
-            logger.debug(f"Tencent history error for {code}: {e}")
-        return None
-
-    @staticmethod
-    def fetch_hot_stocks() -> Optional[list]:
-        try:
-            codes = [
-                ("sh000001", "上证指数"), ("sz399001", "深证成指"),
-                ("sh600519", "贵州茅台"), ("sz000858", "五粮液"),
-                ("sh601318", "中国平安"), ("sz000001", "平安银行"),
-                ("sh600036", "招商银行"), ("sz002594", "比亚迪"),
-                ("sz000333", "美的集团"), ("sh601012", "隆基绿能"),
-            ]
-            qt_codes = [c[0] for c in codes]
-            url = f"http://qt.gtimg.cn/q={','.join(qt_codes)}"
-            resp = _http_get(url, headers=_TENCENT_HEADERS, timeout=8)
-            if resp and resp.text:
-                result = []
-                lines = resp.text.strip().split(";")
-                for line in lines:
-                    match = re.search(r'="([^"]*)"', line)
-                    if match:
-                        raw = match.group(1)
-                        if not raw:
-                            continue
-                        fields = raw.split("~")
-                        if len(fields) >= 36:
-                            code = fields[2] if len(fields) > 2 else ""
-                            name = fields[1] if len(fields) > 1 else ""
-                            price = _safe_float(fields[3])
-                            pct = _safe_float(fields[32])
-                            change = _safe_float(fields[31])
-                            volume = _safe_float(fields[36])
-                            if code and name and price > 0 and not code.endswith(".HK"):
-                                result.append({
-                                    "code": code,
-                                    "name": name,
-                                    "price": price,
-                                    "pct": pct,
-                                    "change": change,
-                                    "volume": volume,
-                                })
-                if result:
-                    result.sort(key=lambda x: x["pct"], reverse=True)
-                    return result[:8]
-        except Exception as e:
-            logger.debug(f"Tencent hot stocks error: {e}")
-        return None
-
-
 class EastMoneySource:
+    """东方财富 - 备用数据源，带熔断机制"""
     NAME = "东方财富"
 
     _circuits = {"realtime": {"open": False, "until": 0, "fail_count": 0, "success_count": 0},
@@ -555,7 +589,7 @@ class EastMoneySource:
         if c["open"]:
             if time.time() >= c["until"]:
                 c["open"] = False
-                c["fail_count"] = 0  # Reset fail count when circuit reopens
+                c["fail_count"] = 0
                 return True
             return False
         return True
@@ -565,22 +599,19 @@ class EastMoneySource:
         c = cls._circuits.setdefault(endpoint, {"open": False, "until": 0, "fail_count": 0, "success_count": 0})
         c["open"] = True
         c["fail_count"] += 1
-        c["success_count"] = 0  # Reset success count on failure
-        
-        # Dynamic cooldown based on failure count
+        c["success_count"] = 0
         dynamic_cooldown = min(300, cooldown * (1 + c["fail_count"] * 0.5))
         c["until"] = time.time() + dynamic_cooldown
-        logger.info(f"EastMoney {endpoint} circuit tripped, cooldown {dynamic_cooldown:.1f}s (fail count: {c['fail_count']})")
+        logger.debug(f"EastMoney {endpoint} circuit tripped, cooldown {dynamic_cooldown:.1f}s")
 
     @classmethod
     def _reset_circuit(cls, endpoint: str):
         c = cls._circuits.get(endpoint, {"open": False, "until": 0, "fail_count": 0, "success_count": 0})
         c["success_count"] += 1
-        c["fail_count"] = max(0, c["fail_count"] - 0.5)  # Gradually reduce fail count on success
+        c["fail_count"] = max(0, c["fail_count"] - 0.5)
         if c["success_count"] >= 3:
             c["fail_count"] = 0
             c["success_count"] = 0
-            logger.debug(f"EastMoney {endpoint} circuit reset due to multiple successes")
 
     @staticmethod
     def _a_code_to_secid(code: str) -> str:
@@ -616,7 +647,7 @@ class EastMoneySource:
                 "fields": "f43,f44,f45,f46,f47,f48,f57,f58,f60,f168,f169,f170,f171",
                 "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             }
-            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=8)  # Increased timeout
+            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=10)
             if resp:
                 try:
                     d = resp.json().get("data", {})
@@ -641,7 +672,7 @@ class EastMoneySource:
                         if market == "A":
                             result["turnover"] = _safe_float(d.get("f168", 0)) / 100 if d.get("f168") else 0
                             result["amplitude"] = _safe_float(d.get("f171", 0)) / 100 if d.get("f171") else 0
-                        EastMoneySource._reset_circuit("realtime")  # Reset circuit on success
+                        EastMoneySource._reset_circuit("realtime")
                         return result
                 except json.JSONDecodeError:
                     logger.debug(f"EastMoney realtime JSON decode error for {code}")
@@ -677,7 +708,7 @@ class EastMoneySource:
                 "end": end,
                 "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             }
-            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=15)  # Increased timeout
+            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=15)
             if resp:
                 try:
                     data = resp.json().get("data", {})
@@ -696,7 +727,7 @@ class EastMoneySource:
                                     "volume": _safe_float(parts[5]),
                                 })
                         if rows:
-                            EastMoneySource._reset_circuit("history")  # Reset circuit on success
+                            EastMoneySource._reset_circuit("history")
                             return pd.DataFrame(rows)
                 except json.JSONDecodeError:
                     logger.debug(f"EastMoney history JSON decode error for {code}")
@@ -724,7 +755,7 @@ class EastMoneySource:
                 "fields": "f2,f3,f4,f5,f6,f7,f8,f12,f14",
                 "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             }
-            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=10)  # Increased timeout
+            resp = _http_get(url, params=params, headers=_EM_HEADERS, timeout=10)
             if resp:
                 try:
                     data = resp.json().get("data", {})
@@ -748,7 +779,7 @@ class EastMoneySource:
                                     "volume": volume,
                                 })
                         if result:
-                            EastMoneySource._reset_circuit("hot")  # Reset circuit on success
+                            EastMoneySource._reset_circuit("hot")
                             return result[:8]
                 except json.JSONDecodeError:
                     logger.debug(f"EastMoney hot stocks JSON decode error")
@@ -760,6 +791,7 @@ class EastMoneySource:
 
 
 class AkshareSource:
+    """AkShare - Python库数据源"""
     NAME = "AkShare"
 
     _fail_until = 0
@@ -893,108 +925,6 @@ class AkshareSource:
         return None
 
 
-class BaostockSource:
-    NAME = "Baostock"
-
-    def __init__(self):
-        self._connected = False
-
-    def _ensure_connected(self):
-        if self._connected:
-            return True
-        try:
-            import baostock as bs
-            lg = bs.login()
-            if lg.error_code == "0":
-                self._connected = True
-                return True
-            logger.debug(f"Baostock login failed: {lg.error_msg}")
-        except Exception as e:
-            logger.debug(f"Baostock login error: {e}")
-        return False
-
-    def fetch_realtime(self, code: str, market: str) -> Optional[dict]:
-        if market != "A":
-            return None
-        try:
-            if not self._ensure_connected():
-                return None
-            import baostock as bs
-            prefix = "sh" if code.startswith("6") else "sz"
-            end = datetime.now().strftime("%Y-%m-%d")
-            start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
-            rs = bs.query_history_k_data_plus(
-                f"{prefix}.{code}",
-                "date,open,high,low,close,volume",
-                start_date=start,
-                end_date=end,
-                frequency="d",
-                adjustflag="3",
-            )
-            if rs is None:
-                return None
-            rows = []
-            while rs.next():
-                rows.append(rs.get_row_data())
-            if not rows:
-                return None
-            r = rows[-1]
-            close = float(r[4]) if r[4] else 0
-            open_ = float(r[1]) if r[1] else 0
-            prev_close = float(rows[-2][4]) if len(rows) >= 2 and rows[-2][4] else open_
-            change = round(close - prev_close, 2)
-            pct = round(change / prev_close * 100, 2) if prev_close else 0
-            return {
-                "price": close,
-                "change": change,
-                "pct": pct,
-                "volume": float(r[5]) if r[5] else 0,
-                "high": float(r[2]) if r[2] else 0,
-                "low": float(r[3]) if r[3] else 0,
-                "open": open_,
-                "prev_close": prev_close,
-                "time": r[0] if r[0] else "",
-            }
-        except Exception as e:
-            logger.debug(f"Baostock realtime error: {e}")
-        return None
-
-    def fetch_history(self, code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
-        if market != "A":
-            return None
-        try:
-            if not self._ensure_connected():
-                return None
-            import baostock as bs
-            prefix = "sh" if code.startswith("6") else "sz"
-            bs_code = f"{prefix}.{code}"
-            start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
-            end_fmt = f"{end[:4]}-{end[4:6]}-{end[6:8]}"
-            freq_map = {"daily": "d", "weekly": "w", "monthly": "m"}
-            freq = freq_map.get(kline_type, "d")
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume",
-                start_date=start_fmt,
-                end_date=end_fmt,
-                frequency=freq,
-                adjustflag="1" if adjust == "hfq" else "3" if adjust == "" else "2",
-            )
-            if rs is None:
-                return None
-            rows = []
-            while rs.next():
-                rows.append(rs.get_row_data())
-            if rows:
-                df = pd.DataFrame(rows, columns=rs.fields)
-                for c in ["open", "high", "low", "close", "volume"]:
-                    df[c] = pd.to_numeric(df[c], errors="coerce")
-                return df
-        except Exception as e:
-            logger.debug(f"Baostock history error: {e}")
-        return None
-
-
 def _akshare_retry(func, *args, **kwargs):
     for i in range(3):
         try:
@@ -1010,86 +940,8 @@ def _akshare_retry(func, *args, **kwargs):
     return None
 
 
-class NeteaseSource:
-    NAME = "网易财经"
-
-    @staticmethod
-    def fetch_realtime(code: str, market: str) -> Optional[dict]:
-        try:
-            if market == "A":
-                prefix = "sh" if code.startswith(("6", "9")) else "sz"
-                nt_code = f"{prefix}{code}"
-            else:
-                return None
-
-            url = f"http://quotes.money.163.com/service/chddata.html"
-            params = {
-                "code": nt_code,
-                "start": (datetime.now() - timedelta(days=10)).strftime("%Y%m%d"),
-                "end": datetime.now().strftime("%Y%m%d"),
-            }
-            resp = _http_get(url, params=params, headers=_SINA_HEADERS, timeout=8)
-            if resp and resp.text:
-                lines = resp.text.strip().split('\n')
-                if len(lines) >= 2:
-                    latest = lines[1].split(',')
-                    if len(latest) >= 6:
-                        return {
-                            "name": latest[0],
-                            "price": _safe_float(latest[3]),
-                            "change": round(_safe_float(latest[3]) - _safe_float(latest[2]), 2),
-                            "pct": round((_safe_float(latest[3]) - _safe_float(latest[2])) / _safe_float(latest[2]) * 100, 2) if _safe_float(latest[2]) > 0 else 0,
-                            "volume": _safe_float(latest[4]),
-                            "high": _safe_float(latest[5]),
-                            "low": _safe_float(latest[6]) if len(latest) > 6 else _safe_float(latest[3]),
-                            "open": _safe_float(latest[1]),
-                            "prev_close": _safe_float(latest[2]),
-                            "time": latest[0].split()[0] if ' ' in latest[0] else datetime.now().strftime("%Y-%m-%d"),
-                        }
-        except Exception as e:
-            logger.debug(f"Netease realtime error for {code}: {e}")
-        return None
-
-    @staticmethod
-    def fetch_history(code: str, market: str, start: str, end: str, kline_type: str = "daily", adjust: str = "qfq") -> Optional[pd.DataFrame]:
-        try:
-            if market != "A":
-                return None
-            prefix = "sh" if code.startswith(("6", "9")) else "sz"
-            nt_code = f"{prefix}{code}"
-            
-            url = f"http://quotes.money.163.com/service/chddata.html"
-            params = {
-                "code": nt_code,
-                "start": start,
-                "end": end,
-            }
-            resp = _http_get(url, params=params, headers=_SINA_HEADERS, timeout=10)
-            if resp and resp.text:
-                lines = resp.text.strip().split('\n')
-                if len(lines) > 1:
-                    rows = []
-                    for line in lines[1:]:
-                        parts = line.split(',')
-                        if len(parts) >= 6:
-                            rows.append({
-                                "date": parts[0],
-                                "open": _safe_float(parts[1]),
-                                "close": _safe_float(parts[3]),
-                                "high": _safe_float(parts[5]),
-                                "low": _safe_float(parts[6]) if len(parts) > 6 else _safe_float(parts[3]),
-                                "volume": _safe_float(parts[4]),
-                            })
-                    if rows:
-                        return pd.DataFrame(rows)
-        except Exception as e:
-            logger.debug(f"Netease history error for {code}: {e}")
-        return None
-
-
 class SmartDataFetcher:
     def __init__(self):
-        self._bs = BaostockSource()
         self._db = get_db()
         self._quality_checker = DataQualityChecker()
         self._health_monitor = DataSourceHealthMonitor()
@@ -1123,7 +975,10 @@ class SmartDataFetcher:
                     "extra_json": meta,
                 }
             )
-        self._db.upsert_stock_info_rows(rows)
+        try:
+            self._db.upsert_stock_info_rows(rows)
+        except Exception as e:
+            logger.debug(f"Bootstrap reference assets failed: {e}")
 
     def _record_source(
         self,
@@ -1146,10 +1001,8 @@ class SmartDataFetcher:
         if market == "A":
             sources = [
                 ("tencent", TencentSource.fetch_realtime),
-                ("netease", NeteaseSource.fetch_realtime),
                 ("akshare", AkshareSource.fetch_realtime),
                 ("sina", SinaSource.fetch_realtime),
-                ("baostock", self._bs.fetch_realtime),
                 ("eastmoney", EastMoneySource.fetch_realtime),
             ]
         elif market == "HK":
@@ -1167,7 +1020,6 @@ class SmartDataFetcher:
         else:
             sources = [
                 ("tencent", TencentSource.fetch_realtime),
-                ("netease", NeteaseSource.fetch_realtime),
                 ("akshare", AkshareSource.fetch_realtime),
                 ("sina", SinaSource.fetch_realtime),
                 ("eastmoney", EastMoneySource.fetch_realtime),
@@ -1178,10 +1030,8 @@ class SmartDataFetcher:
         if market == "A":
             sources = [
                 ("tencent", TencentSource.fetch_history),
-                ("netease", NeteaseSource.fetch_history),
                 ("akshare", AkshareSource.fetch_history),
                 ("sina", SinaSource.fetch_history),
-                ("baostock", self._bs.fetch_history),
                 ("eastmoney", EastMoneySource.fetch_history),
             ]
         elif market == "HK":
@@ -1198,7 +1048,6 @@ class SmartDataFetcher:
         else:
             sources = [
                 ("tencent", TencentSource.fetch_history),
-                ("netease", NeteaseSource.fetch_history),
                 ("akshare", AkshareSource.fetch_history),
                 ("sina", SinaSource.fetch_history),
                 ("eastmoney", EastMoneySource.fetch_history),
@@ -1215,13 +1064,13 @@ class SmartDataFetcher:
 
     def _needs_today_refresh(self, symbol: str, market: str, kline_type: str, adjust: str) -> bool:
         today_key = datetime.now().strftime("%Y-%m-%d")
-        updated_at = self._db.get_last_update_time(symbol, market, kline_type, adjust=adjust, trade_date=today_key)
-        if not updated_at:
-            return True
         try:
+            updated_at = self._db.get_last_update_time(symbol, market, kline_type, adjust=adjust, trade_date=today_key)
+            if not updated_at:
+                return True
             age = (datetime.now() - datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")).total_seconds()
             return age >= _TODAY_CACHE_TTL_SECONDS
-        except ValueError:
+        except Exception:
             return True
 
     def _prepare_frame_for_storage(self, df: pd.DataFrame, source: str) -> pd.DataFrame:
@@ -1254,6 +1103,8 @@ class SmartDataFetcher:
         try:
             conn = _get_db_connection()
             self._db.upsert_kline_rows(symbol, market, kline_type, rows, adjust=adjust, instrument_type=instrument_type, conn=conn)
+        except Exception as e:
+            logger.debug(f"Store history frame failed: {e}")
         finally:
             if conn:
                 _return_db_connection(conn)
@@ -1269,8 +1120,7 @@ class SmartDataFetcher:
         instrument_type: str = "stock",
     ) -> pd.DataFrame:
         sources = self._get_history_sources(market)
-        
-        # 并行尝试多个数据源
+
         async def fetch_from_source(name, fetch_fn):
             for attempt in range(2):
                 started = time.perf_counter()
@@ -1282,40 +1132,36 @@ class SmartDataFetcher:
                         if _validate_history_df(result):
                             self._store_history_frame(symbol, market, kline_type, adjust, result, name, instrument_type)
                             self._record_source(name, True, "history", latency_ms)
-                            logger.info(f"History data for {symbol} from {name}")
+                            logger.debug(f"History data for {symbol} from {name}")
                             return result, name
                     if attempt == 0:
                         logger.debug(f"Source {name} attempt {attempt+1} failed for {symbol}, retrying...")
-                        await asyncio.sleep(0.3)  # 减少等待时间
+                        await asyncio.sleep(0.5)
                 except Exception as e:
                     latency_ms = (time.perf_counter() - started) * 1000
                     logger.debug(f"Source {name} attempt {attempt+1} failed for {symbol}: {e}")
                     if attempt == 1:
                         self._record_source(name, False, "history", latency_ms, str(e))
                     if attempt == 0:
-                        await asyncio.sleep(0.3)  # 减少等待时间
+                        await asyncio.sleep(0.5)
             return None, name
-        
-        # 创建并行任务
+
         tasks = []
-        for name, fetch_fn in sources[:3]:  # 只并行尝试前3个数据源
+        for name, fetch_fn in sources[:2]:
             tasks.append(fetch_from_source(name, fetch_fn))
-        
-        # 等待所有任务完成
+
         results = await asyncio.gather(*tasks)
-        
-        # 找到第一个成功的结果
+
         for result, name in results:
             if result is not None:
                 return result
-        
-        # 如果并行尝试失败，顺序尝试剩余数据源
-        for name, fetch_fn in sources[3:]:
+
+        for name, fetch_fn in sources[2:]:
             result, _ = await fetch_from_source(name, fetch_fn)
             if result is not None:
                 return result
-        
-        logger.warning(f"All history sources failed for {symbol}")
+
+        logger.debug(f"All history sources failed for {symbol}")
         return pd.DataFrame()
 
     def _load_cached_history(
@@ -1333,6 +1179,9 @@ class SmartDataFetcher:
         try:
             conn = _get_db_connection()
             return self._db.load_kline_rows(symbol, market, kline_type, start_key, end_key, adjust, conn=conn)
+        except Exception as e:
+            logger.debug(f"Load cached history failed: {e}")
+            return pd.DataFrame()
         finally:
             if conn:
                 _return_db_connection(conn)
@@ -1370,7 +1219,7 @@ class SmartDataFetcher:
         if cached is not None:
             return cached.copy()
 
-        market = "INDEX" if instrument_type == "index" or symbol in self._major_indices and self._major_indices[symbol]["market"] == "INDEX" else MarketDetector.detect(symbol)
+        market = "INDEX" if instrument_type == "index" else MarketDetector.detect(symbol)
         norm = MarketDetector.normalize_symbol(symbol)
         start_date, end_date = self._resolve_period_range(period)
         today_key = datetime.now().strftime("%Y-%m-%d")
@@ -1402,7 +1251,7 @@ class SmartDataFetcher:
             _cache_set(_history_cache, cache_key, cached_df.copy(), ttl=ttl)
             return cached_df
 
-        logger.warning(f"All history sources failed for {symbol}")
+        logger.debug(f"All history sources failed for {symbol}")
         return pd.DataFrame()
 
     async def get_realtime(self, symbol: str) -> dict:
@@ -1438,8 +1287,7 @@ class SmartDataFetcher:
                 return index_spot
 
         sources = self._get_realtime_sources(market)
-        
-        # 并行尝试多个数据源
+
         async def fetch_from_source(name, fetch_fn):
             for attempt in range(2):
                 started = time.perf_counter()
@@ -1452,36 +1300,32 @@ class SmartDataFetcher:
                             if db_name:
                                 data["name"] = db_name
                         self._record_source(name, True, "realtime", latency_ms)
-                        logger.info(f"Realtime data for {symbol} from {name}")
+                        logger.debug(f"Realtime data for {symbol} from {name}")
                         return data, name
                     if attempt == 0:
                         logger.debug(f"Source {name} attempt {attempt+1} failed for {symbol}, retrying...")
-                        await asyncio.sleep(0.2)  # 减少等待时间
+                        await asyncio.sleep(0.3)
                 except Exception as e:
                     latency_ms = (time.perf_counter() - started) * 1000
                     logger.debug(f"Source {name} attempt {attempt+1} failed for {symbol}: {e}")
                     if attempt == 1:
                         self._record_source(name, False, "realtime", latency_ms, str(e))
                     if attempt == 0:
-                        await asyncio.sleep(0.2)  # 减少等待时间
+                        await asyncio.sleep(0.3)
             return None, name
-        
-        # 创建并行任务
+
         tasks = []
-        for name, fetch_fn in sources[:3]:  # 只并行尝试前3个数据源
+        for name, fetch_fn in sources[:2]:
             tasks.append(fetch_from_source(name, fetch_fn))
-        
-        # 等待所有任务完成
+
         results = await asyncio.gather(*tasks)
-        
-        # 找到第一个成功的结果
+
         for data, name in results:
             if data:
                 _cache_set(_realtime_cache, cache_key, data, ttl=_RT_CACHE_TTL)
                 return data
-        
-        # 如果并行尝试失败，顺序尝试剩余数据源
-        for name, fetch_fn in sources[3:]:
+
+        for name, fetch_fn in sources[2:]:
             data, _ = await fetch_from_source(name, fetch_fn)
             if data:
                 _cache_set(_realtime_cache, cache_key, data, ttl=_RT_CACHE_TTL)
@@ -1511,6 +1355,8 @@ class SmartDataFetcher:
                 }
                 _cache_set(_realtime_cache, cache_key, result, ttl=_RT_CACHE_TTL)
                 return result
+        except Exception as e:
+            logger.debug(f"Fallback to cached history failed: {e}")
         finally:
             if conn:
                 _return_db_connection(conn)
@@ -1518,7 +1364,7 @@ class SmartDataFetcher:
         db_name = get_stock_name(symbol)
         fallback = {"name": db_name or symbol, "offline": True}
         _cache_set(_realtime_cache, cache_key, fallback, ttl=_RT_CACHE_TTL)
-        logger.warning(f"All realtime sources failed for {symbol}")
+        logger.debug(f"All realtime sources failed for {symbol}")
         return fallback
 
     def _pick_frame_value(self, frame: pd.DataFrame, patterns: list[str], default: Any = 0) -> Any:
@@ -1539,28 +1385,31 @@ class SmartDataFetcher:
             return {}
 
         norm = MarketDetector.normalize_symbol(symbol)
-        cached_rows = self._db.get_financials(norm)
-        if cached_rows:
-            latest_row = cached_rows[0]
-            try:
-                updated_at = datetime.strptime(latest_row["updated_at"], "%Y-%m-%d %H:%M:%S")
-                if (datetime.now() - updated_at).days <= 100:
-                    payload = json.loads(latest_row.get("payload", "{}")) if latest_row.get("payload") else {}
-                    payload.update(
-                        {
-                            "revenue": latest_row.get("revenue", 0),
-                            "net_profit": latest_row.get("net_profit", 0),
-                            "gross_margin": latest_row.get("gross_margin", 0),
-                            "net_margin": latest_row.get("net_margin", 0),
-                            "roe": latest_row.get("roe", 0),
-                            "roa": latest_row.get("roa", 0),
-                            "debt_ratio": latest_row.get("debt_ratio", 0),
-                            "report_date": latest_row.get("report_date", ""),
-                        }
-                    )
-                    return payload
-            except Exception:
-                pass
+        try:
+            cached_rows = self._db.get_financials(norm)
+            if cached_rows:
+                latest_row = cached_rows[0]
+                try:
+                    updated_at = datetime.strptime(latest_row["updated_at"], "%Y-%m-%d %H:%M:%S")
+                    if (datetime.now() - updated_at).days <= 100:
+                        payload = json.loads(latest_row.get("payload", "{}")) if latest_row.get("payload") else {}
+                        payload.update(
+                            {
+                                "revenue": latest_row.get("revenue", 0),
+                                "net_profit": latest_row.get("net_profit", 0),
+                                "gross_margin": latest_row.get("gross_margin", 0),
+                                "net_margin": latest_row.get("net_margin", 0),
+                                "roe": latest_row.get("roe", 0),
+                                "roa": latest_row.get("roa", 0),
+                                "debt_ratio": latest_row.get("debt_ratio", 0),
+                                "report_date": latest_row.get("report_date", ""),
+                            }
+                        )
+                        return payload
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         try:
             import akshare as ak
@@ -1599,9 +1448,12 @@ class SmartDataFetcher:
         return {}
 
     async def refresh_stock_info(self, force: bool = False) -> dict:
-        existing = self._db.fetchone("SELECT COUNT(*) AS total FROM stock_info")
-        if not force and existing and int(existing["total"]) >= 500:
-            return {"success": True, "count": int(existing["total"]), "cached": True}
+        try:
+            existing = self._db.fetchone("SELECT COUNT(*) AS total FROM stock_info")
+            if not force and existing and int(existing["total"]) >= 500:
+                return {"success": True, "count": int(existing["total"]), "cached": True}
+        except Exception:
+            pass
 
         try:
             import akshare as ak
@@ -1794,6 +1646,8 @@ class SmartDataFetcher:
                     "time": _date_to_key(last["date"]),
                     "offline": True,
                 }
+        except Exception as e:
+            logger.debug(f"Index spot fallback failed: {e}")
         finally:
             if conn:
                 _return_db_connection(conn)
@@ -1828,6 +1682,8 @@ class SmartDataFetcher:
             if not cached_df.empty and not self._needs_today_refresh(norm, market, kline_type, adjust):
                 _cache_set(_history_cache, cache_key, cached_df.copy(), ttl=_HIST_CACHE_TTL)
                 return cached_df
+        except Exception:
+            cached_df = pd.DataFrame()
         finally:
             if conn:
                 _return_db_connection(conn)
@@ -1922,6 +1778,8 @@ class SmartDataFetcher:
             cached_df = self._db.load_kline_rows(symbol, "A", "daily", start_date=f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}", end_date=f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}", adjust=adjust, conn=conn)
             if not cached_df.empty and not self._needs_today_refresh(symbol, "A", "daily", adjust):
                 return cached_df
+        except Exception:
+            cached_df = pd.DataFrame()
         finally:
             if conn:
                 _return_db_connection(conn)
@@ -2026,13 +1884,16 @@ class SmartDataFetcher:
 
     async def get_zt_pool(self, trade_date: Optional[str] = None) -> dict:
         trade_date = trade_date or datetime.now().strftime("%Y%m%d")
-        cached = self._db.get_zt_pool(trade_date)
-        if cached:
-            return {
-                "limit_up": [row for row in cached if row["pool_type"] == "limit_up"],
-                "broken_board": [row for row in cached if row["pool_type"] == "broken_board"],
-                "strong": [row for row in cached if row["pool_type"] == "strong"],
-            }
+        try:
+            cached = self._db.get_zt_pool(trade_date)
+            if cached:
+                return {
+                    "limit_up": [row for row in cached if row["pool_type"] == "limit_up"],
+                    "broken_board": [row for row in cached if row["pool_type"] == "broken_board"],
+                    "strong": [row for row in cached if row["pool_type"] == "strong"],
+                }
+        except Exception:
+            pass
 
         try:
             import akshare as ak
@@ -2054,11 +1915,14 @@ class SmartDataFetcher:
         return {"limit_up": [], "broken_board": [], "strong": []}
 
     async def get_northbound_flow(self, limit: int = 10) -> list[dict]:
-        cached = self._db.get_northbound(limit)
-        if cached:
-            latest_date = cached[0]["trade_date"]
-            if latest_date == datetime.now().strftime("%Y-%m-%d"):
-                return cached
+        try:
+            cached = self._db.get_northbound(limit)
+            if cached:
+                latest_date = cached[0]["trade_date"]
+                if latest_date == datetime.now().strftime("%Y-%m-%d"):
+                    return cached
+        except Exception:
+            pass
         try:
             import akshare as ak
 
@@ -2084,13 +1948,19 @@ class SmartDataFetcher:
             return self._db.get_northbound(limit)
         except Exception as e:
             logger.debug(f"Northbound flow fetch failed: {e}")
-        return cached
+        try:
+            return self._db.get_northbound(limit)
+        except Exception:
+            return []
 
     async def get_market_temperature(self) -> dict:
         today_key = datetime.now().strftime("%Y-%m-%d")
-        cached = self._db.get_market_sentiment(1)
-        if cached and cached[0]["trade_date"] == today_key:
-            return cached[0]
+        try:
+            cached = self._db.get_market_sentiment(1)
+            if cached and cached[0]["trade_date"] == today_key:
+                return cached[0]
+        except Exception:
+            pass
         try:
             import akshare as ak
 

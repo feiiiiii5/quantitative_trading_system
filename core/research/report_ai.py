@@ -52,6 +52,35 @@ class ReportAIAssistant:
         self._positive_keywords = ["看好", "推荐", "增持", "买入", "超预期", "增长", "突破", "新高", "强势", "领先"]
         self._negative_keywords = ["看淡", "减持", "卖出", "低于预期", "下滑", "风险", "亏损", "下降", "压力", "弱势"]
         self._rating_map = {"强烈推荐": 2, "推荐": 1, "增持": 1, "买入": 1, "中性": 0, "持有": 0, "减持": -1, "卖出": -1}
+        self._reports: Dict[str, ReportSummary] = {}
+        self._report_counter = 0
+
+    def process_text(self, title: str, content: str, source: str = "") -> dict:
+        self._report_counter += 1
+        report_id = f"report_{self._report_counter:06d}"
+        summary = self.extract_summary(content, title)
+        summary.source = source
+        summary.date = time.strftime("%Y-%m-%d")
+        self._reports[report_id] = summary
+        return {"success": True, "report_id": report_id, **summary.to_dict()}
+
+    def list_reports(self, limit: int = 20) -> list:
+        items = list(self._reports.items())[-limit:]
+        return [{"report_id": rid, **s.to_dict()} for rid, s in reversed(items)]
+
+    def get_summary(self, report_id: str) -> Optional[ReportSummary]:
+        return self._reports.get(report_id)
+
+    def get_aggregation(self, symbol: str = "", days: int = 30) -> dict:
+        reports = list(self._reports.values())
+        agg = self.aggregate_reports(symbol or "unknown", reports)
+        return agg.to_dict()
+
+    def get_sentiment_trend(self, days: int = 30) -> list:
+        trend = []
+        for rid, s in list(self._reports.items())[-days:]:
+            trend.append({"date": s.date or "", "score": s.sentiment_score, "label": s.sentiment})
+        return trend
 
     def extract_summary(self, text: str, title: str = "") -> ReportSummary:
         core_points = self._extract_core_points(text)

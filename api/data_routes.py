@@ -11,20 +11,20 @@ from core.data_infra.history_manager import HistoryDataManager, AdjustType, Corp
 from core.data_infra.alt_data import AltDataPipeline
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/data", tags=["数据基础设施"])
+data_router = APIRouter(prefix="/data", tags=["数据基础设施"])
 
 
 def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-@router.get("/tick/symbols")
+@data_router.get("/tick/symbols")
 async def list_tick_symbols(request: Request):
     symbols = request.app.state.tick_store.get_symbols()
     return _resp(True, data=symbols)
 
 
-@router.get("/tick/info/{symbol}")
+@data_router.get("/tick/info/{symbol}")
 async def get_tick_info(request: Request, symbol: str, data_type: str = Query("bar")):
     try:
         dt = DataType(data_type)
@@ -34,7 +34,7 @@ async def get_tick_info(request: Request, symbol: str, data_type: str = Query("b
         return _resp(False, msg=f"不支持的数据类型: {data_type}")
 
 
-@router.get("/tick/read/{symbol}")
+@data_router.get("/tick/read/{symbol}")
 async def read_tick_data(
     request: Request,
     symbol: str,
@@ -58,7 +58,7 @@ async def read_tick_data(
         return _resp(False, msg=f"不支持的数据类型: {data_type}")
 
 
-@router.delete("/tick/delete/{symbol}")
+@data_router.delete("/tick/delete/{symbol}")
 async def delete_tick_data(request: Request, symbol: str, data_type: str = Query("bar"), date: Optional[str] = Query(None)):
     try:
         dt = DataType(data_type)
@@ -69,25 +69,25 @@ async def delete_tick_data(request: Request, symbol: str, data_type: str = Query
         return _resp(False, msg=f"不支持的数据类型: {data_type}")
 
 
-@router.get("/adapter/health")
+@data_router.get("/adapter/health")
 async def get_adapter_health(request: Request):
     health = request.app.state.data_adapter.get_health_status()
     return _resp(True, data=health)
 
 
-@router.post("/adapter/health-check")
+@data_router.post("/adapter/health-check")
 async def run_health_check(request: Request):
     results = await request.app.state.data_adapter.run_health_check()
     return _resp(True, data=results)
 
 
-@router.get("/adapter/info")
+@data_router.get("/adapter/info")
 async def get_adapter_info(request: Request):
     info = request.app.state.data_adapter.get_adapter_info()
     return _resp(True, data=info)
 
 
-@router.get("/adapter/realtime/{symbol}")
+@data_router.get("/adapter/realtime/{symbol}")
 async def adapter_fetch_realtime(request: Request, symbol: str, market: str = Query("A")):
     result = await request.app.state.data_adapter.fetch_realtime(symbol, market)
     if result:
@@ -95,7 +95,7 @@ async def adapter_fetch_realtime(request: Request, symbol: str, market: str = Qu
     return _resp(False, msg="所有数据源均不可用")
 
 
-@router.get("/adapter/history/{symbol}")
+@data_router.get("/adapter/history/{symbol}")
 async def adapter_fetch_history(
     request: Request,
     symbol: str, market: str = Query("A"),
@@ -114,13 +114,13 @@ async def adapter_fetch_history(
     return _resp(False, msg="所有数据源均不可用")
 
 
-@router.get("/stream/status")
+@data_router.get("/stream/status")
 async def get_stream_status(request: Request):
     status = request.app.state.stream_manager.get_status()
     return _resp(True, data=status)
 
 
-@router.post("/stream/subscribe/{symbol}")
+@data_router.post("/stream/subscribe/{symbol}")
 async def stream_subscribe(request: Request, symbol: str):
     async with request.app.state.write_lock:
         success = request.app.state.stream_manager.subscribe(symbol)
@@ -129,38 +129,38 @@ async def stream_subscribe(request: Request, symbol: str):
     return _resp(False, msg="订阅失败，可能已达上限")
 
 
-@router.delete("/stream/unsubscribe/{symbol}")
+@data_router.delete("/stream/unsubscribe/{symbol}")
 async def stream_unsubscribe(request: Request, symbol: str):
     async with request.app.state.write_lock:
         request.app.state.stream_manager.unsubscribe(symbol)
     return _resp(True, msg=f"已取消订阅 {symbol}")
 
 
-@router.get("/stream/subscriptions")
+@data_router.get("/stream/subscriptions")
 async def get_stream_subscriptions(request: Request):
     subs = request.app.state.stream_manager.get_all_subscriptions()
     return _resp(True, data=subs)
 
 
-@router.post("/stream/start")
+@data_router.post("/stream/start")
 async def start_stream(request: Request):
     await request.app.state.stream_manager.start()
     return _resp(True, msg="实时流已启动")
 
 
-@router.post("/stream/stop")
+@data_router.post("/stream/stop")
 async def stop_stream(request: Request):
     await request.app.state.stream_manager.stop()
     return _resp(True, msg="实时流已停止")
 
 
-@router.get("/history/symbols")
+@data_router.get("/history/symbols")
 async def list_history_symbols(request: Request):
     symbols = request.app.state.history_manager.list_symbols()
     return _resp(True, data=symbols)
 
 
-@router.get("/history/load/{symbol}")
+@data_router.get("/history/load/{symbol}")
 async def load_history(request: Request, symbol: str, adjust: str = Query("forward")):
     try:
         at = AdjustType(adjust)
@@ -179,7 +179,7 @@ async def load_history(request: Request, symbol: str, adjust: str = Query("forwa
         return _resp(False, msg=f"不支持的复权类型: {adjust}")
 
 
-@router.get("/history/meta/{symbol}")
+@data_router.get("/history/meta/{symbol}")
 async def get_history_meta(request: Request, symbol: str):
     meta = request.app.state.history_manager.get_meta(symbol)
     if meta:
@@ -187,13 +187,13 @@ async def get_history_meta(request: Request, symbol: str):
     return _resp(False, msg="未找到元数据")
 
 
-@router.get("/history/actions/{symbol}")
+@data_router.get("/history/actions/{symbol}")
 async def get_corporate_actions(request: Request, symbol: str):
     actions = request.app.state.history_manager.get_corporate_actions(symbol)
     return _resp(True, data=actions)
 
 
-@router.post("/history/actions")
+@data_router.post("/history/actions")
 async def add_corporate_action(
     request: Request,
     symbol: str = Query(...),
@@ -214,7 +214,7 @@ async def add_corporate_action(
     return _resp(True, msg="公司行为已添加")
 
 
-@router.get("/history/factors/{symbol}")
+@data_router.get("/history/factors/{symbol}")
 async def get_adjustment_factors(request: Request, symbol: str):
     factors = request.app.state.history_manager.get_adjustment_factors(symbol)
     data = []
@@ -224,26 +224,26 @@ async def get_adjustment_factors(request: Request, symbol: str):
     return _resp(True, data=data)
 
 
-@router.get("/history/leak-check/{symbol}")
+@data_router.get("/history/leak-check/{symbol}")
 async def check_future_leak(request: Request, symbol: str):
     df = request.app.state.history_manager.load_history(symbol)
     leaks = request.app.state.history_manager.check_future_leak(symbol, df)
     return _resp(True, data=leaks)
 
 
-@router.get("/alt/news/{symbol}")
+@data_router.get("/alt/news/{symbol}")
 async def get_news_sentiment(request: Request, symbol: str, limit: int = Query(20)):
     data = await request.app.state.alt_pipeline.get_news_sentiment(symbol, limit)
     return _resp(True, data=data)
 
 
-@router.get("/alt/northbound")
+@data_router.get("/alt/northbound")
 async def get_northbound_flow(request: Request):
     data = await request.app.state.alt_pipeline.get_northbound_flow()
     return _resp(True, data=data)
 
 
-@router.get("/alt/social/{symbol}")
+@data_router.get("/alt/social/{symbol}")
 async def get_social_heat(request: Request, symbol: str):
     data = await request.app.state.alt_pipeline.get_social_heat(symbol)
     if data:
@@ -251,14 +251,14 @@ async def get_social_heat(request: Request, symbol: str):
     return _resp(False, msg="未获取到社交热度数据")
 
 
-@router.post("/alt/social/batch")
+@data_router.post("/alt/social/batch")
 async def get_social_heat_batch(request: Request, symbols: str = Query(..., description="逗号分隔的股票代码")):
     symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
     data = await request.app.state.alt_pipeline.get_social_heat_batch(symbol_list)
     return _resp(True, data=data)
 
 
-@router.get("/alt/comprehensive/{symbol}")
+@data_router.get("/alt/comprehensive/{symbol}")
 async def get_comprehensive_alt_data(request: Request, symbol: str):
     data = await request.app.state.alt_pipeline.get_comprehensive_alt_data(symbol)
     return _resp(True, data=data)

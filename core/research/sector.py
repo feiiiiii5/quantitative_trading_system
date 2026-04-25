@@ -164,3 +164,7 @@ class SectorResearch:
         top_inflow = [s.to_dict() for s in sorted_sectors[:5]]
         top_outflow = [s.to_dict() for s in sorted_sectors[-5:]]
         return {"top_inflow": top_inflow, "top_outflow": top_outflow}
+
+    async def analyze_rotation(self, period: int = 20) -> dict:
+        await self.get_sector_flows()
+        return self.get_sector_rotation()

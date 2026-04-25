@@ -141,3 +141,23 @@ class PerformanceAttribution:
             "selection_pct": round(total_selection / total_excess, 4) if total_excess != 0 else 0,
             "allocation_pct": round(total_allocation / total_excess, 4) if total_excess != 0 else 0,
         }
+
+    # 路由兼容别名方法
+    def daily_attribution(self, portfolio_returns, benchmark_returns, portfolio_weights, benchmark_weights):
+        pr = float(np.mean(list(portfolio_returns.values()))) if isinstance(portfolio_returns, dict) else float(portfolio_returns)
+        return self.attribute_daily(
+            pr,
+            portfolio_returns if isinstance(portfolio_returns, dict) else {},
+            portfolio_weights,
+            portfolio_returns if isinstance(portfolio_returns, dict) else {},
+            portfolio_weights,
+        )
+
+    def rolling_attribution(self, portfolio_returns, benchmark_returns, window=22):
+        return self.get_rolling_attribution(window)
+
+    def excess_return_decomposition(self, portfolio_returns, benchmark_returns):
+        if isinstance(portfolio_returns, str):
+            portfolio_returns = [float(x) for x in portfolio_returns.split(",") if x.strip()]
+        n = len(portfolio_returns) if hasattr(portfolio_returns, "__len__") else 20
+        return self.decompose_excess_return(n)

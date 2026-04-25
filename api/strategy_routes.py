@@ -15,7 +15,7 @@ from core.strategy_v2.factor_research import FactorResearchWorkbench
 from core.strategy_v2.strategy_version import StrategyVersionControl
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/strategy", tags=["策略开发框架"])
+strategy_router = APIRouter(prefix="/strategy", tags=["策略开发框架"])
 
 
 def _resp(success: bool, data=None, msg: str = ""):
@@ -24,19 +24,19 @@ def _resp(success: bool, data=None, msg: str = ""):
 
 # ==================== 16 可视化策略构建器 ====================
 
-@router.get("/builder/catalog")
+@strategy_router.get("/builder/catalog")
 async def get_catalog(request: Request):
     catalog = request.app.state.builder.get_catalog()
     return _resp(True, data=catalog)
 
 
-@router.post("/builder/create")
+@strategy_router.post("/builder/create")
 async def create_strategy(request: Request, name: str = Query(...), description: str = Query("")):
     strategy = request.app.state.builder.create_strategy(name, description)
     return _resp(True, data=strategy.to_dict())
 
 
-@router.post("/builder/add-node")
+@strategy_router.post("/builder/add-node")
 async def add_node(request: Request,
     strategy_name: str = Query(...),
     node_type: str = Query(...),
@@ -54,7 +54,7 @@ async def add_node(request: Request,
     return _resp(False, msg="添加节点失败")
 
 
-@router.post("/builder/add-edge")
+@strategy_router.post("/builder/add-edge")
 async def add_edge(request: Request,
     strategy_name: str = Query(...),
     source_id: str = Query(...),
@@ -68,7 +68,7 @@ async def add_edge(request: Request,
     return _resp(False, msg="添加边失败")
 
 
-@router.get("/builder/export/{name}")
+@strategy_router.get("/builder/export/{name}")
 async def export_strategy(request: Request, name: str):
     code = request.app.state.builder.export_to_python(name)
     if code:
@@ -76,7 +76,7 @@ async def export_strategy(request: Request, name: str):
     return _resp(False, msg="策略未找到")
 
 
-@router.get("/builder/list")
+@strategy_router.get("/builder/list")
 async def list_strategies(request: Request):
     strategies = request.app.state.builder.list_strategies()
     return _resp(True, data=strategies)
@@ -84,7 +84,7 @@ async def list_strategies(request: Request):
 
 # ==================== 17 信号执行解耦 ====================
 
-@router.post("/pipeline/run")
+@strategy_router.post("/pipeline/run")
 async def run_pipeline(request: Request,
     symbols: str = Query(..., description="逗号分隔的股票代码"),
     period: str = Query("1y"),
@@ -120,7 +120,7 @@ async def run_pipeline(request: Request,
     return _resp(True, data=result)
 
 
-@router.get("/pipeline/models")
+@strategy_router.get("/pipeline/models")
 async def get_model_info(request: Request):
     return _resp(True, data={
         "alpha_models": ["momentum", "mean_reversion"],
@@ -132,19 +132,19 @@ async def get_model_info(request: Request):
 
 # ==================== 18 ML策略 ====================
 
-@router.get("/ml/models")
+@strategy_router.get("/ml/models")
 async def get_ml_models(request: Request):
     models = request.app.state.ml_module.get_available_models()
     return _resp(True, data=models)
 
 
-@router.get("/ml/features")
+@strategy_router.get("/ml/features")
 async def get_ml_features(request: Request):
     features = request.app.state.ml_module.get_features_info()
     return _resp(True, data=features)
 
 
-@router.post("/ml/train")
+@strategy_router.post("/ml/train")
 async def train_ml_model(request: Request, symbol: str = Query(...), period: str = Query("1y"), model_type: str = Query("lightgbm")):
     from core.data_fetcher import SmartDataFetcher
     fetcher = SmartDataFetcher()
@@ -160,7 +160,7 @@ async def train_ml_model(request: Request, symbol: str = Query(...), period: str
 
 # ==================== 19 因子研究 ====================
 
-@router.post("/factor/research")
+@strategy_router.post("/factor/research")
 async def research_factor(request: Request,
     name: str = Query(...),
     factor_values: str = Query(..., description="逗号分隔的因子值"),
@@ -176,7 +176,7 @@ async def research_factor(request: Request,
         return _resp(False, msg=str(e))
 
 
-@router.post("/factor/composite")
+@strategy_router.post("/factor/composite")
 async def composite_factor(request: Request,
     returns: str = Query(..., description="逗号分隔的收益率"),
     method: str = Query("equal_weight"),
@@ -196,7 +196,7 @@ async def composite_factor(request: Request,
 
 # ==================== 20 策略版本控制 ====================
 
-@router.post("/version/commit")
+@strategy_router.post("/version/commit")
 async def commit_version(request: Request,
     strategy_name: str = Query(...),
     params: str = Query("{}"),
@@ -212,13 +212,13 @@ async def commit_version(request: Request,
     return _resp(True, data=version.to_dict())
 
 
-@router.get("/version/list/{strategy_name}")
+@strategy_router.get("/version/list/{strategy_name}")
 async def list_versions(request: Request, strategy_name: str):
     versions = request.app.state.version_ctrl.get_versions(strategy_name)
     return _resp(True, data=versions)
 
 
-@router.get("/version/latest/{strategy_name}")
+@strategy_router.get("/version/latest/{strategy_name}")
 async def get_latest_version(request: Request, strategy_name: str):
     version = request.app.state.version_ctrl.get_latest(strategy_name)
     if version:
@@ -226,19 +226,19 @@ async def get_latest_version(request: Request, strategy_name: str):
     return _resp(False, msg="未找到版本")
 
 
-@router.get("/version/diff/{strategy_name}")
+@strategy_router.get("/version/diff/{strategy_name}")
 async def diff_versions(request: Request, strategy_name: str, v1: str = Query(...), v2: str = Query(...)):
     result = request.app.state.version_ctrl.diff_versions(strategy_name, v1, v2)
     return _resp(True, data=result)
 
 
-@router.post("/version/promote/{strategy_name}")
+@strategy_router.post("/version/promote/{strategy_name}")
 async def promote_version(request: Request, strategy_name: str, version_id: str = Query(...)):
     result = request.app.state.version_ctrl.promote(strategy_name, version_id)
     return _resp(result.get("success", False), data=result)
 
 
-@router.get("/version/strategies")
+@strategy_router.get("/version/strategies")
 async def list_all_strategies(request: Request):
     strategies = request.app.state.version_ctrl.list_strategies()
     return _resp(True, data=strategies)

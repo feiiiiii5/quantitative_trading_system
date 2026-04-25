@@ -10,14 +10,14 @@ from core.research.sector import SectorResearch
 from core.research.report_ai import ReportAIAssistant
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/research", tags=["研究与分析"])
+research_router = APIRouter(prefix="/research", tags=["研究与分析"])
 
 
 def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-@router.get("/notebook/status")
+@research_router.get("/notebook/status")
 async def get_notebook_status():
     return _resp(True, data={
         "available": True,
@@ -27,7 +27,7 @@ async def get_notebook_status():
     })
 
 
-@router.post("/notebook/generate-template")
+@research_router.post("/notebook/generate-template")
 async def generate_notebook_template(
     template_type: str = Query("factor_research", description="模板类型"),
     symbol: str = Query("", description="股票代码"),
@@ -52,7 +52,7 @@ async def generate_notebook_template(
     return _resp(False, msg=f"不支持的模板类型: {template_type}")
 
 
-@router.get("/notebook/templates")
+@research_router.get("/notebook/templates")
 async def list_notebook_templates():
     return _resp(True, data=[
         {"id": "factor_research", "name": "因子研究", "description": "IC/IR分析与分层回测"},
@@ -61,7 +61,7 @@ async def list_notebook_templates():
     ])
 
 
-@router.post("/fundamental/valuation")
+@research_router.post("/fundamental/valuation")
 async def calculate_valuation_factors(request: Request, data: str = Query(..., description="JSON格式财务数据")):
     import json
     try:
@@ -72,7 +72,7 @@ async def calculate_valuation_factors(request: Request, data: str = Query(..., d
         return _resp(False, msg=str(e))
 
 
-@router.post("/fundamental/growth")
+@research_router.post("/fundamental/growth")
 async def calculate_growth_factors(request: Request, data: str = Query(..., description="JSON格式财务数据")):
     import json
     try:
@@ -83,7 +83,7 @@ async def calculate_growth_factors(request: Request, data: str = Query(..., desc
         return _resp(False, msg=str(e))
 
 
-@router.post("/fundamental/health")
+@research_router.post("/fundamental/health")
 async def calculate_health_factors(request: Request, data: str = Query(..., description="JSON格式财务数据")):
     import json
     try:
@@ -94,7 +94,7 @@ async def calculate_health_factors(request: Request, data: str = Query(..., desc
         return _resp(False, msg=str(e))
 
 
-@router.post("/fundamental/all")
+@research_router.post("/fundamental/all")
 async def calculate_all_factors(request: Request, data: str = Query(..., description="JSON格式财务数据")):
     import json
     try:
@@ -105,7 +105,7 @@ async def calculate_all_factors(request: Request, data: str = Query(..., descrip
         return _resp(False, msg=str(e))
 
 
-@router.post("/fundamental/compare-industry")
+@research_router.post("/fundamental/compare-industry")
 async def compare_with_industry(
     request: Request,
     factor_name: str = Query(...),
@@ -122,7 +122,7 @@ async def compare_with_industry(
         return _resp(False, msg=str(e))
 
 
-@router.get("/sentiment/analyze/{symbol}")
+@research_router.get("/sentiment/analyze/{symbol}")
 async def analyze_sentiment(request: Request, symbol: str):
     try:
         result = await request.app.state.sentiment_analyzer.analyze(symbol)
@@ -133,7 +133,7 @@ async def analyze_sentiment(request: Request, symbol: str):
         return _resp(False, msg=str(e))
 
 
-@router.get("/sentiment/margin-data")
+@research_router.get("/sentiment/margin-data")
 async def get_margin_data(request: Request, symbol: str = Query("")):
     try:
         result = await request.app.state.sentiment_analyzer._fetch_margin_data(symbol)
@@ -144,7 +144,7 @@ async def get_margin_data(request: Request, symbol: str = Query("")):
         return _resp(False, msg=str(e))
 
 
-@router.get("/sentiment/long-short")
+@research_router.get("/sentiment/long-short")
 async def get_long_short_data(request: Request):
     try:
         result = await request.app.state.sentiment_analyzer._fetch_long_short_data()
@@ -155,7 +155,7 @@ async def get_long_short_data(request: Request):
         return _resp(False, msg=str(e))
 
 
-@router.get("/sentiment/dragon-tiger/{symbol}")
+@research_router.get("/sentiment/dragon-tiger/{symbol}")
 async def get_dragon_tiger(request: Request, symbol: str):
     try:
         result = await request.app.state.sentiment_analyzer._fetch_dragon_tiger(symbol)
@@ -166,7 +166,7 @@ async def get_dragon_tiger(request: Request, symbol: str):
         return _resp(False, msg=str(e))
 
 
-@router.get("/sector/flows")
+@research_router.get("/sector/flows")
 async def get_sector_flows(request: Request):
     try:
         result = await request.app.state.sector_research.get_sector_flows()
@@ -175,7 +175,7 @@ async def get_sector_flows(request: Request):
         return _resp(False, msg=str(e))
 
 
-@router.get("/sector/concept-heat")
+@research_router.get("/sector/concept-heat")
 async def get_concept_heat(request: Request):
     try:
         result = await request.app.state.sector_research.get_concept_heat()
@@ -184,7 +184,7 @@ async def get_concept_heat(request: Request):
         return _resp(False, msg=str(e))
 
 
-@router.get("/sector/rotation")
+@research_router.get("/sector/rotation")
 async def get_sector_rotation(request: Request, period: int = Query(20)):
     try:
         result = await request.app.state.sector_research.analyze_rotation(period)
@@ -193,7 +193,7 @@ async def get_sector_rotation(request: Request, period: int = Query(20)):
         return _resp(False, msg=str(e))
 
 
-@router.get("/sector/industry-chain")
+@research_router.get("/sector/industry-chain")
 async def get_industry_chain(request: Request, industry: str = Query("")):
     try:
         result = request.app.state.sector_research.analyze_industry_chain(industry)
@@ -202,7 +202,7 @@ async def get_industry_chain(request: Request, industry: str = Query("")):
         return _resp(False, msg=str(e))
 
 
-@router.post("/report/upload")
+@research_router.post("/report/upload")
 async def upload_report(
     request: Request,
     title: str = Query(...),
@@ -213,13 +213,13 @@ async def upload_report(
     return _resp(result.get("success", False), data=result)
 
 
-@router.get("/report/list")
+@research_router.get("/report/list")
 async def list_reports(request: Request, limit: int = Query(20)):
     reports = request.app.state.report_ai.list_reports(limit)
     return _resp(True, data=reports)
 
 
-@router.get("/report/summary/{report_id}")
+@research_router.get("/report/summary/{report_id}")
 async def get_report_summary(request: Request, report_id: str):
     summary = request.app.state.report_ai.get_summary(report_id)
     if summary:
@@ -227,13 +227,13 @@ async def get_report_summary(request: Request, report_id: str):
     return _resp(False, msg="研报未找到")
 
 
-@router.get("/report/aggregation")
+@research_router.get("/report/aggregation")
 async def get_report_aggregation(request: Request, symbol: str = Query(""), days: int = Query(30)):
     result = request.app.state.report_ai.get_aggregation(symbol, days)
     return _resp(True, data=result)
 
 
-@router.get("/report/sentiment-trend")
+@research_router.get("/report/sentiment-trend")
 async def get_report_sentiment_trend(request: Request, days: int = Query(30)):
     result = request.app.state.report_ai.get_sentiment_trend(days)
     return _resp(True, data=result)

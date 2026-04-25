@@ -41,31 +41,27 @@ def setup_logger(level: int = logging.INFO) -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
-    # 清除已有的处理器
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # 应用日志 - 轮转文件
     app_handler = logging.handlers.RotatingFileHandler(
         APP_LOG_PATH,
-        maxBytes=10 * 1024 * 1024,  # 10MB
+        maxBytes=10 * 1024 * 1024,
         backupCount=5,
         encoding="utf-8"
     )
     app_handler.setLevel(logging.INFO)
     app_handler.setFormatter(JSONFormatter())
 
-    # 错误日志 - 轮转文件
     error_handler = logging.handlers.RotatingFileHandler(
         ERROR_LOG_PATH,
-        maxBytes=5 * 1024 * 1024,  # 5MB
+        maxBytes=5 * 1024 * 1024,
         backupCount=3,
         encoding="utf-8"
     )
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(JSONFormatter())
 
-    # 控制台输出
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -74,6 +70,13 @@ def setup_logger(level: int = logging.INFO) -> None:
     root_logger.addHandler(app_handler)
     root_logger.addHandler(error_handler)
     root_logger.addHandler(console_handler)
+
+    for noisy in [
+        "numexpr", "numexpr.utils", "numpy", "urllib3", "urllib3.connectionpool",
+        "httpx", "httpcore", "asyncio", "multipart", "py.warnings",
+        "PIL", "matplotlib", "akshare", "baostock",
+    ]:
+        logging.getLogger(noisy).setLevel(logging.ERROR)
 
     _LOGGER_INITIALIZED = True
 
@@ -106,6 +109,10 @@ def get_recent_logs(limit: int = 100, level: Optional[str] = None) -> list[dict]
 def get_logger(name: str) -> logging.Logger:
     """获取带有上下文支持的日志记录器"""
     return logging.getLogger(name)
+
+
+# 默认日志记录器实例
+logger = logging.getLogger("quantcore")
 
 
 def log_with_context(logger: logging.Logger, level: int, message: str, **kwargs) -> None:

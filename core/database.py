@@ -1,4 +1,5 @@
 import json
+import logging
 import sqlite3
 import threading
 from collections import defaultdict, deque
@@ -8,6 +9,8 @@ from typing import Any, Iterable, Optional
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -1237,5 +1240,9 @@ def get_db() -> SQLiteStore:
     if _DB_SINGLETON is None:
         with _DB_SINGLETON_LOCK:
             if _DB_SINGLETON is None:
-                _DB_SINGLETON = SQLiteStore()
+                try:
+                    _DB_SINGLETON = SQLiteStore()
+                except Exception as e:
+                    logger.error(f"Failed to initialize database: {e}")
+                    raise
     return _DB_SINGLETON

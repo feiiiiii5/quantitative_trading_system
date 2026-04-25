@@ -51,11 +51,13 @@ class MonteCarloStressTest:
         ruin_threshold: float = 0.1,
         confidence_level: float = 0.95,
         risk_free_rate: float = 0.03,
+        n_simulations: int = 1000,
     ):
         self.initial_capital = initial_capital
         self.ruin_threshold = ruin_threshold
         self.confidence_level = confidence_level
         self.risk_free_rate = risk_free_rate
+        self.n_simulations = n_simulations
 
     def run(
         self,

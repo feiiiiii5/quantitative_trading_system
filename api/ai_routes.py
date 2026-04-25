@@ -5,14 +5,14 @@ import numpy as np
 from fastapi import APIRouter, Query, Request
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/ai", tags=["AI增强功能"])
+ai_router = APIRouter(prefix="/ai", tags=["AI增强功能"])
 
 
 def _resp(success: bool, data=None, msg: str = ""):
     return {"code": 0 if success else 1, "data": data, "msg": msg}
 
 
-@router.post("/adaptive/detect-regime")
+@ai_router.post("/adaptive/detect-regime")
 async def detect_market_regime(
     request: Request,
     returns: str = Query(..., description="逗号分隔的收益率序列"),
@@ -26,7 +26,7 @@ async def detect_market_regime(
         return _resp(False, msg=str(e))
 
 
-@router.post("/adaptive/optimize-params")
+@ai_router.post("/adaptive/optimize-params")
 async def optimize_params_adaptive(
     request: Request,
     strategy_name: str = Query(...),
@@ -45,7 +45,7 @@ async def optimize_params_adaptive(
         return _resp(False, msg=str(e))
 
 
-@router.post("/adaptive/rolling-optimize")
+@ai_router.post("/adaptive/rolling-optimize")
 async def rolling_optimize(
     request: Request,
     strategy_name: str = Query(...),
@@ -61,13 +61,13 @@ async def rolling_optimize(
         return _resp(False, msg=str(e))
 
 
-@router.get("/adaptive/regime-params")
+@ai_router.get("/adaptive/regime-params")
 async def get_regime_params(request: Request, strategy_name: str = Query("")):
     result = request.app.state.adaptive_optimizer.get_regime_param_map(strategy_name)
     return _resp(True, data=result)
 
 
-@router.post("/nl/generate")
+@ai_router.post("/nl/generate")
 async def generate_strategy_from_nl(request: Request, description: str = Query(..., description="自然语言策略描述")):
     try:
         result = request.app.state.nl_generator.generate(description)
@@ -76,13 +76,13 @@ async def generate_strategy_from_nl(request: Request, description: str = Query(.
         return _resp(False, msg=str(e))
 
 
-@router.get("/nl/templates")
+@ai_router.get("/nl/templates")
 async def get_nl_templates(request: Request):
     templates = request.app.state.nl_generator.get_templates()
     return _resp(True, data=templates)
 
 
-@router.post("/nl/validate")
+@ai_router.post("/nl/validate")
 async def validate_strategy_code(request: Request, code: str = Query(..., description="策略代码")):
     try:
         result = request.app.state.nl_generator.validate_code(code)
@@ -91,7 +91,7 @@ async def validate_strategy_code(request: Request, code: str = Query(..., descri
         return _resp(False, msg=str(e))
 
 
-@router.post("/pattern/detect")
+@ai_router.post("/pattern/detect")
 async def detect_patterns(
     request: Request,
     prices: str = Query(..., description="逗号分隔的价格序列"),
@@ -112,7 +112,7 @@ async def detect_patterns(
         return _resp(False, msg=str(e))
 
 
-@router.post("/pattern/check-volume-anomaly")
+@ai_router.post("/pattern/check-volume-anomaly")
 async def check_volume_anomaly(
     request: Request,
     symbol: str = Query(...),
@@ -127,7 +127,7 @@ async def check_volume_anomaly(
     return _resp(True, data=result)
 
 
-@router.post("/pattern/check-manipulation")
+@ai_router.post("/pattern/check-manipulation")
 async def check_manipulation(
     request: Request,
     symbol: str = Query(...),
@@ -145,7 +145,7 @@ async def check_manipulation(
         return _resp(False, msg=str(e))
 
 
-@router.get("/pattern/historical-similars")
+@ai_router.get("/pattern/historical-similars")
 async def find_historical_similars(
     request: Request,
     pattern_type: str = Query(...),
@@ -156,7 +156,7 @@ async def find_historical_similars(
     return _resp(True, data=result)
 
 
-@router.post("/portfolio/suggest-rebalance")
+@ai_router.post("/portfolio/suggest-rebalance")
 async def suggest_rebalance(
     request: Request,
     positions: str = Query(..., description="JSON格式持仓数据"),
@@ -173,7 +173,7 @@ async def suggest_rebalance(
         return _resp(False, msg=str(e))
 
 
-@router.post("/portfolio/optimal-rebalance")
+@ai_router.post("/portfolio/optimal-rebalance")
 async def optimal_rebalance_plan(
     request: Request,
     positions: str = Query(..., description="JSON格式持仓数据"),
@@ -191,7 +191,7 @@ async def optimal_rebalance_plan(
         return _resp(False, msg=str(e))
 
 
-@router.post("/portfolio/daily-summary")
+@ai_router.post("/portfolio/daily-summary")
 async def get_daily_summary(
     request: Request,
     positions: str = Query(..., description="JSON格式持仓数据"),
@@ -208,13 +208,13 @@ async def get_daily_summary(
         return _resp(False, msg=str(e))
 
 
-@router.get("/prediction/models")
+@ai_router.get("/prediction/models")
 async def get_prediction_models(request: Request):
     models = request.app.state.prediction_platform.get_available_models()
     return _resp(True, data=models)
 
 
-@router.post("/prediction/train-lstm")
+@ai_router.post("/prediction/train-lstm")
 async def train_lstm(
     request: Request,
     prices: str = Query(..., description="逗号分隔的价格序列"),
@@ -229,7 +229,7 @@ async def train_lstm(
         return _resp(False, msg=str(e))
 
 
-@router.post("/prediction/train-garch")
+@ai_router.post("/prediction/train-garch")
 async def train_garch(
     request: Request,
     returns: str = Query(..., description="逗号分隔的收益率序列"),
@@ -245,7 +245,7 @@ async def train_garch(
         return _resp(False, msg=str(e))
 
 
-@router.post("/prediction/predict")
+@ai_router.post("/prediction/predict")
 async def predict(
     request: Request,
     model_name: str = Query(...),
@@ -260,7 +260,7 @@ async def predict(
         return _resp(False, msg=str(e))
 
 
-@router.post("/prediction/ab-test")
+@ai_router.post("/prediction/ab-test")
 async def run_ab_test(
     request: Request,
     model_a: str = Query(...),
@@ -276,7 +276,7 @@ async def run_ab_test(
         return _resp(False, msg=str(e))
 
 
-@router.get("/prediction/ab-results")
+@ai_router.get("/prediction/ab-results")
 async def get_ab_results(request: Request):
     result = request.app.state.prediction_platform.get_ab_results()
     return _resp(True, data=result)

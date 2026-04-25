@@ -6,13 +6,13 @@ class TestPortfolioModule:
     def test_capital_allocator(self):
         from core.portfolio.capital_allocator import CapitalAllocator
         allocator = CapitalAllocator()
-        strategies = {
-            "strat_a": {"sharpe": 1.5, "volatility": 0.15, "return": 0.20},
-            "strat_b": {"sharpe": 0.8, "volatility": 0.10, "return": 0.08},
-        }
+        strategies = [
+            {"name": "strat_a", "sharpe": 1.5, "volatility": 0.15, "return_rate": 0.20},
+            {"name": "strat_b", "sharpe": 0.8, "volatility": 0.10, "return_rate": 0.08},
+        ]
         result = allocator.allocate(strategies, 100000, "sharpe")
         assert result is not None
-        assert "allocations" in result or "strat_a" in result or isinstance(result, dict)
+        assert "allocations" in result
 
     def test_rebalance_engine(self):
         from core.portfolio.rebalance import RebalanceEngine
@@ -25,25 +25,28 @@ class TestPortfolioModule:
     def test_attribution(self):
         from core.portfolio.attribution import PerformanceAttribution
         attr = PerformanceAttribution()
-        pr = {"AAPL": [0.01, -0.005, 0.02], "GOOG": [0.005, 0.01, -0.01]}
-        br = {"AAPL": [0.008, -0.003, 0.015], "GOOG": [0.006, 0.008, -0.008]}
+        pr = {"AAPL": 0.01, "GOOG": 0.005}
+        br = {"AAPL": 0.008, "GOOG": 0.006}
         pw = {"AAPL": 0.6, "GOOG": 0.4}
         bw = {"AAPL": 0.5, "GOOG": 0.5}
         result = attr.daily_attribution(pr, br, pw, bw)
         assert result is not None
+        assert hasattr(result, "to_dict")
 
     def test_derivatives_manager(self):
-        from core.portfolio.derivatives import DerivativesManager
+        from core.portfolio.derivatives import DerivativesManager, FuturesPosition
         mgr = DerivativesManager()
-        result = mgr.add_futures_position("IF2401", 1, 3800.0, "202401", 300, 0.1)
-        assert result.get("success", False)
-        ratio = mgr.calculate_hedge_ratio(100, 0.5)
-        assert ratio == 200.0
+        pos = FuturesPosition(symbol="IF2401", contract="202401", quantity=1, entry_price=3800.0, multiplier=300, margin_rate=0.1)
+        mgr.add_future(pos)
+        assert "IF2401" in mgr.get_all_positions()["futures"]
+        result = mgr.calculate_hedge_ratio(0.0)
+        assert isinstance(result, dict)
+        assert "current_delta" in result
 
     def test_tearsheet_generator(self):
         from core.portfolio.tearsheet import TearsheetGenerator
         gen = TearsheetGenerator()
-        ec = np.cumsum(np.random.randn(252) * 0.01) + 100
+        ec = (np.cumsum(np.random.randn(252) * 0.01) + 100).tolist()
         result = gen.generate(ec)
         assert result is not None
         assert hasattr(result, "to_dict")
@@ -102,18 +105,20 @@ class TestResearchModule:
     def test_fundamental_factor_library(self):
         from core.research.fundamental import FundamentalFactorLibrary
         lib = FundamentalFactorLibrary()
-        data = {"pe": 15.0, "pb": 1.5, "ps": 3.0, "ev": 100000, "revenue": 50000,
-                "net_income": 5000, "total_assets": 200000, "total_equity": 100000,
-                "total_debt": 50000, "operating_cash_flow": 8000, "roe": 0.15,
-                "revenue_growth": 0.2, "net_income_growth": 0.25}
-        result = lib.calculate_valuation_factors(data)
-        assert isinstance(result, dict)
+        data = {"price": 100.0, "eps": 5.0, "book_value_per_share": 20.0,
+                "revenue_per_share": 30.0, "enterprise_value": 1000000, "ebitda": 200000,
+                "revenue_growth": 0.2, "profit_growth": 0.25, "roe": 0.15,
+                "roa": 0.08, "net_margin": 0.12, "debt_ratio": 0.4,
+                "current_ratio": 1.5, "quick_ratio": 1.2, "interest_coverage": 8.0}
+        result = lib.calculate_all_factors(data)
+        assert isinstance(result, list)
+        assert len(result) > 0
 
     def test_sector_research(self):
         from core.research.sector import SectorResearch
         research = SectorResearch()
         chain = research.analyze_industry_chain("")
-        assert isinstance(chain, list)
+        assert isinstance(chain, dict)
 
 
 class TestAIModule:

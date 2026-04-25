@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
@@ -113,9 +114,6 @@ class DataSourceHealth:
         return (time.time() - h.last_check) > self._check_interval
 
 
-import os
-
-
 class EastMoneyAdapter(DataSourceAdapter):
     def __init__(self):
         from core.data_fetcher import EastMoneySource
@@ -196,7 +194,7 @@ class TencentAdapter(DataSourceAdapter):
         h = SourceHealth(name=self.name)
         try:
             start_t = time.time()
-            result = await asyncio.to_thread(self._source.fetch_hot_stocks)
+            result = await asyncio.to_thread(self._source.fetch_realtime, "000001", "A")
             h.latency_ms = (time.time() - start_t) * 1000
             h.status = SourceStatus.HEALTHY if result else SourceStatus.DOWN
         except Exception as e:
