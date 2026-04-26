@@ -609,3 +609,63 @@ class IndicatorAnalysis:
             if closes[i] <= np.min(price_window) and rsi.iloc[i] > np.min(rsi_window[:-1]):
                 bottom_divergence.append({"index": i, "date": str(df.iloc[i]["date"]), "price": round(float(closes[i]), 4), "rsi": round(float(rsi.iloc[i]), 4)})
         return {"top_divergence": top_divergence, "bottom_divergence": bottom_divergence}
+
+
+def calc_all_indicators(kline_data: list) -> dict:
+    if not kline_data or len(kline_data) < 30:
+        return {"error": "Insufficient data"}
+
+    df = pd.DataFrame(kline_data)
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    ti = TechnicalIndicators
+    result = {}
+
+    try:
+        ma = ti.ma(df)
+        result["ma"] = {k: _to_list(v) for k, v in ma.items()}
+    except Exception:
+        pass
+
+    try:
+        macd = ti.macd(df)
+        result["macd"] = {k: _to_list(v) for k, v in macd.items()}
+    except Exception:
+        pass
+
+    try:
+        rsi = ti.rsi(df)
+        result["rsi"] = _to_list(rsi)
+    except Exception:
+        pass
+
+    try:
+        boll = ti.boll(df)
+        result["boll"] = {k: _to_list(v) for k, v in boll.items()}
+    except Exception:
+        pass
+
+    try:
+        kdj = ti.kdj(df)
+        result["kdj"] = {k: _to_list(v) for k, v in kdj.items()}
+    except Exception:
+        pass
+
+    try:
+        result["ma_alignment"] = IndicatorAnalysis.ma_alignment(df)
+    except Exception:
+        pass
+
+    try:
+        result["support_resistance"] = IndicatorAnalysis.support_resistance(df)
+    except Exception:
+        pass
+
+    try:
+        result["volatility"] = IndicatorAnalysis.volatility_range(df)
+    except Exception:
+        pass
+
+    return result

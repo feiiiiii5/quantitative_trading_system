@@ -75,7 +75,7 @@ class SQLiteStore:
         self.db_path = Path(db_path)
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.RLock()
+        self._write_lock = threading.Lock()
         self._source_windows: dict[tuple[str, str], deque] = defaultdict(lambda: deque(maxlen=100))
         self._init_db()
 
@@ -83,7 +83,7 @@ class SQLiteStore:
         conn = None
         try:
             conn = _get_db_connection(str(self.db_path))
-            with self._lock:
+            with self._write_lock:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=NORMAL")
                 conn.execute("PRAGMA temp_store=MEMORY")
@@ -321,7 +321,7 @@ class SQLiteStore:
         if not conn_provided:
             conn = _get_db_connection(str(self.db_path))
         try:
-            with self._lock:
+            with self._write_lock:
                 cursor = conn.execute(sql, tuple(params))
                 conn.commit()
                 return cursor
@@ -334,7 +334,7 @@ class SQLiteStore:
         if not conn_provided:
             conn = _get_db_connection(str(self.db_path))
         try:
-            with self._lock:
+            with self._write_lock:
                 conn.executemany(sql, list(params))
                 conn.commit()
         finally:
@@ -346,9 +346,8 @@ class SQLiteStore:
         if not conn_provided:
             conn = _get_db_connection(str(self.db_path))
         try:
-            with self._lock:
-                row = conn.execute(sql, tuple(params)).fetchone()
-                return dict(row) if row else None
+            row = conn.execute(sql, tuple(params)).fetchone()
+            return dict(row) if row else None
         finally:
             if not conn_provided and conn:
                 _return_db_connection(conn)
@@ -358,9 +357,8 @@ class SQLiteStore:
         if not conn_provided:
             conn = _get_db_connection(str(self.db_path))
         try:
-            with self._lock:
-                rows = conn.execute(sql, tuple(params)).fetchall()
-                return [dict(row) for row in rows]
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(row) for row in rows]
         finally:
             if not conn_provided and conn:
                 _return_db_connection(conn)

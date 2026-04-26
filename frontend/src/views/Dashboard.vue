@@ -1,894 +1,323 @@
 <template>
-  <div class="dashboard">
-    <!-- Sidebar -->
-    <aside class="sidebar">
-      <div class="logo">
-        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-          <path d="M4 24L12 12L20 20L28 4" stroke="url(#logo-gradient)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-          <defs>
-            <linearGradient id="logo-gradient" x1="4" y1="24" x2="28" y2="4">
-              <stop stop-color="#00d4aa"/>
-              <stop offset="1" stop-color="#0ea5e9"/>
-            </linearGradient>
-          </defs>
-        </svg>
-        <span class="logo-text">Quant</span>
+  <div class="dashboard fade-in">
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">市场总览</h1>
+        <p class="page-subtitle">实时市场行情与数据监控</p>
       </div>
-      
-      <nav class="nav">
-        <router-link
-          v-for="item in navItems"
-          :key="item.path"
-          :to="item.path"
-          class="nav-item"
-          :class="{ active: $route.path === item.path }"
-        >
-          <component :is="iconMap[item.icon]" :size="20" />
-          <span class="nav-label">{{ item.label }}</span>
-        </router-link>
-      </nav>
-
-      <div class="sidebar-footer">
-        <div class="status-indicator" :class="{ online: isMarketOpen }">
-          <span class="status-dot"></span>
-          <span class="status-text">{{ isMarketOpen ? '交易中' : '休市' }}</span>
+      <div class="header-search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input v-model="searchQuery" placeholder="搜索股票代码或名称..." @input="onSearch" @focus="showResults=true" />
+        <div v-if="showResults && searchResults.length" class="search-dropdown">
+          <div v-for="item in searchResults" :key="item.code" class="search-item" @click="goStock(item.code)">
+            <span class="font-mono">{{ item.code }}</span>
+            <span>{{ item.name }}</span>
+            <span class="market-tag">{{ item.market }}</span>
+          </div>
         </div>
       </div>
-    </aside>
+    </header>
 
-    <!-- Main Content -->
-    <main class="main">
-      <!-- Header -->
-      <header class="header">
-        <div class="search-wrapper">
-          <IconSearch :size="18" class="search-icon" />
-          <input
-            v-model="searchQuery"
-            type="text"
-            placeholder="搜索股票代码 / 名称..."
-            class="search-input"
-            @input="handleSearch"
-            @focus="showSearchResults = true"
-            @keydown.enter="handleSearchEnter"
-          />
-          <button class="search-btn" @click="handleSearchEnter">
-            <IconSearch :size="14" />
-          </button>
-          <div v-if="showSearchResults && searchResults.length" class="search-dropdown" v-click-outside="closeSearch">
-            <div
-              v-for="item in searchResults"
-              :key="item.code"
-              class="search-result-item"
-              @click="goToStock(item.code)"
-            >
-              <span class="result-code">{{ item.code }}</span>
-              <span class="result-name">{{ item.name }}</span>
-              <span class="result-market">{{ item.market }}</span>
-            </div>
+    <section class="indices-section">
+      <div class="indices-row">
+        <div v-for="idx in indices" :key="idx.symbol" class="index-card" :class="idx.pct >= 0 ? 'up' : 'down'" @click="goStock(idx.symbol)">
+          <div class="idx-name">{{ idx.name }}</div>
+          <div class="idx-price font-mono">{{ fmtPrice(idx.price) }}</div>
+          <div class="idx-change font-mono">
+            <span>{{ idx.pct >= 0 ? '+' : '' }}{{ idx.pct?.toFixed(2) }}%</span>
+            <span class="idx-abs">{{ idx.change >= 0 ? '+' : '' }}{{ idx.change?.toFixed(2) }}</span>
           </div>
         </div>
-
-        <div class="header-actions">
-          <button class="icon-btn" @click="refreshData">
-            <IconRefresh :size="18" :class="{ 'is-loading': refreshing }" />
-          </button>
-        </div>
-      </header>
-
-      <!-- Content -->
-      <div class="content">
-        <!-- Market Overview -->
-        <section class="section">
-          <div class="section-header">
-            <h2 class="section-title">市场概览</h2>
-            <span class="section-time">{{ currentTime }}</span>
-          </div>
-          <div class="indices-grid">
-            <div
-              v-for="index in marketIndices"
-              :key="index.symbol"
-              class="index-card"
-              :class="{ up: index.pct >= 0, down: index.pct < 0 }"
-            >
-              <div class="index-header">
-                <span class="index-name">{{ index.name }}</span>
-                <span class="index-badge" :class="index.pct >= 0 ? 'bg-green' : 'bg-red'">
-                  {{ index.pct >= 0 ? '+' : '' }}{{ index.pct?.toFixed(2) }}%
-                </span>
-              </div>
-              <div class="index-value font-mono">{{ index.price?.toFixed(2) }}</div>
-              <div class="index-change font-mono" :class="index.pct >= 0 ? 'text-green' : 'text-red'">
-                {{ index.change >= 0 ? '+' : '' }}{{ index.change?.toFixed(2) }}
-              </div>
-              <div class="mini-chart">
-                <svg viewBox="0 0 100 30" class="sparkline">
-                  <path
-                    :d="generateSparkline(index.trend || [])"
-                    fill="none"
-                    :stroke="index.pct >= 0 ? '#00d4aa' : '#ef4444'"
-                    stroke-width="1.5"
-                    stroke-linecap="round"
-                  />
-                </svg>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Hot Stocks -->
-        <section class="section">
-          <div class="section-header">
-            <h2 class="section-title">热门股票</h2>
-            <router-link to="/strategy" class="section-link">
-              查看全部 <IconRight :size="14" />
-            </router-link>
-          </div>
-          <div class="stock-table-wrapper">
-            <table class="stock-table">
-              <thead>
-                <tr>
-                  <th>排名</th>
-                  <th>代码</th>
-                  <th>名称</th>
-                  <th class="text-right">最新价</th>
-                  <th class="text-right">涨跌幅</th>
-                  <th class="text-right">涨跌额</th>
-                  <th class="text-right">成交量</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="(stock, i) in hotStocks"
-                  :key="stock.code"
-                  class="stock-row"
-                  @click="goToStock(stock.code)"
-                >
-                  <td>
-                    <span class="rank" :class="{ top3: i < 3 }">{{ i + 1 }}</span>
-                  </td>
-                  <td class="font-mono">{{ stock.code }}</td>
-                  <td>{{ stock.name }}</td>
-                  <td class="text-right font-mono">{{ stock.price?.toFixed(2) }}</td>
-                  <td class="text-right">
-                    <span class="pct-badge" :class="stock.pct >= 0 ? 'up' : 'down'">
-                      {{ stock.pct >= 0 ? '+' : '' }}{{ stock.pct?.toFixed(2) }}%
-                    </span>
-                  </td>
-                  <td class="text-right font-mono" :class="stock.change >= 0 ? 'text-green' : 'text-red'">
-                    {{ stock.change >= 0 ? '+' : '' }}{{ stock.change?.toFixed(2) }}
-                  </td>
-                  <td class="text-right font-mono">{{ formatVolume(stock.volume) }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <!-- Market Sentiment -->
-        <section class="section" v-if="marketSentiment">
-          <div class="section-header">
-            <h2 class="section-title">市场情绪</h2>
-          </div>
-          <div class="sentiment-grid">
-            <div class="sentiment-card">
-              <div class="sentiment-label">涨跌比</div>
-              <div class="sentiment-value font-mono">{{ marketSentiment.up_down_ratio?.toFixed(2) }}</div>
-              <div class="sentiment-bar">
-                <div class="sentiment-fill" :style="{ width: `${(marketSentiment.advancers / (marketSentiment.advancers + marketSentiment.decliners || 1)) * 100}%` }"></div>
-              </div>
-            </div>
-            <div class="sentiment-card">
-              <div class="sentiment-label">上涨家数</div>
-              <div class="sentiment-value text-green font-mono">{{ marketSentiment.advancers }}</div>
-            </div>
-            <div class="sentiment-card">
-              <div class="sentiment-label">下跌家数</div>
-              <div class="sentiment-value text-red font-mono">{{ marketSentiment.decliners }}</div>
-            </div>
-            <div class="sentiment-card">
-              <div class="sentiment-label">成交额</div>
-              <div class="sentiment-value font-mono">{{ formatVolume(marketSentiment.turnover_amount) }}</div>
-            </div>
-          </div>
-        </section>
       </div>
-    </main>
+    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <h2 class="section-title">热门股票</h2>
+        <div class="hot-table">
+          <div class="table-header">
+            <span>代码</span><span>名称</span><span class="r">现价</span><span class="r">涨跌幅</span>
+          </div>
+          <div v-for="s in hotStocks" :key="s.code" class="table-row" @click="goStock(s.code)">
+            <span class="font-mono">{{ s.code }}</span>
+            <span>{{ s.name }}</span>
+            <span class="r font-mono">{{ fmtPrice(s.price) }}</span>
+            <span class="r font-mono" :class="s.pct >= 0 ? 'text-up' : 'text-down'">{{ s.pct >= 0 ? '+' : '' }}{{ s.pct?.toFixed(2) }}%</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 class="section-title">市场情绪</h2>
+        <div class="sentiment-grid">
+          <div class="sentiment-item">
+            <div class="sentiment-label">上涨家数</div>
+            <div class="sentiment-value text-up font-mono">{{ temperature.advancers || '-' }}</div>
+          </div>
+          <div class="sentiment-item">
+            <div class="sentiment-label">下跌家数</div>
+            <div class="sentiment-value text-down font-mono">{{ temperature.decliners || '-' }}</div>
+          </div>
+          <div class="sentiment-item">
+            <div class="sentiment-label">涨跌比</div>
+            <div class="sentiment-value font-mono">{{ temperature.up_down_ratio?.toFixed(2) || '-' }}</div>
+          </div>
+          <div class="sentiment-item">
+            <div class="sentiment-label">成交额(亿)</div>
+            <div class="sentiment-value font-mono">{{ fmtAmount(temperature.turnover_amount) }}</div>
+          </div>
+        </div>
+        <div class="sentiment-bar">
+          <div class="bar-fill" :style="{ width: advancersPct + '%', background: 'var(--accent-red)' }"></div>
+        </div>
+        <div class="sentiment-labels">
+          <span class="text-up">上涨 {{ temperature.advancers || 0 }}</span>
+          <span class="text-down">下跌 {{ temperature.decliners || 0 }}</span>
+        </div>
+      </section>
+    </div>
+
+    <section class="card" v-if="northbound.length">
+      <h2 class="section-title">北向资金</h2>
+      <div class="nb-table">
+        <div class="table-header">
+          <span>日期</span><span class="r">沪股通(亿)</span><span class="r">深股通(亿)</span><span class="r">净买入(亿)</span>
+        </div>
+        <div v-for="nb in northbound.slice(0, 10)" :key="nb.trade_date" class="table-row">
+          <span class="font-mono">{{ nb.trade_date }}</span>
+          <span class="r font-mono" :class="nb.sh_connect >= 0 ? 'text-up' : 'text-down'">{{ (nb.sh_connect / 1e8).toFixed(2) }}</span>
+          <span class="r font-mono" :class="nb.sz_connect >= 0 ? 'text-up' : 'text-down'">{{ (nb.sz_connect / 1e8).toFixed(2) }}</span>
+          <span class="r font-mono" :class="nb.net_buy >= 0 ? 'text-up' : 'text-down'">{{ (nb.net_buy / 1e8).toFixed(2) }}</span>
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { apiGet } from '../api'
-import { IconSearch, IconRefresh, IconRight, IconHome, IconBarChart, IconThunderbolt, IconDashboard } from '@arco-design/web-vue/es/icon'
+import api from '../api'
 
 const router = useRouter()
 const searchQuery = ref('')
 const searchResults = ref<any[]>([])
-const showSearchResults = ref(false)
+const showResults = ref(false)
+const indices = ref<any[]>([])
 const hotStocks = ref<any[]>([])
-const marketIndices = ref<any[]>([])
-const marketSentiment = ref<any>(null)
-const refreshing = ref(false)
-const currentTime = ref('')
-let searchTimer: any = null
-let timeTimer: any = null
+const temperature = ref<any>({})
+const northbound = ref<any[]>([])
 
-const navItems = [
-  { path: '/dashboard', icon: 'IconHome', label: '首页' },
-  { path: '/backtest', icon: 'IconBarChart', label: '回测' },
-  { path: '/strategy', icon: 'IconThunderbolt', label: '策略' },
-  { path: '/portfolio', icon: 'IconDashboard', label: '组合' },
-]
-
-const iconMap: Record<string, any> = { IconHome, IconBarChart, IconThunderbolt, IconDashboard }
-
-const isMarketOpen = computed(() => {
-  const now = new Date()
-  const hour = now.getHours()
-  const minute = now.getMinutes()
-  const day = now.getDay()
-  if (day === 0 || day === 6) return false
-  return (hour === 9 && minute >= 30) || (hour === 10) || (hour === 11 && minute <= 30) || (hour >= 13 && hour < 15)
+const advancersPct = computed(() => {
+  const a = temperature.value.advancers || 0
+  const d = temperature.value.decliners || 0
+  if (a + d === 0) return 50
+  return (a / (a + d)) * 100
 })
 
-const updateTime = () => {
-  const now = new Date()
-  currentTime.value = now.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
+function fmtPrice(v: number) { return v?.toFixed(2) || '-' }
+function fmtAmount(v: number) {
+  if (!v) return '-'
+  return (v / 1e8).toFixed(0)
 }
 
-const handleSearch = () => {
+function goStock(code: string) {
+  showResults.value = false
+  searchQuery.value = ''
+  router.push(`/stock/${code}`)
+}
+
+let searchTimer: any = null
+function onSearch() {
   clearTimeout(searchTimer)
-  if (!searchQuery.value.trim()) {
-    searchResults.value = []
-    return
-  }
+  if (!searchQuery.value.trim()) { searchResults.value = []; return }
   searchTimer = setTimeout(async () => {
-    const data = await apiGet<any[]>(`/search?q=${encodeURIComponent(searchQuery.value)}&limit=8`)
-    searchResults.value = Array.isArray(data) ? data : []
+    try {
+      searchResults.value = await api.search(searchQuery.value, 8)
+    } catch { searchResults.value = [] }
   }, 300)
 }
 
-const closeSearch = () => {
-  showSearchResults.value = false
-}
-
-const goToStock = (symbol: string) => {
-  searchQuery.value = ''
-  searchResults.value = []
-  showSearchResults.value = false
-  router.push(`/stock/${symbol}`)
-}
-
-const handleSearchEnter = async () => {
-  const query = searchQuery.value.trim()
-  if (!query) return
-
-  if (searchResults.value.length > 0) {
-    goToStock(searchResults.value[0].code)
-    return
-  }
-
-  const data = await apiGet<any[]>(`/search?q=${encodeURIComponent(query)}&limit=1`)
-  const results = Array.isArray(data) ? data : []
-  if (results.length > 0) {
-    goToStock(results[0].code)
-  } else {
-    goToStock(query)
-  }
-}
-
-const formatVolume = (v: number) => {
-  if (!v) return '--'
-  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿'
-  if (v >= 1e4) return (v / 1e4).toFixed(2) + '万'
-  return v.toString()
-}
-
-const generateSparkline = (data: number[]) => {
-  if (!data || data.length < 2) return ''
-  const min = Math.min(...data)
-  const max = Math.max(...data)
-  const range = max - min || 1
-  const points = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * 100
-    const y = 30 - ((v - min) / range) * 30
-    return `${x},${y}`
-  })
-  return `M ${points.join(' L ')}`
-}
-
-const refreshData = async () => {
-  refreshing.value = true
-  await loadData()
-  setTimeout(() => refreshing.value = false, 500)
-}
-
-const loadData = async () => {
+async function loadData() {
   try {
-    const [hotData, overview] = await Promise.all([
-      apiGet<any[]>('/hot-stocks?limit=20'),
-      apiGet<any>('/market-overview')
-    ])
-    hotStocks.value = (Array.isArray(hotData) ? hotData : []).map((s: any, i: number) => ({ ...s, rank: i + 1 }))
-    if (overview && typeof overview === 'object') {
-      marketIndices.value = overview.indices || []
-      marketSentiment.value = overview.temperature || null
-    }
-  } catch (e) {
-    console.error('加载数据失败', e)
-  }
+    const overview = await api.getMarketOverview()
+    indices.value = overview.indices || []
+    temperature.value = overview.temperature || {}
+    northbound.value = overview.northbound || []
+  } catch {}
+  try {
+    hotStocks.value = await api.getMarketHot(15)
+  } catch {}
 }
 
-onMounted(() => {
-  loadData()
-  updateTime()
-  timeTimer = setInterval(updateTime, 1000)
-})
-
-onUnmounted(() => {
-  clearInterval(timeTimer)
-  clearTimeout(searchTimer)
-})
-
-const vClickOutside = {
-  mounted(el: any, binding: any) {
-    el._clickOutside = (e: Event) => {
-      if (!el.contains(e.target)) binding.value()
-    }
-    document.addEventListener('click', el._clickOutside)
-  },
-  unmounted(el: any) {
-    document.removeEventListener('click', el._clickOutside)
-  }
-}
+onMounted(loadData)
 </script>
 
 <style scoped>
-.dashboard {
+.dashboard { padding: 24px 28px; max-width: 1400px; }
+
+.page-header {
   display: flex;
-  height: 100vh;
-  background: var(--bg-primary);
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
 }
 
-/* Sidebar */
-.sidebar {
-  width: 200px;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border-color);
-  display: flex;
-  flex-direction: column;
-  padding: 20px 0;
-}
+.page-title { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+.page-subtitle { font-size: 13px; color: var(--text-tertiary); margin-top: 4px; }
 
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 20px 30px;
-}
-
-.logo-text {
-  font-size: 20px;
-  font-weight: 700;
-  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.nav {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 0 12px;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
-  text-decoration: none;
-  transition: all 0.2s;
-  font-size: 14px;
-}
-
-.nav-item:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.nav-item.active {
-  background: linear-gradient(135deg, rgba(0, 212, 170, 0.15), rgba(14, 165, 233, 0.15));
-  color: var(--accent-primary);
-  border: 1px solid rgba(0, 212, 170, 0.2);
-}
-
-.nav-label {
-  font-weight: 500;
-}
-
-.sidebar-footer {
-  padding: 20px;
-  border-top: 1px solid var(--border-color);
-}
-
-.status-indicator {
+.header-search {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-}
-
-.status-indicator.online .status-dot {
-  background: var(--accent-primary);
-  box-shadow: 0 0 8px rgba(0, 212, 170, 0.5);
-  animation: pulse-glow 2s infinite;
-}
-
-.status-indicator.online {
-  color: var(--accent-primary);
-}
-
-/* Main */
-.main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.header {
-  height: 64px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
-  gap: 16px;
-}
-
-.search-wrapper {
-  position: relative;
-  width: 400px;
-}
-
-.search-icon {
-  position: absolute;
-  left: 14px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--text-muted);
-  z-index: 1;
-}
-
-.search-input {
-  width: 100%;
-  height: 40px;
   background: var(--bg-tertiary);
-  border: 1px solid transparent;
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  padding: 0 40px 0 42px;
-  color: var(--text-primary);
-  font-size: 14px;
-  transition: all 0.2s;
+  padding: 8px 14px;
+  width: 280px;
+  color: var(--text-tertiary);
 }
 
-.search-input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-  background: var(--bg-secondary);
-}
-
-.search-input::placeholder {
-  color: var(--text-muted);
-}
-
-.search-btn {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent-primary);
+.header-search input {
+  background: none;
   border: none;
-  border-radius: var(--radius-sm);
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s;
-  z-index: 2;
-}
-
-.search-btn:hover {
-  background: #00b894;
-  transform: translateY(-50%) scale(1.05);
+  outline: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  width: 100%;
+  padding: 0;
 }
 
 .search-dropdown {
   position: absolute;
-  top: calc(100% + 8px);
+  top: 100%;
   left: 0;
   right: 0;
-  background: var(--bg-secondary);
+  margin-top: 4px;
+  background: var(--bg-elevated);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
+  overflow: hidden;
   z-index: 100;
-  max-height: 320px;
-  overflow-y: auto;
+  box-shadow: var(--shadow-lg);
 }
 
-.search-result-item {
+.search-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
+  gap: 10px;
+  padding: 10px 14px;
   cursor: pointer;
-  transition: background 0.15s;
-}
-
-.search-result-item:hover {
-  background: var(--bg-tertiary);
-}
-
-.result-code {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 600;
-  color: var(--accent-primary);
-  min-width: 70px;
-}
-
-.result-name {
-  flex: 1;
-  color: var(--text-primary);
-}
-
-.result-market {
-  font-size: 12px;
-  color: var(--text-muted);
-  background: var(--bg-tertiary);
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-
-.header-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.icon-btn {
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.icon-btn:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.icon-btn .is-loading {
-  animation: rotating 1s linear infinite;
-}
-
-@keyframes rotating {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-/* Content */
-.content {
-  flex: 1;
-  padding: 24px;
-  overflow-y: auto;
-}
-
-.section {
-  margin-bottom: 24px;
-}
-
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-
-.section-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.section-time {
   font-size: 13px;
-  color: var(--text-muted);
-  font-family: 'JetBrains Mono', monospace;
+  transition: background var(--transition);
 }
 
-.section-link {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--accent-primary);
-  text-decoration: none;
-  transition: opacity 0.2s;
+.search-item:hover { background: rgba(255,255,255,0.05); }
+
+.market-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(41,151,255,0.15);
+  color: var(--accent-blue);
 }
 
-.section-link:hover {
-  opacity: 0.8;
-}
+.indices-section { margin-bottom: 20px; }
 
-/* Indices Grid */
-.indices-grid {
+.indices-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
 }
 
 .index-card {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  padding: 20px;
-  transition: all 0.2s;
-  position: relative;
-  overflow: hidden;
-}
-
-.index-card:hover {
-  border-color: var(--bg-hover);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
-}
-
-.index-card.up {
-  border-left: 3px solid var(--accent-primary);
-}
-
-.index-card.down {
-  border-left: 3px solid var(--accent-danger);
-}
-
-.index-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.index-name {
-  font-size: 14px;
-  color: var(--text-secondary);
-}
-
-.index-badge {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-family: 'JetBrains Mono', monospace;
-}
-
-.bg-green {
-  background: rgba(0, 212, 170, 0.15);
-  color: var(--accent-primary);
-}
-
-.bg-red {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--accent-danger);
-}
-
-.index-value {
-  font-size: 28px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 4px;
-}
-
-.index-change {
-  font-size: 14px;
-  margin-bottom: 12px;
-}
-
-.text-green {
-  color: var(--accent-primary);
-}
-
-.text-red {
-  color: var(--accent-danger);
-}
-
-.mini-chart {
-  height: 30px;
-  opacity: 0.6;
-}
-
-.sparkline {
-  width: 100%;
-  height: 100%;
-}
-
-/* Stock Table */
-.stock-table-wrapper {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-}
-
-.stock-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-
-.stock-table th {
-  text-align: left;
-  padding: 14px 20px;
-  font-weight: 500;
-  color: var(--text-muted);
-  font-size: 13px;
-  border-bottom: 1px solid var(--border-color);
-  white-space: nowrap;
-}
-
-.stock-table td {
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border-color);
-  color: var(--text-primary);
-  transition: background 0.15s;
-}
-
-.stock-row {
+  padding: 16px;
   cursor: pointer;
+  transition: all var(--transition);
 }
 
-.stock-row:hover td {
-  background: var(--bg-tertiary);
+.index-card:hover { border-color: rgba(255,255,255,0.15); transform: translateY(-1px); }
+.index-card.up { border-left: 3px solid var(--accent-red); }
+.index-card.down { border-left: 3px solid var(--accent-green); }
+
+.idx-name { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.idx-price { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 4px; }
+.idx-change { display: flex; gap: 8px; font-size: 12px; }
+.idx-abs { color: var(--text-tertiary); }
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
-.stock-row:last-child td {
-  border-bottom: none;
+.hot-table, .nb-table { width: 100%; }
+.table-header {
+  display: grid;
+  grid-template-columns: 80px 1fr 80px 80px;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
-.rank {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
+.nb-table .table-header {
+  grid-template-columns: 100px 1fr 1fr 1fr;
 }
 
-.rank.top3 {
-  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
-  color: white;
-}
-
-.pct-badge {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 6px;
+.table-row {
+  display: grid;
+  grid-template-columns: 80px 1fr 80px 80px;
+  gap: 8px;
+  padding: 8px 0;
   font-size: 13px;
-  font-weight: 600;
-  font-family: 'JetBrains Mono', monospace;
+  border-bottom: 1px solid var(--border-light);
+  cursor: pointer;
+  transition: background var(--transition);
 }
 
-.pct-badge.up {
-  background: rgba(0, 212, 170, 0.15);
-  color: var(--accent-primary);
+.table-row:hover { background: rgba(255,255,255,0.02); }
+
+.nb-table .table-row {
+  grid-template-columns: 100px 1fr 1fr 1fr;
+  cursor: default;
 }
 
-.pct-badge.down {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--accent-danger);
-}
+.r { text-align: right; }
 
-.text-right {
-  text-align: right;
-}
-
-/* Sentiment */
 .sentiment-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: 1fr 1fr;
   gap: 16px;
+  margin-bottom: 16px;
 }
 
-.sentiment-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-}
+.sentiment-item { }
 
-.sentiment-label {
-  font-size: 13px;
-  color: var(--text-muted);
+.sentiment-label { font-size: 11px; color: var(--text-tertiary); margin-bottom: 4px; }
+.sentiment-value { font-size: 20px; font-weight: 700; }
+
+.sentiment-bar {
+  height: 6px;
+  background: var(--accent-green);
+  border-radius: 3px;
+  overflow: hidden;
   margin-bottom: 8px;
 }
 
-.sentiment-value {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 12px;
-}
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
 
-.sentiment-bar {
-  height: 4px;
-  background: var(--bg-tertiary);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.sentiment-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
-  border-radius: 2px;
-  transition: width 0.5s ease;
-}
-
-/* Responsive */
-@media (max-width: 1200px) {
-  .indices-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .sentiment-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 768px) {
-  .sidebar {
-    width: 64px;
-  }
-  .logo-text, .nav-label, .status-text {
-    display: none;
-  }
-  .nav-item {
-    justify-content: center;
-    padding: 12px;
-  }
-  .indices-grid, .sentiment-grid {
-    grid-template-columns: 1fr;
-  }
+.sentiment-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
 }
 </style>

@@ -162,3 +162,61 @@ class BacktestEngine:
             drawdown_curve=drawdown_curve[-200:],
             dates=dates[-200:],
         )
+
+
+def run_backtest(symbol: str, strategy_name: str = "ma_cross", start_date: str = "2024-01-01", end_date: str = "2025-12-31", initial_capital: float = 1000000, params: dict = None) -> dict:
+    from core.data_fetcher import SmartDataFetcher
+    from core.strategies import STRATEGY_REGISTRY
+
+    if strategy_name not in STRATEGY_REGISTRY:
+        return {"error": f"Strategy {strategy_name} not found"}
+
+    strategy_cls = STRATEGY_REGISTRY[strategy_name]
+    strategy = strategy_cls(**(params or {}))
+
+    fetcher = SmartDataFetcher()
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        df = loop.run_until_complete(fetcher.get_history(symbol, period="1y", kline_type="daily", adjust="qfq"))
+    finally:
+        loop.close()
+
+    if df is None or df.empty:
+        return {"error": "No data available for this symbol"}
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        if start_date:
+            df = df[df["date"] >= start_date]
+        if end_date:
+            df = df[df["date"] <= end_date]
+
+    engine = BacktestEngine(initial_capital=initial_capital)
+    result = engine.run(strategy, df)
+
+    equity_curve = []
+    if result.dates and result.equity_curve:
+        for i, d in enumerate(result.dates):
+            if i < len(result.equity_curve):
+                equity_curve.append({"date": d, "value": result.equity_curve[i]})
+
+    return {
+        "strategy_name": result.strategy_name,
+        "total_return": result.total_return / 100 if result.total_return else 0,
+        "annual_return": result.annual_return / 100 if result.annual_return else 0,
+        "max_drawdown": result.max_drawdown / 100 if result.max_drawdown else 0,
+        "sharpe_ratio": result.sharpe_ratio,
+        "win_rate": result.win_rate / 100 if result.win_rate else 0,
+        "profit_factor": result.profit_factor,
+        "total_trades": result.total_trades,
+        "win_trades": result.win_trades,
+        "loss_trades": result.loss_trades,
+        "avg_profit": result.avg_profit,
+        "avg_loss": result.avg_loss,
+        "benchmark_return": result.benchmark_return,
+        "alpha": result.alpha,
+        "beta": result.beta,
+        "equity_curve": equity_curve,
+        "trades": [],
+    }

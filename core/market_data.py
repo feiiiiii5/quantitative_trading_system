@@ -122,7 +122,7 @@ def _fetch_sina_page(page: int, num: int, sort: str = "changepercent", asc: int 
         f"&node=hs_a&symbol=&_s_r_a=auto"
     )
     try:
-        r = _SESSION.get(url, timeout=10)
+        r = _SESSION.get(url, timeout=(3, 8))
         if r.status_code != 200 or not r.text or r.text.strip() == "null":
             return []
         data = json.loads(r.text)
@@ -449,7 +449,6 @@ def _fetch_sina_all_a_quotes() -> dict[str, dict]:
                 result[item["code"]] = item
             if len(batch) < _SINA_PAGE_SIZE:
                 break
-            time.sleep(0.05)
     except Exception as e:
         logger.debug(f"Sina all A-quotes fetch error: {e}")
     return result

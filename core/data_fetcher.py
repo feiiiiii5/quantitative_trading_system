@@ -21,8 +21,26 @@ from urllib3.util.retry import Retry
 
 from core.database import get_db
 from core.market_detector import MarketDetector
-from core.rate_limit import TokenBucket
 from core.stock_search import get_stock_name
+
+
+class _TokenBucket:
+    def __init__(self, rate=10, capacity=15):
+        self.rate = rate
+        self.capacity = capacity
+        self._tokens = capacity
+        self._last = time.monotonic()
+
+    def wait(self):
+        now = time.monotonic()
+        self._tokens = min(self.capacity, self._tokens + (now - self._last) * self.rate)
+        self._last = now
+        if self._tokens < 1:
+            time.sleep((1 - self._tokens) / self.rate)
+            self._tokens = 0
+        else:
+            self._tokens -= 1
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +68,7 @@ _realtime_cache: OrderedDict = OrderedDict()
 _HIST_CACHE_TTL = 300
 _RT_CACHE_TTL = 10
 _TODAY_CACHE_TTL_SECONDS = 900
-_AKSHARE_BUCKET = TokenBucket(rate=10, capacity=15)
+_AKSHARE_BUCKET = _TokenBucket(rate=10, capacity=15)
 
 _DB_CONNECTION_POOL = {}
 _DB_POOL_SIZE = 5
@@ -166,33 +184,27 @@ def _cache_set(cache: OrderedDict, key: str, data, ttl: int = 60):
         cache.popitem(last=False)
 
 
-def _http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 10, retries: int = 2) -> Optional[requests.Response]:
+def _http_get(url: str, params: dict = None, headers: dict = None, timeout: int = 8, retries: int = 1) -> Optional[requests.Response]:
     for attempt in range(retries + 1):
         try:
             session = _get_session()
-            resp = session.get(url, params=params, headers=headers, timeout=(5, timeout), stream=False)
+            resp = session.get(url, params=params, headers=headers, timeout=(3, timeout), stream=False)
             if resp.status_code == 200:
                 return resp
             elif resp.status_code == 429:
                 logger.debug(f"Rate limited for {url}, waiting...")
-                time.sleep(2 ** attempt)
+                time.sleep(min(2 ** attempt, 3))
             elif resp.status_code in (500, 502, 503, 504):
                 logger.debug(f"Server error {resp.status_code} for {url}, attempt {attempt+1}")
-                time.sleep(1)
             else:
                 logger.debug(f"HTTP {resp.status_code} from {url}")
+                return None
         except requests.exceptions.ConnectionError as e:
             logger.debug(f"Connection error for {url} (attempt {attempt+1}/{retries+1}): {e}")
-            if attempt < retries:
-                time.sleep(1)
         except requests.exceptions.Timeout:
             logger.debug(f"Timeout for {url} (attempt {attempt+1}/{retries+1})")
-            if attempt < retries:
-                time.sleep(1)
         except Exception as e:
             logger.debug(f"HTTP error for {url} (attempt {attempt+1}/{retries+1}): {e}")
-            if attempt < retries:
-                time.sleep(0.5)
     return None
 
 
@@ -1536,6 +1548,27 @@ class SmartDataFetcher:
             return {"success": False, "error": str(e)}
 
     async def get_hot_stocks(self) -> list:
+        cache_key = "hot_stocks:default"
+        cached = _cache_get(_realtime_cache, cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            data = await asyncio.to_thread(EastMoneySource.fetch_hot_stocks)
+            if data:
+                _cache_set(_realtime_cache, cache_key, data, ttl=60)
+                return data
+        except Exception as e:
+            logger.debug(f"EastMoney hot stocks failed: {e}")
+
+        try:
+            data = await asyncio.to_thread(TencentSource.fetch_hot_stocks)
+            if data:
+                _cache_set(_realtime_cache, cache_key, data, ttl=60)
+                return data
+        except Exception as e:
+            logger.debug(f"Tencent hot stocks failed: {e}")
+
         try:
             data = await asyncio.to_thread(AkshareSource.fetch_hot_stocks)
             if data:
@@ -1550,78 +1583,47 @@ class SmartDataFetcher:
                         for item in data
                     ]
                 )
+                _cache_set(_realtime_cache, cache_key, data, ttl=60)
                 return data
         except Exception as e:
             logger.debug(f"Akshare hot stocks failed: {e}")
 
-        try:
-            data = await asyncio.to_thread(EastMoneySource.fetch_hot_stocks)
-            if data:
-                return data
-        except Exception as e:
-            logger.debug(f"EastMoney hot stocks failed: {e}")
-
-        try:
-            data = await asyncio.to_thread(TencentSource.fetch_hot_stocks)
-            if data:
-                return data
-        except Exception as e:
-            logger.debug(f"Tencent hot stocks failed: {e}")
-
         return _default_hot_stocks()
 
     async def get_index_spot(self, symbol: str) -> dict:
-        try:
-            import akshare as ak
+        cache_key = f"idx_spot:{symbol}"
+        cached = _cache_get(_realtime_cache, cache_key)
+        if cached is not None:
+            return cached
 
-            if symbol in {"000001", "399001", "399006", "000300", "000905"}:
-                frames = []
-                for group in ["上证系列指数", "深证系列指数", "中证系列指数"]:
-                    df = await asyncio.to_thread(_akshare_retry, ak.stock_zh_index_spot_em, symbol=group)
-                    if df is not None and not df.empty:
-                        frames.append(df)
-                if frames:
-                    merged = pd.concat(frames, ignore_index=True)
-                    row = merged[merged["代码"].astype(str) == symbol]
-                    if not row.empty:
-                        item = row.iloc[0]
-                        return {
-                            "name": str(item.get("名称", self._major_indices.get(symbol, {}).get("name", symbol))),
-                            "price": _safe_float(item.get("最新价", 0)),
-                            "change": _safe_float(item.get("涨跌额", 0)),
-                            "pct": _safe_float(item.get("涨跌幅", 0)),
-                            "open": _safe_float(item.get("今开", 0)),
-                            "high": _safe_float(item.get("最高", 0)),
-                            "low": _safe_float(item.get("最低", 0)),
-                            "prev_close": _safe_float(item.get("昨收", 0)),
-                            "volume": _safe_float(item.get("成交量", 0)),
-                            "time": _date_to_key(datetime.now()),
-                        }
-            if symbol in {".DJI", ".IXIC", ".INX"}:
-                df = await asyncio.to_thread(_akshare_retry, ak.stock_us_spot_em)
-                if df is not None and not df.empty:
-                    code_col = next((col for col in df.columns if "代码" in str(col)), None)
-                    name_col = next((col for col in df.columns if "名称" in str(col)), None)
-                    if code_col:
-                        row = df[df[code_col].astype(str).str.upper() == symbol.upper()]
-                        if row.empty:
-                            row = df[df[code_col].astype(str).str.upper().str.endswith(symbol.upper())]
-                        if not row.empty:
-                            item = row.iloc[0]
-                            return {
-                                "name": str(item.get(name_col, self._major_indices.get(symbol, {}).get("name", symbol))) if name_col else self._major_indices.get(symbol, {}).get("name", symbol),
-                                "price": _safe_float(item.get("最新价", 0)),
-                                "change": _safe_float(item.get("涨跌额", 0)),
-                                "pct": _safe_float(item.get("涨跌幅", 0)),
-                                "volume": _safe_float(item.get("成交量", 0)),
-                                "high": _safe_float(item.get("最高价", item.get("最高", 0))),
-                                "low": _safe_float(item.get("最低价", item.get("最低", 0))),
-                                "open": _safe_float(item.get("开盘价", item.get("今开", 0))),
-                                "prev_close": _safe_float(item.get("昨收", 0)),
-                                "time": _date_to_key(datetime.now()),
-                            }
-        except Exception as e:
-            logger.debug(f"Index spot fetch failed for {symbol}: {e}")
+        if symbol in {".DJI", ".IXIC", ".INX"}:
+            try:
+                data = await asyncio.to_thread(TencentSource.fetch_realtime, symbol, "US")
+                if data and _validate_realtime(data):
+                    data["name"] = self._major_indices.get(symbol, {}).get("name", symbol)
+                    _cache_set(_realtime_cache, cache_key, data, ttl=_RT_CACHE_TTL)
+                    return data
+            except Exception:
+                pass
+
+        if symbol in {"000001", "399001", "399006", "000300", "000905"}:
+            try:
+                data = await asyncio.to_thread(TencentSource.fetch_realtime, symbol, "A")
+                if data and _validate_realtime(data):
+                    data["name"] = self._major_indices.get(symbol, {}).get("name", data.get("name", symbol))
+                    _cache_set(_realtime_cache, cache_key, data, ttl=_RT_CACHE_TTL)
+                    return data
+            except Exception:
+                pass
+
+            try:
+                data = await asyncio.to_thread(EastMoneySource.fetch_realtime, symbol, "A")
+                if data and _validate_realtime(data):
+                    data["name"] = self._major_indices.get(symbol, {}).get("name", data.get("name", symbol))
+                    _cache_set(_realtime_cache, cache_key, data, ttl=_RT_CACHE_TTL)
+                    return data
+            except Exception:
+                pass
 
         conn = None
         try:
@@ -1633,7 +1635,7 @@ class SmartDataFetcher:
                 price = _safe_float(last["close"])
                 change = price - prev_close
                 pct = change / prev_close * 100 if prev_close else 0
-                return {
+                result = {
                     "name": self._major_indices.get(symbol, {}).get("name", symbol),
                     "price": price,
                     "change": round(change, 2),
@@ -1646,6 +1648,8 @@ class SmartDataFetcher:
                     "time": _date_to_key(last["date"]),
                     "offline": True,
                 }
+                _cache_set(_realtime_cache, cache_key, result, ttl=60)
+                return result
         except Exception as e:
             logger.debug(f"Index spot fallback failed: {e}")
         finally:
@@ -1954,19 +1958,64 @@ class SmartDataFetcher:
             return []
 
     async def get_market_temperature(self) -> dict:
+        cache_key = "market:temperature"
+        cached = _cache_get(_realtime_cache, cache_key)
+        if cached is not None:
+            return cached
+
         today_key = datetime.now().strftime("%Y-%m-%d")
         try:
-            cached = self._db.get_market_sentiment(1)
-            if cached and cached[0]["trade_date"] == today_key:
-                return cached[0]
+            db_cached = self._db.get_market_sentiment(1)
+            if db_cached and db_cached[0].get("trade_date") == today_key:
+                _cache_set(_realtime_cache, cache_key, db_cached[0], ttl=120)
+                return db_cached[0]
         except Exception:
             pass
+
+        try:
+            from core.market_data import _fetch_sina_page
+            advancers = 0
+            decliners = 0
+            total_turnover = 0.0
+            for page in range(1, 80):
+                batch = await asyncio.to_thread(_fetch_sina_page, page, 80, "changepercent", 0)
+                if not batch:
+                    break
+                for item in batch:
+                    pct = item.get("changepercent", 0) or 0
+                    if pct > 0:
+                        advancers += 1
+                    elif pct < 0:
+                        decliners += 1
+                    total_turnover += float(item.get("turnoverratio", 0) or 0)
+                if len(batch) < 80:
+                    break
+            if advancers + decliners > 0:
+                ratio = advancers / max(decliners, 1)
+                new_high_low_index = (advancers - decliners) / max(advancers + decliners, 1)
+                row = {
+                    "trade_date": today_key,
+                    "advancers": advancers,
+                    "decliners": decliners,
+                    "up_down_ratio": round(ratio, 4),
+                    "turnover_amount": total_turnover,
+                    "margin_balance_change": 0,
+                    "new_high_low_ratio": round(new_high_low_index, 4),
+                    "mcclellan": 0,
+                    "ad_line": advancers - decliners,
+                    "new_high_low_index": round(float(new_high_low_index), 4),
+                }
+                self._db.upsert_market_sentiment(row)
+                _cache_set(_realtime_cache, cache_key, row, ttl=120)
+                return row
+        except Exception as e:
+            logger.debug(f"Market temperature sina failed: {e}")
+
         try:
             import akshare as ak
-
             spot_df = await asyncio.to_thread(_akshare_retry, ak.stock_zh_a_spot_em)
             if spot_df is None or spot_df.empty:
-                return cached[0] if cached else {}
+                return db_cached[0] if db_cached else {}
             advancers = int((pd.to_numeric(spot_df.get("涨跌幅"), errors="coerce").fillna(0) > 0).sum())
             decliners = int((pd.to_numeric(spot_df.get("涨跌幅"), errors="coerce").fillna(0) < 0).sum())
             turnover_amount = float(pd.to_numeric(spot_df.get("成交额"), errors="coerce").fillna(0).sum())
@@ -1991,22 +2040,49 @@ class SmartDataFetcher:
                 "new_high_low_index": round(float(new_high_low_index), 4),
             }
             self._db.upsert_market_sentiment(row)
+            _cache_set(_realtime_cache, cache_key, row, ttl=120)
             return row
         except Exception as e:
             logger.debug(f"Market temperature fetch failed: {e}")
-        return cached[0] if cached else {}
+        return db_cached[0] if db_cached else {}
 
     async def get_market_overview(self) -> dict:
-        overview = []
+        cache_key = "market:overview:full"
+        cached = _cache_get(_realtime_cache, cache_key)
+        if cached is not None:
+            return cached
+
+        index_tasks = []
         for symbol, meta in self._major_indices.items():
-            spot = await self.get_index_spot(symbol)
-            if spot:
-                overview.append({"symbol": symbol, **spot})
-        return {
+            index_tasks.append(self.get_index_spot(symbol))
+
+        indices_results = await asyncio.gather(*index_tasks, return_exceptions=True)
+
+        overview = []
+        for i, (symbol, meta) in enumerate(self._major_indices.items()):
+            result = indices_results[i]
+            if isinstance(result, Exception) or not result:
+                continue
+            overview.append({"symbol": symbol, **result})
+
+        try:
+            northbound = await self.get_northbound_flow(10)
+        except Exception:
+            northbound = []
+
+        try:
+            temperature = await self.get_market_temperature()
+        except Exception:
+            temperature = {}
+
+        result = {
             "indices": overview,
-            "northbound": await self.get_northbound_flow(10),
-            "temperature": await self.get_market_temperature(),
+            "northbound": northbound,
+            "temperature": temperature,
         }
+
+        _cache_set(_realtime_cache, cache_key, result, ttl=30)
+        return result
 
     async def export_history_csv(
         self,
@@ -2024,6 +2100,99 @@ class SmartDataFetcher:
 
     def get_data_source_health(self) -> list[dict]:
         return self._health_monitor.get_stats()
+
+    async def get_kline(self, symbol: str, period: str = "daily", start_date: str = None, end_date: str = None, limit: int = 500) -> list:
+        kline_type_map = {"daily": "daily", "weekly": "weekly", "monthly": "monthly", "1d": "daily", "1w": "weekly", "1m": "monthly"}
+        kline_type = kline_type_map.get(period, "daily")
+        market = MarketDetector.detect(symbol)
+        df = await self.get_history(symbol, period="1y", kline_type=kline_type, adjust="qfq")
+        if df is None or df.empty:
+            return []
+        if start_date:
+            df = df[df["date"] >= start_date]
+        if end_date:
+            df = df[df["date"] <= end_date]
+        if limit and len(df) > limit:
+            df = df.iloc[-limit:]
+        result = []
+        for _, row in df.iterrows():
+            d = row.get("date", "")
+            if hasattr(d, "strftime"):
+                d = d.strftime("%Y-%m-%d")
+            result.append({
+                "date": str(d),
+                "open": float(row.get("open", 0) or 0),
+                "high": float(row.get("high", 0) or 0),
+                "low": float(row.get("low", 0) or 0),
+                "close": float(row.get("close", 0) or 0),
+                "volume": float(row.get("volume", 0) or 0),
+                "amount": float(row.get("amount", 0) or 0),
+            })
+        return result
+
+    async def get_sector_data(self) -> list:
+        cache_key = "sector:data"
+        cached = _cache_get(_realtime_cache, cache_key)
+        if cached is not None:
+            return cached
+        try:
+            import akshare as ak
+            _AKSHARE_BUCKET.wait()
+            df = ak.stock_board_industry_name_em()
+            if df is not None and not df.empty:
+                sectors = []
+                for _, row in df.head(30).iterrows():
+                    sectors.append({
+                        "name": str(row.get("板块名称", "")),
+                        "change_pct": float(row.get("涨跌幅", 0) or 0),
+                        "total_market_cap": float(row.get("总市值", 0) or 0),
+                        "turnover_rate": float(row.get("换手率", 0) or 0),
+                        "advancers": int(row.get("上涨家数", 0) or 0),
+                        "decliners": int(row.get("下跌家数", 0) or 0),
+                        "lead_stock": str(row.get("领涨股票", "")),
+                    })
+                _cache_set(_realtime_cache, cache_key, sectors, ttl=120)
+                return sectors
+        except Exception as e:
+            logger.debug(f"Sector data fetch failed: {e}")
+        return []
+
+    async def get_financial_data(self, symbol: str) -> list:
+        cache_key = f"financial:{symbol}"
+        cached = _cache_get(_realtime_cache, cache_key)
+        if cached is not None:
+            return cached
+        try:
+            db = get_db()
+            db_data = db.get_financials(symbol)
+            if db_data:
+                _cache_set(_realtime_cache, cache_key, db_data, ttl=3600)
+                return db_data
+        except Exception:
+            pass
+        try:
+            import akshare as ak
+            _AKSHARE_BUCKET.wait()
+            market = MarketDetector.detect(symbol)
+            if market == "A":
+                df = ak.stock_financial_abstract_ths(symbol=symbol, indicator="按年度")
+                if df is not None and not df.empty:
+                    rows = []
+                    for _, row in df.head(5).iterrows():
+                        rows.append(dict(row))
+                    _cache_set(_realtime_cache, cache_key, rows, ttl=3600)
+                    return rows
+        except Exception as e:
+            logger.debug(f"Financial data fetch failed for {symbol}: {e}")
+        return []
+
+    async def refresh_stock_info(self):
+        try:
+            from core.market_data import get_stock_list
+            for market in ("A",):
+                get_stock_list(market, force_refresh=True)
+        except Exception:
+            pass
 
 
 def _normalize(df: pd.DataFrame, market: str = "A") -> pd.DataFrame:

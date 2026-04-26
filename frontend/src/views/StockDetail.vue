@@ -1,766 +1,497 @@
 <template>
-  <div class="trading-layout">
-    <!-- Left: Watchlist + Search + Market -->
-    <aside class="left-panel">
-      <div class="search-box">
-        <a-input-search v-model="searchQuery" placeholder="搜索代码/名称/拼音" size="small" @search="doSearch" @input="onSearchInput" />
-        <div v-if="searchResults.length > 0" class="search-dropdown">
-          <div v-for="item in searchResults" :key="item.market + item.code" class="search-item" @click="goStock(item.code)">
-            <span class="si-code font-mono">{{ item.code }}</span>
-            <span class="si-name">{{ item.name }}</span>
-            <span class="si-market">{{ item.market }}</span>
-          </div>
+  <div class="stock-detail fade-in">
+    <header class="detail-header">
+      <div class="stock-identity">
+        <button class="btn btn-ghost back-btn" @click="$router.back()">← 返回</button>
+        <div class="stock-name">{{ stockInfo.name || symbol }}</div>
+        <div class="stock-code font-mono">{{ symbol }}</div>
+        <span v-if="stockInfo.market" class="market-tag">{{ stockInfo.market }}</span>
+        <button class="btn btn-ghost star-btn" @click="toggleWatchlist">
+          {{ inWatchlist ? '★' : '☆' }}
+        </button>
+      </div>
+      <div class="price-section" v-if="realtime.price">
+        <div class="current-price font-mono" :class="realtime.pct >= 0 ? 'text-up' : 'text-down'">
+          {{ realtime.price?.toFixed(2) }}
         </div>
-      </div>
-      <div class="watchlist-header">
-        <span class="section-title">自选股</span>
-        <span class="wl-count">{{ watchlist.length }}</span>
-      </div>
-      <div class="watchlist">
-        <div v-for="item in watchlist" :key="item.symbol" class="watchlist-item"
-             :class="{ active: item.symbol === symbol }" @click="goStock(item.symbol)">
-          <div class="wl-left">
-            <span class="wl-symbol font-mono">{{ item.symbol }}</span>
-            <span class="wl-name">{{ item.name }}</span>
-          </div>
-          <div class="wl-right" :class="(item.change_pct || 0) >= 0 ? 'text-up' : 'text-down'">
-            <span class="wl-price font-mono">{{ item.price ? item.price.toFixed(2) : '--' }}</span>
-            <span class="wl-pct font-mono">{{ (item.change_pct || 0) >= 0 ? '+' : '' }}{{ (item.change_pct || 0).toFixed(2) }}%</span>
-          </div>
-        </div>
-        <div v-if="watchlist.length === 0" class="wl-empty">暂无自选股，搜索添加</div>
-      </div>
-      <div class="market-section">
-        <div class="section-title">市场指数</div>
-        <div v-for="idx in marketIndices" :key="idx.name" class="market-item">
-          <span class="mi-name">{{ idx.name }}</span>
-          <span class="mi-val font-mono" :class="(idx.pct || 0) >= 0 ? 'text-up' : 'text-down'">
-            {{ idx.price ? idx.price.toFixed(2) : '--' }}
-            <small>{{ (idx.pct || 0) >= 0 ? '+' : '' }}{{ (idx.pct || 0).toFixed(2) }}%</small>
+        <div class="price-change font-mono">
+          <span :class="realtime.change >= 0 ? 'text-up' : 'text-down'">
+            {{ realtime.change >= 0 ? '+' : '' }}{{ realtime.change?.toFixed(2) }}
+          </span>
+          <span :class="realtime.pct >= 0 ? 'text-up' : 'text-down'">
+            {{ realtime.pct >= 0 ? '+' : '' }}{{ realtime.pct?.toFixed(2) }}%
           </span>
         </div>
       </div>
-    </aside>
+    </header>
 
-    <!-- Center: K-line Chart -->
-    <main class="center-panel">
-      <header class="chart-topbar">
-        <div class="stock-identity">
-          <span class="si-symbol font-mono">{{ symbol }}</span>
-          <span class="si-name">{{ stockInfo.name || '加载中...' }}</span>
-          <span class="si-market">{{ stockInfo.market_label || '' }}</span>
+    <div class="main-grid">
+      <div class="chart-section">
+        <div class="chart-toolbar">
+          <div class="period-tabs">
+            <button v-for="p in periods" :key="p.value" class="period-tab" :class="{ active: currentPeriod === p.value }" @click="switchPeriod(p.value)">{{ p.label }}</button>
+          </div>
+          <div class="indicator-toggles">
+            <label v-for="ind in indicatorToggles" :key="ind.key" class="toggle-label">
+              <input type="checkbox" v-model="ind.visible" @change="updateChart" />
+              {{ ind.label }}
+            </label>
+          </div>
         </div>
-        <div class="price-display" :class="(rt.pct || 0) >= 0 ? 'text-up' : 'text-down'">
-          <span class="pd-price font-mono">{{ rt.price ? rt.price.toFixed(2) : '--' }}</span>
-          <span class="pd-change font-mono">{{ (rt.pct || 0) >= 0 ? '+' : '' }}{{ (rt.change || 0).toFixed(2) }}</span>
-          <span class="pd-pct font-mono">({{ (rt.pct || 0) >= 0 ? '+' : '' }}{{ (rt.pct || 0).toFixed(2) }}%)</span>
-        </div>
-        <div class="period-tabs">
-          <button v-for="p in periods" :key="p.value" class="period-btn"
-                  :class="{ active: period === p.value }" @click="switchPeriod(p.value)">{{ p.label }}</button>
-        </div>
-        <div class="adjust-tabs">
-          <button v-for="a in adjustModes" :key="a.value" class="adjust-btn"
-                  :class="{ active: adjust === a.value }" @click="adjust = a.value; loadData()">{{ a.label }}</button>
-        </div>
-      </header>
-
-      <div class="chart-area">
-        <v-chart v-if="klineData.length > 0" class="main-chart" :option="chartOption" autoresize />
-        <div v-else class="chart-loading">
-          <a-spin :size="32" />
-          <span>加载K线数据中...</span>
-        </div>
+        <div class="chart-container" ref="chartRef"></div>
       </div>
 
-      <div class="bottom-panel">
-        <a-tabs v-model:active-key="bottomTab" size="mini" :lazy-render="true">
-          <a-tab-pane key="position" title="持仓">
-            <div class="tab-content">
-              <table class="data-table">
-                <thead><tr><th>标的</th><th>方向</th><th>数量</th><th>成本</th><th>现价</th><th>盈亏</th></tr></thead>
-                <tbody>
-                  <tr v-for="p in positions" :key="p.symbol">
-                    <td class="font-mono">{{ p.symbol }}</td>
-                    <td :class="p.quantity > 0 ? 'text-up' : 'text-down'">{{ p.quantity > 0 ? '多' : '空' }}</td>
-                    <td class="font-mono">{{ Math.abs(p.quantity) }}</td>
-                    <td class="font-mono">{{ p.avg_cost?.toFixed(2) }}</td>
-                    <td class="font-mono">{{ p.current_price?.toFixed(2) }}</td>
-                    <td class="font-mono" :class="p.unrealized_pnl >= 0 ? 'text-up' : 'text-down'">
-                      {{ p.unrealized_pnl >= 0 ? '+' : '' }}{{ p.unrealized_pnl?.toFixed(2) }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+      <div class="side-panel">
+        <div class="panel-card">
+          <h3 class="panel-title">交易面板</h3>
+          <div class="trade-form">
+            <div class="trade-type-tabs">
+              <button class="trade-type" :class="{ active: tradeType === 'buy', buy: tradeType === 'buy' }" @click="tradeType = 'buy'">买入</button>
+              <button class="trade-type" :class="{ active: tradeType === 'sell', sell: tradeType === 'sell' }" @click="tradeType = 'sell'">卖出</button>
             </div>
-          </a-tab-pane>
-          <a-tab-pane key="orders" title="委托">
-            <div class="tab-content">
-              <table class="data-table">
-                <thead><tr><th>时间</th><th>标的</th><th>方向</th><th>类型</th><th>数量</th><th>价格</th><th>状态</th></tr></thead>
-                <tbody>
-                  <tr v-for="o in orders" :key="o.id">
-                    <td class="font-mono">{{ o.timestamp?.slice(11, 19) }}</td>
-                    <td class="font-mono">{{ o.symbol }}</td>
-                    <td :class="o.side === 'buy' ? 'text-up' : 'text-down'">{{ o.side === 'buy' ? '买入' : '卖出' }}</td>
-                    <td>{{ o.type }}</td>
-                    <td class="font-mono">{{ o.quantity }}</td>
-                    <td class="font-mono">{{ o.price?.toFixed(2) }}</td>
-                    <td>{{ o.status }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="form-group">
+              <label>价格</label>
+              <input type="number" v-model.number="tradePrice" class="font-mono" step="0.01" />
             </div>
-          </a-tab-pane>
-          <a-tab-pane key="fills" title="成交">
-            <div class="tab-content">
-              <table class="data-table">
-                <thead><tr><th>时间</th><th>标的</th><th>方向</th><th>数量</th><th>成交价</th><th>手续费</th></tr></thead>
-                <tbody>
-                  <tr v-for="f in fills" :key="f.order_id">
-                    <td class="font-mono">{{ f.timestamp?.slice(11, 19) }}</td>
-                    <td class="font-mono">{{ f.symbol }}</td>
-                    <td :class="f.side === 'buy' ? 'text-up' : 'text-down'">{{ f.side === 'buy' ? '买入' : '卖出' }}</td>
-                    <td class="font-mono">{{ f.quantity }}</td>
-                    <td class="font-mono">{{ f.price?.toFixed(2) }}</td>
-                    <td class="font-mono">{{ f.commission?.toFixed(2) }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="form-group">
+              <label>数量(手)</label>
+              <input type="number" v-model.number="tradeQty" min="1" step="1" />
             </div>
-          </a-tab-pane>
-          <a-tab-pane key="strategy" title="策略监控">
-            <div class="tab-content strategy-grid">
-              <div v-for="s in strategyStatus" :key="s.name" class="strategy-card">
-                <div class="sc-name">{{ s.name }}</div>
-                <div class="sc-score font-mono" :class="s.score > 0 ? 'text-up' : 'text-down'">{{ s.score?.toFixed(1) }}</div>
-                <div class="sc-status">{{ s.running ? '运行中' : '已停止' }}</div>
+            <div class="trade-summary">
+              <div class="summary-row">
+                <span>金额</span>
+                <span class="font-mono">{{ tradeAmount.toLocaleString() }}</span>
               </div>
             </div>
-          </a-tab-pane>
-        </a-tabs>
-      </div>
-    </main>
-
-    <!-- Right: Trading Panel -->
-    <aside class="right-panel">
-      <div class="rp-section">
-        <div class="section-title">实时行情</div>
-        <div class="rt-grid">
-          <div class="rt-item"><span class="rt-label">今开</span><span class="rt-val font-mono">{{ rt.open?.toFixed(2) || '--' }}</span></div>
-          <div class="rt-item"><span class="rt-label">昨收</span><span class="rt-val font-mono">{{ rt.prev_close?.toFixed(2) || '--' }}</span></div>
-          <div class="rt-item"><span class="rt-label">最高</span><span class="rt-val font-mono text-up">{{ rt.high?.toFixed(2) || '--' }}</span></div>
-          <div class="rt-item"><span class="rt-label">最低</span><span class="rt-val font-mono text-down">{{ rt.low?.toFixed(2) || '--' }}</span></div>
-          <div class="rt-item"><span class="rt-label">成交量</span><span class="rt-val font-mono">{{ fmtVol(rt.volume) }}</span></div>
-          <div class="rt-item"><span class="rt-label">成交额</span><span class="rt-val font-mono">{{ fmtVol(rt.amount || rt.turnover) }}</span></div>
-          <div class="rt-item"><span class="rt-label">换手率</span><span class="rt-val font-mono">{{ rt.turnover?.toFixed(2) || '--' }}%</span></div>
-          <div class="rt-item"><span class="rt-label">振幅</span><span class="rt-val font-mono">{{ rt.amplitude?.toFixed(2) || '--' }}%</span></div>
+            <button class="btn trade-btn" :class="tradeType === 'buy' ? 'btn-success' : 'btn-danger'" @click="executeTrade" :disabled="trading">
+              {{ tradeType === 'buy' ? '买入' : '卖出' }}
+            </button>
+          </div>
         </div>
-        <div class="rt-update-time">更新: {{ rt.time || '--' }}</div>
-      </div>
 
-      <div class="rp-section">
-        <div class="section-title">下单</div>
-        <a-radio-group v-model="orderSide" type="button" size="small">
-          <a-radio value="buy">买入</a-radio>
-          <a-radio value="sell">卖出</a-radio>
-        </a-radio-group>
-        <div class="order-form">
-          <div class="of-row">
-            <span class="of-label">标的</span>
-            <a-input v-model="orderSymbol" size="small" class="of-input font-mono" />
-          </div>
-          <div class="of-row">
-            <span class="of-label">价格</span>
-            <a-input-number v-model="orderPrice" :precision="2" size="small" class="of-input" />
-          </div>
-          <div class="of-row">
-            <span class="of-label">数量</span>
-            <a-input-number v-model="orderQty" :min="100" :step="100" size="small" class="of-input" />
-          </div>
-          <a-button :type="orderSide === 'buy' ? 'primary' : 'outline'" :status="orderSide === 'buy' ? 'danger' : 'success'"
-                    size="small" long @click="submitOrder" :class="orderSide === 'buy' ? 'btn-buy' : 'btn-sell'">
-            {{ orderSide === 'buy' ? '买入' : '卖出' }}
-          </a-button>
-        </div>
-      </div>
-
-      <div class="rp-section">
-        <div class="section-title">账户</div>
-        <div class="acct-info">
-          <div class="ai-row"><span>总资产</span><span class="font-mono">{{ fmtMoney(account.total_value) }}</span></div>
-          <div class="ai-row"><span>可用资金</span><span class="font-mono">{{ fmtMoney(account.cash) }}</span></div>
-          <div class="ai-row"><span>持仓市值</span><span class="font-mono">{{ fmtMoney(account.position_value) }}</span></div>
-          <div class="ai-row">
-            <span>今日盈亏</span>
-            <span class="font-mono" :class="account.today_pnl >= 0 ? 'text-up' : 'text-down'">
-              {{ account.today_pnl >= 0 ? '+' : '' }}{{ fmtMoney(account.today_pnl) }}
-            </span>
+        <div class="panel-card">
+          <h3 class="panel-title">实时行情</h3>
+          <div class="quote-grid" v-if="realtime.price">
+            <div class="quote-item"><span class="ql">开盘</span><span class="qv font-mono">{{ realtime.open?.toFixed(2) }}</span></div>
+            <div class="quote-item"><span class="ql">最高</span><span class="qv font-mono text-up">{{ realtime.high?.toFixed(2) }}</span></div>
+            <div class="quote-item"><span class="ql">最低</span><span class="qv font-mono text-down">{{ realtime.low?.toFixed(2) }}</span></div>
+            <div class="quote-item"><span class="ql">昨收</span><span class="qv font-mono">{{ realtime.prev_close?.toFixed(2) }}</span></div>
+            <div class="quote-item"><span class="ql">成交量</span><span class="qv font-mono">{{ fmtVol(realtime.volume) }}</span></div>
+            <div class="quote-item"><span class="ql">成交额</span><span class="qv font-mono">{{ fmtAmt(realtime.turnover) }}</span></div>
           </div>
         </div>
       </div>
-
-      <div class="rp-section">
-        <div class="section-title">技术指标</div>
-        <div class="ind-list">
-          <div v-for="ind in indicators" :key="ind.name" class="ind-item">
-            <span class="ind-name">{{ ind.name }}</span>
-            <span class="ind-val font-mono">{{ ind.value }}</span>
-            <span class="ind-signal" :class="ind.signal === '买入' ? 'text-up' : 'text-down'">{{ ind.signal }}</span>
-          </div>
-        </div>
-      </div>
-    </aside>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch, onUnmounted } from 'vue'
+import { ref, onMounted, computed, watch, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { apiGet, apiPost } from '../api'
-import { use } from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
-import { CandlestickChart, LineChart, BarChart } from 'echarts/charts'
-import {
-  GridComponent, TooltipComponent, LegendComponent,
-  DataZoomComponent, MarkLineComponent, VisualMapComponent
-} from 'echarts/components'
-import VChart from 'vue-echarts'
-
-use([CanvasRenderer, CandlestickChart, LineChart, BarChart, GridComponent,
-  TooltipComponent, LegendComponent, DataZoomComponent, MarkLineComponent, VisualMapComponent])
+import api from '../api'
+import * as echarts from 'echarts'
 
 const route = useRoute()
 const router = useRouter()
-const symbol = computed(() => (route.params.symbol as string) || '600519')
-const period = ref('daily')
-const adjust = ref('qfq')
-const bottomTab = ref('position')
-const orderSide = ref('buy')
-const orderSymbol = ref('')
-const orderPrice = ref(0)
-const orderQty = ref(100)
+const symbol = computed(() => route.params.symbol as string)
 
-const klineData = ref<any[]>([])
-const rt = ref<any>({})
 const stockInfo = ref<any>({})
-const indicators = ref<any[]>([])
-const watchlist = ref<any[]>([])
-const marketIndices = ref<any[]>([])
-const positions = ref<any[]>([])
-const orders = ref<any[]>([])
-const fills = ref<any[]>([])
-const strategyStatus = ref<any[]>([])
-const account = ref<any>({ total_value: 0, cash: 0, position_value: 0, today_pnl: 0 })
-const searchQuery = ref('')
-const searchResults = ref<any[]>([])
-let searchTimer: any = null
-let refreshTimer: any = null
+const realtime = ref<any>({})
+const klineData = ref<any[]>([])
+const currentPeriod = ref('daily')
+const chartRef = ref<HTMLElement>()
+let chart: echarts.ECharts | null = null
 
 const periods = [
-  { label: '1分', value: '1' }, { label: '5分', value: '5' },
-  { label: '15分', value: '15' }, { label: '30分', value: '30' },
-  { label: '60分', value: '60' }, { label: '日K', value: 'daily' },
-  { label: '周K', value: 'weekly' }, { label: '月K', value: 'monthly' },
-]
-const adjustModes = [
-  { label: '前复权', value: 'qfq' }, { label: '后复权', value: 'hfq' }, { label: '不复权', value: '' },
+  { value: 'daily', label: '日K' },
+  { value: 'weekly', label: '周K' },
+  { value: 'monthly', label: '月K' },
 ]
 
-function periodToApiPeriod(p: string): string {
-  const map: Record<string, string> = {
-    '1': '1d', '5': '1d', '15': '1d', '30': '1d', '60': '1d',
-    'daily': '1y', 'weekly': 'all', 'monthly': 'all',
-  }
-  return map[p] || '1y'
+const indicatorToggles = ref([
+  { key: 'ma', label: '均线', visible: true },
+  { key: 'vol', label: '成交量', visible: true },
+  { key: 'macd', label: 'MACD', visible: true },
+])
+
+const tradeType = ref('buy')
+const tradePrice = ref(0)
+const tradeQty = ref(1)
+const trading = ref(false)
+const inWatchlist = ref(false)
+
+const tradeAmount = computed(() => tradePrice.value * tradeQty.value * 100)
+
+function fmtVol(v: number) {
+  if (!v) return '-'
+  if (v >= 1e8) return (v / 1e8).toFixed(1) + '亿'
+  if (v >= 1e4) return (v / 1e4).toFixed(0) + '万'
+  return v.toString()
 }
 
-const chartOption = computed(() => {
+function fmtAmt(v: number) {
+  if (!v) return '-'
+  if (v >= 1e8) return (v / 1e8).toFixed(1) + '亿'
+  if (v >= 1e4) return (v / 1e4).toFixed(0) + '万'
+  return v.toFixed(0)
+}
+
+function calcMA(data: number[], n: number) {
+  const result: (number | null)[] = []
+  for (let i = 0; i < data.length; i++) {
+    if (i < n - 1) { result.push(null); continue }
+    let sum = 0
+    for (let j = 0; j < n; j++) sum += data[i - j]
+    result.push(sum / n)
+  }
+  return result
+}
+
+function calcMACD(closes: number[], short = 12, long = 26, signal = 9) {
+  const emaShort: number[] = [closes[0]]
+  const emaLong: number[] = [closes[0]]
+  const dif: number[] = []
+  const dea: number[] = [0]
+  const hist: number[] = [0]
+
+  for (let i = 1; i < closes.length; i++) {
+    emaShort.push(emaShort[i - 1] * (short - 1) / (short + 1) + closes[i] * 2 / (short + 1))
+    emaLong.push(emaLong[i - 1] * (long - 1) / (long + 1) + closes[i] * 2 / (long + 1))
+    dif.push(emaShort[i] - emaLong[i])
+  }
+  dif.unshift(0)
+
+  for (let i = 1; i < dif.length; i++) {
+    dea.push(dea[i - 1] * (signal - 1) / (signal + 1) + dif[i] * 2 / (signal + 1))
+    hist.push(2 * (dif[i] - dea[i]))
+  }
+
+  return { dif, dea, hist }
+}
+
+function getChartOption() {
   const raw = klineData.value
   if (!raw.length) return {}
 
-  const data = raw.map((d: any) => ({
-    ...d,
-    date: d.date || d.time,
-    open: d.open,
-    high: d.high,
-    low: d.low,
-    close: d.close,
-    volume: d.volume || 0,
-  }))
-
-  const dates = data.map((d: any) => typeof d.date === 'string' ? d.date.slice(0, 10) : String(d.date))
-  const klines = data.map((d: any) => [d.open, d.close, d.low, d.high])
-  const volumes = data.map((d: any) => ({
+  const dates = raw.map((d: any) => String(d.date).slice(0, 10))
+  const klines = raw.map((d: any) => [d.open, d.close, d.low, d.high])
+  const volumes = raw.map((d: any) => ({
     value: d.volume,
-    itemStyle: { color: d.close >= d.open ? 'rgba(248,81,73,0.7)' : 'rgba(63,185,80,0.7)' }
+    itemStyle: { color: d.close >= d.open ? 'rgba(255,69,58,0.5)' : 'rgba(48,209,88,0.5)' }
   }))
-  const closes = data.map((d: any) => d.close)
-
+  const closes = raw.map((d: any) => d.close)
   const ma5 = calcMA(closes, 5)
   const ma10 = calcMA(closes, 10)
   const ma20 = calcMA(closes, 20)
   const ma60 = calcMA(closes, 60)
+  const macdData = calcMACD(closes)
+  const showMA = indicatorToggles.value.find(i => i.key === 'ma')?.visible
+  const showVol = indicatorToggles.value.find(i => i.key === 'vol')?.visible
+  const showMACD = indicatorToggles.value.find(i => i.key === 'macd')?.visible
 
-  const macdData = calcMACD(closes, 12, 26, 9)
-  const macdHist = macdData.hist.map((v: number) => ({
-    value: v,
-    itemStyle: { color: v >= 0 ? 'rgba(248,81,73,0.7)' : 'rgba(63,185,80,0.7)' }
-  }))
+  const grids: any[] = [{ left: 60, right: 20, top: 30, height: '50%' }]
+  const xAxes: any[] = [{ type: 'category', data: dates, gridIndex: 0, axisLine: { lineStyle: { color: '#333' } }, axisLabel: { show: false }, axisTick: { show: false } }]
+  const yAxes: any[] = [{ type: 'value', gridIndex: 0, scale: true, splitLine: { lineStyle: { color: '#1a1a1a' } }, axisLabel: { color: '#6e6e73', fontSize: 10, fontFamily: 'SF Mono, Menlo, monospace' } }]
+  const series: any[] = [
+    { name: 'K线', type: 'candlestick', data: klines, xAxisIndex: 0, yAxisIndex: 0, itemStyle: { color: '#ff453a', color0: '#30d158', borderColor: '#ff453a', borderColor0: '#30d158' } },
+  ]
 
-  const rsiData = calcRSI(closes, 14)
+  if (showMA) {
+    series.push(
+      { name: 'MA5', type: 'line', data: ma5, xAxisIndex: 0, yAxisIndex: 0, smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#ff9f0a' } },
+      { name: 'MA10', type: 'line', data: ma10, xAxisIndex: 0, yAxisIndex: 0, smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#bf5af2' } },
+      { name: 'MA20', type: 'line', data: ma20, xAxisIndex: 0, yAxisIndex: 0, smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#5ac8fa' } },
+      { name: 'MA60', type: 'line', data: ma60, xAxisIndex: 0, yAxisIndex: 0, smooth: true, symbol: 'none', lineStyle: { width: 1, color: '#30d158' } },
+    )
+  }
+
+  let gridBottom = '8%'
+  let volIndex = 0
+
+  if (showVol) {
+    volIndex = grids.length
+    grids.push({ left: 60, right: 20, top: '68%', height: '12%' })
+    xAxes.push({ type: 'category', data: dates, gridIndex: volIndex, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#333' } } })
+    yAxes.push({ type: 'value', gridIndex: volIndex, scale: true, splitLine: { show: false }, axisLabel: { show: false } })
+    series.push({ name: '成交量', type: 'bar', data: volumes, xAxisIndex: volIndex, yAxisIndex: volIndex })
+    gridBottom = '20%'
+  }
+
+  if (showMACD) {
+    const macdIndex = grids.length
+    grids.push({ left: 60, right: 20, top: '82%', height: '12%' })
+    xAxes.push({ type: 'category', data: dates, gridIndex: macdIndex, axisLine: { lineStyle: { color: '#333' } }, axisLabel: { color: '#6e6e73', fontSize: 9, fontFamily: 'SF Mono, Menlo, monospace' } })
+    yAxes.push({ type: 'value', gridIndex: macdIndex, scale: true, splitLine: { show: false }, axisLabel: { show: false } })
+    const macdHist = macdData.hist.map((v: number) => ({
+      value: v,
+      itemStyle: { color: v >= 0 ? 'rgba(255,69,58,0.5)' : 'rgba(48,209,88,0.5)' }
+    }))
+    series.push(
+      { name: 'MACD', type: 'bar', data: macdHist, xAxisIndex: macdIndex, yAxisIndex: macdIndex },
+      { name: 'DIF', type: 'line', data: macdData.dif, xAxisIndex: macdIndex, yAxisIndex: macdIndex, symbol: 'none', lineStyle: { width: 1, color: '#ff9f0a' } },
+      { name: 'DEA', type: 'line', data: macdData.dea, xAxisIndex: macdIndex, yAxisIndex: macdIndex, symbol: 'none', lineStyle: { width: 1, color: '#5ac8fa' } },
+    )
+    gridBottom = '34%'
+  }
 
   return {
     backgroundColor: 'transparent',
     animation: false,
     tooltip: {
       trigger: 'axis',
-      axisPointer: { type: 'cross', crossStyle: { color: '#6e7681' } },
-      backgroundColor: 'rgba(13,17,23,0.95)',
-      borderColor: '#30363d',
-      textStyle: { color: '#e6edf3', fontSize: 12, fontFamily: 'JetBrains Mono' },
-      formatter: (params: any) => {
-        if (!params || !params.length) return ''
-        const k = params.find((p: any) => p.seriesName === 'K线')
-        if (!k) return ''
-        const d = k.data
-        const idx = k.dataIndex
-        const isUp = d[1] >= d[0]
-        const c = isUp ? '#f85149' : '#3fb950'
-        return `<div style="font-family:JetBrains Mono;font-size:12px">
-          <div style="color:#8b949e;margin-bottom:4px">${dates[idx]}</div>
-          <div>开 <span style="color:${c}">${d[0]?.toFixed(2)}</span></div>
-          <div>高 <span style="color:${c}">${d[3]?.toFixed(2)}</span></div>
-          <div>低 <span style="color:${c}">${d[2]?.toFixed(2)}</span></div>
-          <div>收 <span style="color:${c}">${d[1]?.toFixed(2)}</span></div>
-          <div>量 <span style="color:#8b949e">${fmtVol(data[idx]?.volume)}</span></div>
-          ${ma5[idx] != null ? `<div>MA5 <span style="color:#d29922">${ma5[idx]?.toFixed(2)}</span></div>` : ''}
-          ${ma10[idx] != null ? `<div>MA10 <span style="color:#a371f7">${ma10[idx]?.toFixed(2)}</span></div>` : ''}
-          ${ma20[idx] != null ? `<div>MA20 <span style="color:#58a6ff">${ma20[idx]?.toFixed(2)}</span></div>` : ''}
-        </div>`
-      }
+      axisPointer: { type: 'cross', crossStyle: { color: '#6e6e73' } },
+      backgroundColor: 'rgba(28,28,30,0.95)',
+      borderColor: 'rgba(255,255,255,0.1)',
+      textStyle: { color: '#f5f5f7', fontSize: 12, fontFamily: 'SF Mono, Menlo, monospace' },
     },
-    legend: {
-      data: ['K线', 'MA5', 'MA10', 'MA20', 'MA60'],
-      textStyle: { color: '#8b949e', fontSize: 11 },
-      top: 4, right: 60, itemGap: 12, itemWidth: 14, itemHeight: 2,
-    },
-    grid: [
-      { left: 60, right: 16, top: 36, height: '48%' },
-      { left: 60, right: 16, top: '62%', height: '10%' },
-      { left: 60, right: 16, top: '74%', height: '10%' },
-      { left: 60, right: 16, top: '86%', height: '10%' },
-    ],
-    xAxis: [
-      { type: 'category', data: dates, axisLine: { lineStyle: { color: '#30363d' } }, axisLabel: { color: '#6e7681', fontSize: 10 }, axisTick: { show: false }, gridIndex: 0 },
-      { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { show: false } },
-      { type: 'category', data: dates, gridIndex: 2, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { show: false } },
-      { type: 'category', data: dates, gridIndex: 3, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { show: false } },
-    ],
-    yAxis: [
-      { scale: true, gridIndex: 0, axisLine: { show: false }, axisLabel: { color: '#6e7681', fontSize: 10, fontFamily: 'JetBrains Mono' }, splitLine: { lineStyle: { color: '#21262d', type: 'dashed' } } },
-      { scale: true, gridIndex: 1, axisLine: { show: false }, axisLabel: { show: false }, splitLine: { show: false } },
-      { scale: true, gridIndex: 2, axisLine: { show: false }, axisLabel: { show: false }, splitLine: { show: false } },
-      { scale: true, gridIndex: 3, axisLine: { show: false }, axisLabel: { show: false }, splitLine: { show: false } },
-    ],
+    grid: grids,
+    xAxis: xAxes,
+    yAxis: yAxes,
     dataZoom: [
-      { type: 'inside', xAxisIndex: [0, 1, 2, 3], start: 60, end: 100 },
-      { type: 'slider', xAxisIndex: [0, 1, 2, 3], bottom: 2, height: 12, borderColor: '#30363d', fillerColor: 'rgba(88,166,255,0.15)', handleStyle: { color: '#58a6ff' }, textStyle: { color: '#6e7681', fontSize: 10 } },
+      { type: 'inside', xAxisIndex: xAxes.map((_, i) => i), start: 60, end: 100 },
+      { type: 'slider', xAxisIndex: xAxes.map((_, i) => i), start: 60, end: 100, height: 16, bottom: 4, borderColor: '#333', fillerColor: 'rgba(41,151,255,0.15)', handleStyle: { color: '#2997ff' } },
     ],
-    series: [
-      {
-        name: 'K线', type: 'candlestick', data: klines, xAxisIndex: 0, yAxisIndex: 0,
-        itemStyle: { color: '#f85149', color0: '#3fb950', borderColor: '#f85149', borderColor0: '#3fb950', borderWidth: 1 },
-      },
-      { name: 'MA5', type: 'line', data: ma5, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#d29922', width: 1 } },
-      { name: 'MA10', type: 'line', data: ma10, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#a371f7', width: 1 } },
-      { name: 'MA20', type: 'line', data: ma20, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#58a6ff', width: 1 } },
-      { name: 'MA60', type: 'line', data: ma60, xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, lineStyle: { color: '#3fb950', width: 1 } },
-      { name: '成交量', type: 'bar', data: volumes, xAxisIndex: 1, yAxisIndex: 1 },
-      { name: 'MACD', type: 'bar', data: macdHist, xAxisIndex: 2, yAxisIndex: 2 },
-      { name: 'DIF', type: 'line', data: macdData.dif, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { color: '#d29922', width: 1 } },
-      { name: 'DEA', type: 'line', data: macdData.dea, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { color: '#58a6ff', width: 1 } },
-      { name: 'RSI', type: 'line', data: rsiData, xAxisIndex: 3, yAxisIndex: 3, showSymbol: false, lineStyle: { color: '#a371f7', width: 1 },
-        markLine: { silent: true, symbol: 'none', lineStyle: { color: '#30363d', type: 'dashed' }, data: [{ yAxis: 70 }, { yAxis: 30 }] }
-      },
-    ],
+    series,
   }
-})
-
-function calcMA(data: number[], p: number) {
-  const r: (number | null)[] = []
-  for (let i = 0; i < data.length; i++) {
-    if (i < p - 1) { r.push(null); continue }
-    let s = 0; for (let j = 0; j < p; j++) s += data[i - j]
-    r.push(s / p)
-  }
-  return r
 }
 
-function calcMACD(closes: number[], fast: number, slow: number, signal: number) {
-  const ema = (arr: number[], span: number) => {
-    const a = 2 / (span + 1); const r = [arr[0]]
-    for (let i = 1; i < arr.length; i++) r.push(a * arr[i] + (1 - a) * r[i - 1])
-    return r
-  }
-  const ef = ema(closes, fast); const es = ema(closes, slow)
-  const dif = ef.map((v, i) => v - es[i])
-  const dea = ema(dif, signal)
-  const hist = dif.map((v, i) => (v - dea[i]) * 2)
-  return { dif, dea, hist }
-}
-
-function calcRSI(closes: number[], period: number) {
-  const r: (number | null)[] = []
-  let avgGain = 0, avgLoss = 0
-  for (let i = 0; i < closes.length; i++) {
-    if (i === 0) { r.push(null); continue }
-    const diff = closes[i] - closes[i - 1]
-    if (i <= period) {
-      avgGain += Math.max(diff, 0); avgLoss += Math.max(-diff, 0)
-      if (i === period) { avgGain /= period; avgLoss /= period; r.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)) }
-      else r.push(null)
-    } else {
-      avgGain = (avgGain * (period - 1) + Math.max(diff, 0)) / period
-      avgLoss = (avgLoss * (period - 1) + Math.max(-diff, 0)) / period
-      r.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss))
-    }
-  }
-  return r
-}
-
-function fmtVol(v: number) {
-  if (!v) return '--'
-  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿'
-  if (v >= 1e4) return (v / 1e4).toFixed(2) + '万'
-  return v.toFixed(0)
-}
-
-function fmtMoney(v: number) {
-  if (!v) return '0.00'
-  if (Math.abs(v) >= 1e8) return (v / 1e8).toFixed(2) + '亿'
-  if (Math.abs(v) >= 1e4) return (v / 1e4).toFixed(2) + '万'
-  return v.toFixed(2)
-}
-
-function switchPeriod(p: string) {
-  period.value = p
-  loadData()
-}
-
-function goStock(sym: string) {
-  searchResults.value = []
-  searchQuery.value = ''
-  router.push(`/stock/${sym}`)
-}
-
-function onSearchInput() {
-  if (searchTimer) clearTimeout(searchTimer)
-  searchTimer = setTimeout(async () => {
-    const q = searchQuery.value.trim()
-    if (!q) { searchResults.value = []; return }
-    try {
-      const results = await apiGet<any[]>(`/search?q=${encodeURIComponent(q)}&limit=15`)
-      searchResults.value = results || []
-    } catch { searchResults.value = [] }
-  }, 300)
-}
-
-async function doSearch(q: string) {
-  if (!q) return
-  try {
-    const results = await apiGet<any[]>(`/search?q=${encodeURIComponent(q)}&limit=15`)
-    if (results && results.length > 0) {
-      goStock(results[0].code)
-    }
-  } catch {}
-}
-
-async function submitOrder() {
-  try {
-    const endpoint = orderSide.value === 'buy' ? '/sim/buy' : '/sim/sell'
-    await apiPost(endpoint, {
-      symbol: orderSymbol.value || symbol.value,
-      shares: orderQty.value,
-      price: orderPrice.value,
-    })
-    loadAccount()
-  } catch {}
+function updateChart() {
+  if (!chart) return
+  const option = getChartOption()
+  if (Object.keys(option).length) chart.setOption(option, true)
 }
 
 async function loadData() {
+  try { stockInfo.value = await api.getStockInfo(symbol.value) } catch {}
   try {
-    const apiPeriod = periodToApiPeriod(period.value)
-    const [histResp, rtData] = await Promise.all([
-      apiGet<any>(`/history?symbol=${symbol.value}&period=${apiPeriod}`),
-      apiGet<any>(`/realtime?symbol=${symbol.value}`)
-    ])
-
-    if (histResp && typeof histResp === 'object') {
-      if (Array.isArray(histResp.data)) {
-        klineData.value = histResp.data
-      } else if (Array.isArray(histResp)) {
-        klineData.value = histResp
-      } else if (histResp.history && Array.isArray(histResp.history)) {
-        klineData.value = histResp.history
-      } else {
-        klineData.value = []
-      }
-    } else if (Array.isArray(histResp)) {
-      klineData.value = histResp
-    } else {
-      klineData.value = []
-    }
-
-    rt.value = rtData && typeof rtData === 'object' ? rtData : {}
-    if (rt.value.name) {
-      stockInfo.value = {
-        name: rt.value.name,
-        market_label: rt.value.market || '',
-      }
-    }
-    orderSymbol.value = symbol.value
-    orderPrice.value = rt.value.price || 0
-
-    const closes = klineData.value.map((d: any) => d.close)
-    if (closes.length >= 20) {
-      const m5 = closes.slice(-5).reduce((a: number, b: number) => a + b, 0) / 5
-      const m10 = closes.slice(-10).reduce((a: number, b: number) => a + b, 0) / 10
-      const m20 = closes.slice(-20).reduce((a: number, b: number) => a + b, 0) / 20
-      const latest = closes[closes.length - 1]
-      indicators.value = [
-        { name: 'MA5', value: m5.toFixed(2), signal: latest > m5 ? '买入' : '卖出' },
-        { name: 'MA10', value: m10.toFixed(2), signal: latest > m10 ? '买入' : '卖出' },
-        { name: 'MA20', value: m20.toFixed(2), signal: latest > m20 ? '买入' : '卖出' },
-        { name: 'MA交叉', value: m5 > m10 ? '金叉' : '死叉', signal: m5 > m10 ? '买入' : '卖出' },
-      ]
-    }
+    realtime.value = await api.getRealtime(symbol.value)
+    tradePrice.value = realtime.value.price || 0
+  } catch {}
+  try {
+    klineData.value = await api.getKline(symbol.value, currentPeriod.value, 500)
+    await nextTick()
+    updateChart()
   } catch {}
 }
 
-async function loadAccount() {
-  try {
-    const [acct, pos, ord, fill] = await Promise.all([
-      apiGet<any>('/sim/account'),
-      apiGet<any[]>('/sim/positions'),
-      apiGet<any[]>('/sim/orders'),
-      apiGet<any[]>('/sim/trades'),
-    ])
-    if (acct) account.value = acct
-    if (Array.isArray(pos)) positions.value = pos
-    if (Array.isArray(ord)) orders.value = ord
-    if (Array.isArray(fill)) fills.value = fill
-  } catch {}
-}
-
-async function loadWatchlist() {
-  try {
-    const data = await apiGet<any[]>('/sim/watch')
-    if (Array.isArray(data) && data.length > 0) {
-      watchlist.value = data.map((item: any) => ({
-        symbol: item.symbol,
-        name: item.name || item.symbol,
-        price: item.price || 0,
-        change_pct: item.change_pct || item.pct || 0,
-      }))
-      const symbols = watchlist.value.map(w => w.symbol)
-      const rtPromises = symbols.map(sym => apiGet<any>(`/realtime?symbol=${sym}`).catch(() => null))
-      const rtResults = await Promise.all(rtPromises)
-      rtResults.forEach((rtData, i) => {
-        if (rtData && rtData.price) {
-          watchlist.value[i].price = rtData.price
-          watchlist.value[i].change_pct = rtData.pct || 0
-          watchlist.value[i].name = rtData.name || watchlist.value[i].name
-        }
-      })
-    } else {
-      const defaultSymbols = ['600519', '000858', '601318', '000001', '300750', '002594']
-      const rtPromises = defaultSymbols.map(sym => apiGet<any>(`/realtime?symbol=${sym}`).catch(() => null))
-      const rtResults = await Promise.all(rtPromises)
-      watchlist.value = rtResults.map((rtData, i) => ({
-        symbol: defaultSymbols[i],
-        name: rtData?.name || defaultSymbols[i],
-        price: rtData?.price || 0,
-        change_pct: rtData?.pct || 0,
-      }))
-    }
-  } catch {}
-}
-
-async function loadMarketIndices() {
-  try {
-    const data = await apiGet<any>('/market-overview')
-    if (data && typeof data === 'object') {
-      const indices = data.indices || []
-      if (Array.isArray(indices) && indices.length > 0) {
-        marketIndices.value = indices.map((idx: any) => ({
-          name: idx.name || idx.symbol,
-          price: idx.price || 0,
-          pct: idx.pct || idx.change_pct || 0,
-        }))
-      }
-    }
-  } catch {}
-}
-
-async function refreshRealtime() {
-  try {
-    const rtData = await apiGet<any>(`/realtime?symbol=${symbol.value}`)
-    if (rtData && rtData.price) {
-      rt.value = rtData
-      orderPrice.value = rtData.price
-    }
-  } catch {}
-}
-
-function startAutoRefresh() {
-  if (refreshTimer) clearInterval(refreshTimer)
-  refreshTimer = setInterval(() => {
-    refreshRealtime()
-  }, 8000)
-}
-
-watch(symbol, () => { loadData(); loadAccount() })
-
-onMounted(() => {
+function switchPeriod(p: string) {
+  currentPeriod.value = p
   loadData()
-  loadAccount()
-  loadWatchlist()
-  loadMarketIndices()
-  startAutoRefresh()
+}
+
+async function toggleWatchlist() {
+  try {
+    if (inWatchlist.value) {
+      await api.removeFromWatchlist(symbol.value)
+      inWatchlist.value = false
+    } else {
+      await api.addToWatchlist(symbol.value)
+      inWatchlist.value = true
+    }
+  } catch {}
+}
+
+async function executeTrade() {
+  if (trading.value) return
+  trading.value = true
+  try {
+    if (tradeType.value === 'buy') {
+      await api.buyStock(symbol.value, tradeQty.value * 100, tradePrice.value)
+    } else {
+      await api.sellStock(symbol.value, tradeQty.value * 100, tradePrice.value)
+    }
+    alert(`${tradeType.value === 'buy' ? '买入' : '卖出'}成功!`)
+  } catch (e: any) {
+    alert(`交易失败: ${e.message}`)
+  } finally {
+    trading.value = false
+  }
+}
+
+let refreshTimer: any = null
+
+onMounted(async () => {
+  await loadData()
+  try {
+    const wl = await api.getWatchlist()
+    inWatchlist.value = wl.some((s: any) => s.code === symbol.value)
+  } catch {}
+
+  if (chartRef.value) {
+    chart = echarts.init(chartRef.value, 'dark')
+    updateChart()
+    window.addEventListener('resize', () => chart?.resize())
+  }
+
+  refreshTimer = setInterval(async () => {
+    try { realtime.value = await api.getRealtime(symbol.value) } catch {}
+  }, 10000)
 })
 
 onUnmounted(() => {
-  if (refreshTimer) clearInterval(refreshTimer)
-  if (searchTimer) clearTimeout(searchTimer)
+  chart?.dispose()
+  clearInterval(refreshTimer)
 })
+
+watch(symbol, () => { loadData() })
 </script>
 
 <style scoped>
-.trading-layout {
-  display: flex; height: 100vh; background: var(--bg-primary); overflow: hidden;
+.stock-detail { padding: 20px 24px; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
-/* Left Panel */
-.left-panel {
-  width: 220px; background: var(--bg-secondary); border-right: 1px solid var(--border-color);
-  display: flex; flex-direction: column; overflow: hidden;
-}
-.search-box { padding: 12px; border-bottom: 1px solid var(--border-color); position: relative; }
-.search-dropdown {
-  position: absolute; top: 44px; left: 12px; right: 12px; z-index: 100;
-  background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 4px;
-  max-height: 300px; overflow-y: auto; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-}
-.search-item {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer;
-  transition: background 0.1s;
-}
-.search-item:hover { background: var(--bg-hover); }
-.si-code { font-size: 13px; color: var(--text-primary); min-width: 70px; }
-.si-name { font-size: 12px; color: var(--text-secondary); flex: 1; }
-.si-market { font-size: 10px; color: var(--text-muted); background: var(--bg-hover); padding: 1px 4px; border-radius: 2px; }
-.watchlist-header { padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; }
-.wl-count { font-size: 11px; color: var(--text-muted); }
-.section-title { font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-.watchlist { flex: 1; overflow-y: auto; }
-.wl-empty { padding: 20px 12px; text-align: center; color: var(--text-muted); font-size: 12px; }
-.watchlist-item {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 8px 12px; cursor: pointer; transition: background 0.15s;
-}
-.watchlist-item:hover { background: var(--bg-tertiary); }
-.watchlist-item.active { background: var(--bg-hover); border-left: 2px solid var(--color-up); }
-.wl-left { display: flex; flex-direction: column; gap: 2px; }
-.wl-symbol { font-size: 13px; color: var(--text-primary); }
-.wl-name { font-size: 11px; color: var(--text-muted); }
-.wl-right { text-align: right; }
-.wl-price { font-size: 13px; display: block; }
-.wl-pct { font-size: 11px; }
-.market-section { padding: 8px 12px; border-top: 1px solid var(--border-color); }
-.market-item { display: flex; justify-content: space-between; padding: 4px 0; }
-.mi-name { font-size: 12px; color: var(--text-secondary); }
-.mi-val { font-size: 12px; }
-.mi-val small { margin-left: 4px; font-size: 10px; }
-
-/* Center Panel */
-.center-panel {
-  flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0;
-}
-.chart-topbar {
-  display: flex; align-items: center; gap: 16px; padding: 8px 16px;
-  background: var(--bg-secondary); border-bottom: 1px solid var(--border-color);
-  flex-wrap: wrap;
-}
-.stock-identity { display: flex; align-items: center; gap: 8px; }
-.si-symbol { font-size: 18px; font-weight: 700; color: var(--text-primary); }
-.si-name { font-size: 13px; color: var(--text-secondary); }
-.si-market { font-size: 11px; color: var(--text-muted); background: var(--bg-tertiary); padding: 1px 6px; border-radius: 3px; }
-.price-display { display: flex; align-items: baseline; gap: 8px; }
-.pd-price { font-size: 22px; font-weight: 700; }
-.pd-change { font-size: 13px; }
-.pd-pct { font-size: 13px; }
-.period-tabs, .adjust-tabs { display: flex; gap: 2px; }
-.period-btn, .adjust-btn {
-  padding: 4px 10px; border: none; background: transparent; color: var(--text-secondary);
-  font-size: 12px; cursor: pointer; border-radius: 3px; transition: all 0.15s;
-}
-.period-btn:hover, .adjust-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
-.period-btn.active, .adjust-btn.active { color: var(--color-up); background: var(--bg-tertiary); }
-
-.chart-area { flex: 1; min-height: 0; }
-.main-chart { width: 100%; height: 100%; }
-.chart-loading {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  height: 100%; gap: 12px; color: var(--text-muted); font-size: 14px;
+.stock-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-/* Bottom Panel */
-.bottom-panel {
-  height: 180px; background: var(--bg-secondary); border-top: 1px solid var(--border-color);
-  overflow: hidden;
-}
-.tab-content { padding: 0 12px; overflow-y: auto; max-height: 140px; }
-.data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.data-table th { color: var(--text-muted); font-weight: 500; text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border-color); }
-.data-table th:first-child { text-align: left; }
-.data-table td { padding: 5px 8px; text-align: right; color: var(--text-secondary); border-bottom: 1px solid var(--border-light); }
-.data-table td:first-child { text-align: left; }
-.strategy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
-.strategy-card { background: var(--bg-tertiary); border-radius: 4px; padding: 8px 12px; }
-.sc-name { font-size: 12px; color: var(--text-secondary); }
-.sc-score { font-size: 18px; font-weight: 700; }
-.sc-status { font-size: 11px; color: var(--text-muted); }
+.back-btn { padding: 4px 10px; font-size: 12px; }
 
-/* Right Panel */
-.right-panel {
-  width: 240px; background: var(--bg-secondary); border-left: 1px solid var(--border-color);
-  display: flex; flex-direction: column; overflow-y: auto;
-}
-.rp-section { padding: 12px; border-bottom: 1px solid var(--border-color); }
-.rt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.rt-item { display: flex; justify-content: space-between; }
-.rt-label { font-size: 11px; color: var(--text-muted); }
-.rt-val { font-size: 12px; color: var(--text-primary); }
-.rt-update-time { font-size: 10px; color: var(--text-muted); margin-top: 6px; text-align: right; }
-.order-form { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
-.of-row { display: flex; align-items: center; gap: 8px; }
-.of-label { font-size: 12px; color: var(--text-muted); min-width: 32px; }
-.of-input { flex: 1; }
-.btn-buy { background: var(--color-up) !important; border-color: var(--color-up) !important; }
-.btn-sell { background: var(--color-down) !important; border-color: var(--color-down) !important; color: #fff !important; }
-.acct-info { display: flex; flex-direction: column; gap: 6px; }
-.ai-row { display: flex; justify-content: space-between; font-size: 12px; }
-.ai-row span:first-child { color: var(--text-muted); }
-.ai-row span:last-child { color: var(--text-primary); }
-.ind-list { display: flex; flex-direction: column; gap: 6px; }
-.ind-item { display: flex; justify-content: space-between; align-items: center; }
-.ind-name { font-size: 12px; color: var(--text-muted); }
-.ind-val { font-size: 13px; color: var(--text-primary); }
-.ind-signal { font-size: 11px; font-weight: 600; }
+.stock-name { font-size: 20px; font-weight: 700; }
+.stock-code { font-size: 13px; color: var(--text-tertiary); }
 
-@media (max-width: 1280px) {
-  .left-panel { width: 180px; }
-  .right-panel { width: 200px; }
+.market-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(41,151,255,0.15);
+  color: var(--accent-blue);
 }
+
+.star-btn { padding: 4px 8px; font-size: 16px; }
+
+.price-section { text-align: right; }
+.current-price { font-size: 28px; font-weight: 700; }
+.price-change { font-size: 14px; display: flex; gap: 12px; justify-content: flex-end; }
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.chart-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chart-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.period-tabs { display: flex; gap: 2px; }
+
+.period-tab {
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: var(--font-sans);
+}
+
+.period-tab.active { background: rgba(41,151,255,0.12); color: var(--accent-blue); }
+
+.indicator-toggles { display: flex; gap: 12px; }
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.toggle-label input { width: 12px; height: 12px; }
+
+.chart-container { flex: 1; min-height: 400px; }
+
+.side-panel { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+
+.panel-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+}
+
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.trade-type-tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+
+.trade-type {
+  flex: 1;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: var(--font-sans);
+}
+
+.trade-type.active.buy { background: rgba(255,69,58,0.15); color: var(--accent-red); border-color: var(--accent-red); }
+.trade-type.active.sell { background: rgba(48,209,88,0.15); color: var(--accent-green); border-color: var(--accent-green); }
+
+.form-group { margin-bottom: 10px; }
+.form-group label { display: block; font-size: 11px; color: var(--text-tertiary); margin-bottom: 4px; }
+.form-group input { width: 100%; }
+
+.trade-summary {
+  padding: 8px 0;
+  border-top: 1px solid var(--border-light);
+  margin-bottom: 10px;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.trade-btn { width: 100%; padding: 10px; }
+
+.quote-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.quote-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.ql { color: var(--text-tertiary); }
+.qv { color: var(--text-primary); }
 </style>

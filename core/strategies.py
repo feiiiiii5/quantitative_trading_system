@@ -835,3 +835,15 @@ class CompositeStrategy:
                 "weight": self.weights.get(s.name, 0),
             })
         return info
+
+
+STRATEGY_REGISTRY = {
+    "ma_cross": DualMAStrategy,
+    "macd": MACDStrategy,
+    "rsi": RSIMeanReversionStrategy,
+    "supertrend": SuperTrendStrategy,
+    "kdj": KDJStrategy,
+    "bollinger": BollingerBreakoutStrategy,
+    "momentum": MomentumStrategy,
+    "volume_breakout": VolumeBreakoutStrategy,
+}
