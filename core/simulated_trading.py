@@ -1,12 +1,16 @@
 import json
 import logging
 import random
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, date
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+_AUDIT_LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "audit.log"
 
 
 @dataclass
@@ -143,8 +147,31 @@ class SimulatedTrading:
         self._order_books: dict[str, OrderBook] = {}
         self._slippage_rate = 0.001
         self._market_status_cache: dict[str, dict] = {}
+        self._trade_lock = threading.Lock()
+        self._order_ids: set[str] = set()
+        self._audit_logger = self._init_audit_logger()
         from core.risk_manager import RiskManager
         self._risk_manager = RiskManager()
+
+    @staticmethod
+    def _init_audit_logger() -> logging.Logger:
+        audit_logger = logging.getLogger("quantcore.audit")
+        if not audit_logger.handlers:
+            try:
+                _AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                handler = logging.FileHandler(str(_AUDIT_LOG_PATH), encoding="utf-8")
+                handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+                audit_logger.addHandler(handler)
+                audit_logger.setLevel(logging.INFO)
+            except Exception:
+                pass
+        return audit_logger
+
+    def _write_audit(self, action: str, detail: dict) -> None:
+        try:
+            self._audit_logger.info(f"{action} | {json.dumps(detail, ensure_ascii=False, default=str)}")
+        except Exception:
+            pass
 
     def _get_order_book(self, symbol: str) -> OrderBook:
         if symbol not in self._order_books:
@@ -254,120 +281,137 @@ class SimulatedTrading:
         take_profit: float = 0,
         strategy: str = "manual",
         market_price: float = 0,
+        order_id: str = "",
     ) -> dict:
-        if price <= 0 or shares <= 0:
-            return {"success": False, "error": "无效的价格或数量"}
+        if order_id and order_id in self._order_ids:
+            return {"success": False, "error": "重复订单"}
+        if order_id:
+            self._order_ids.add(order_id)
 
-        if market == "A":
-            lot = 100
-            if shares < lot:
-                return {"success": False, "error": f"A股最小买入1手({lot}股)"}
-            if shares % lot != 0:
-                shares = (shares // lot) * lot
-            if shares <= 0:
-                return {"success": False, "error": "买入数量必须为100的整数倍"}
-        elif market == "HK":
-            lot_sizes = {"1": 100, "2": 500, "3": 1000, "4": 2000, "5": 5000}
-            lot = 500
-            if shares < lot:
-                return {"success": False, "error": f"港股最小买入单位为{lot}股"}
+        with self._trade_lock:
+            if price <= 0 or shares <= 0:
+                return {"success": False, "error": "无效的价格或数量"}
 
-        effective_price = market_price if market_price > 0 else price
-        filled_price = self._get_execution_price(symbol, "buy", price, effective_price, market)
-
-        amount = filled_price * shares
-        commission, stamp_tax = self._calc_fee(amount, is_sell=False, market=market)
-        total_cost = amount + commission + stamp_tax
-
-        if total_cost > self._cash:
-            max_shares = int(self._cash / (filled_price * (1 + self._commission_rate + 0.001)))
             if market == "A":
-                max_shares = (max_shares // 100) * 100
-            return {
-                "success": False,
-                "error": f"资金不足：需要{total_cost:.2f}，可用{self._cash:.2f}",
-                "max_affordable_shares": max_shares,
-            }
+                lot = 100
+                if shares < lot:
+                    return {"success": False, "error": f"A股最小买入1手({lot}股)"}
+                if shares % lot != 0:
+                    shares = (shares // lot) * lot
+                if shares <= 0:
+                    return {"success": False, "error": "买入数量必须为100的整数倍"}
+            elif market == "HK":
+                lot = 500
+                if shares < lot:
+                    return {"success": False, "error": f"港股最小买入单位为{lot}股"}
 
-        if market == "A" and self._check_limit_up(symbol, name, filled_price):
-            return {"success": False, "error": "接近涨停价，买入可能无法成交", "warning": True}
+            effective_price = market_price if market_price > 0 else price
+            filled_price = self._get_execution_price(symbol, "buy", price, effective_price, market)
 
-        total_assets = self._cash + sum(p.market_value for p in self._positions.values())
-        current_positions = {}
-        for sym, pos in self._positions.items():
-            current_positions[sym] = {"market_value": pos.market_value}
-        risk_check = self._risk_manager.check_order(
-            symbol=symbol, action="buy", shares=shares, price=filled_price,
-            current_positions=current_positions, total_assets=total_assets,
-        )
-        if not risk_check["approved"]:
-            return {"success": False, "error": risk_check["reason"]}
+            amount = filled_price * shares
+            commission, stamp_tax = self._calc_fee(amount, is_sell=False, market=market)
+            total_cost = amount + commission + stamp_tax
 
-        self._cash -= total_cost
+            if total_cost > self._cash:
+                max_shares = int(self._cash / (filled_price * (1 + self._commission_rate + 0.001)))
+                if market == "A":
+                    max_shares = (max_shares // 100) * 100
+                return {
+                    "success": False,
+                    "error": f"资金不足：需要{total_cost:.2f}，可用{self._cash:.2f}",
+                    "max_affordable_shares": max_shares,
+                }
 
-        today = self._today_str()
+            if market == "A" and self._check_limit_up(symbol, name, filled_price):
+                return {"success": False, "error": "接近涨停价，买入可能无法成交", "warning": True}
 
-        if symbol in self._positions:
-            pos = self._positions[symbol]
-            total_shares = pos.shares + shares
-            total_cost_basis = pos.avg_cost * pos.shares + amount
-            pos.avg_cost = total_cost_basis / total_shares
-            pos.shares = total_shares
-            pos.buy_fees += commission
-            pos.stop_loss = stop_loss if stop_loss > 0 else pos.stop_loss
-            pos.take_profit = take_profit if take_profit > 0 else pos.take_profit
-            pos.current_price = filled_price
-            self._entry_price_map[symbol] = pos.avg_cost
-        else:
-            self._positions[symbol] = Position(
+            total_assets = self._cash + sum(p.market_value for p in self._positions.values())
+            current_positions = {}
+            for sym, pos in self._positions.items():
+                current_positions[sym] = {"market_value": pos.market_value}
+            risk_check = self._risk_manager.check_order(
+                symbol=symbol, action="buy", shares=shares, price=filled_price,
+                current_positions=current_positions, total_assets=total_assets,
+            )
+            if not risk_check["approved"]:
+                return {"success": False, "error": risk_check["reason"]}
+
+            cash_before = self._cash
+            self._cash -= total_cost
+
+            if self._cash < 0:
+                self._cash = cash_before
+                return {"success": False, "error": "余额一致性检查失败，交易已回滚"}
+
+            today = self._today_str()
+
+            if symbol in self._positions:
+                pos = self._positions[symbol]
+                total_shares = pos.shares + shares
+                total_cost_basis = pos.avg_cost * pos.shares + amount
+                pos.avg_cost = total_cost_basis / total_shares
+                pos.shares = total_shares
+                pos.buy_fees += commission
+                pos.stop_loss = stop_loss if stop_loss > 0 else pos.stop_loss
+                pos.take_profit = take_profit if take_profit > 0 else pos.take_profit
+                pos.current_price = filled_price
+                self._entry_price_map[symbol] = pos.avg_cost
+            else:
+                self._positions[symbol] = Position(
+                    symbol=symbol,
+                    name=name,
+                    market=market,
+                    shares=shares,
+                    available_shares=0,
+                    avg_cost=filled_price,
+                    current_price=filled_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    buy_date=today,
+                    buy_fees=commission,
+                )
+                self._entry_price_map[symbol] = filled_price
+
+            trade = TradeRecord(
+                id=str(uuid.uuid4())[:8],
                 symbol=symbol,
                 name=name,
                 market=market,
+                action="buy",
+                price=round(filled_price, 3),
                 shares=shares,
-                available_shares=0,
-                avg_cost=filled_price,
-                current_price=filled_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                buy_date=today,
-                buy_fees=commission,
+                amount=round(amount, 2),
+                fee=round(commission, 2),
+                stamp_tax=round(stamp_tax, 2),
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                strategy=strategy,
+                reason="市价买入",
+                entry_price=filled_price,
             )
-            self._entry_price_map[symbol] = filled_price
+            self._trade_history.append(trade)
 
-        trade = TradeRecord(
-            id=str(uuid.uuid4())[:8],
-            symbol=symbol,
-            name=name,
-            market=market,
-            action="buy",
-            price=round(filled_price, 3),
-            shares=shares,
-            amount=round(amount, 2),
-            fee=round(commission, 2),
-            stamp_tax=round(stamp_tax, 2),
-            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            strategy=strategy,
-            reason="市价买入",
-            entry_price=filled_price,
-        )
-        self._trade_history.append(trade)
+            self._write_audit("BUY", {
+                "symbol": symbol, "name": name, "price": filled_price,
+                "shares": shares, "amount": amount, "fee": commission,
+                "strategy": strategy, "cash_after": self._cash,
+            })
 
-        return {
-            "success": True,
-            "trade": {
-                "id": trade.id,
-                "action": "buy",
-                "symbol": symbol,
-                "name": name,
-                "order_price": price,
-                "filled_price": round(filled_price, 3),
-                "shares": shares,
-                "amount": round(amount, 2),
-                "fee": round(commission, 2),
-                "time": trade.time,
-                "slippage": round(filled_price - price, 3),
-            },
-        }
+            return {
+                "success": True,
+                "trade": {
+                    "id": trade.id,
+                    "action": "buy",
+                    "symbol": symbol,
+                    "name": name,
+                    "order_price": price,
+                    "filled_price": round(filled_price, 3),
+                    "shares": shares,
+                    "amount": round(amount, 2),
+                    "fee": round(commission, 2),
+                    "time": trade.time,
+                    "slippage": round(filled_price - price, 3),
+                },
+            }
 
     def execute_sell(
         self,
@@ -376,82 +420,100 @@ class SimulatedTrading:
         reason: str = "manual",
         shares: Optional[int] = None,
         market_price: float = 0,
+        order_id: str = "",
     ) -> dict:
-        if symbol not in self._positions:
-            return {"success": False, "error": f"未持有 {symbol}"}
+        if order_id and order_id in self._order_ids:
+            return {"success": False, "error": "重复订单"}
+        if order_id:
+            self._order_ids.add(order_id)
 
-        pos = self._positions[symbol]
+        with self._trade_lock:
+            if symbol not in self._positions:
+                return {"success": False, "error": f"未持有 {symbol}"}
 
-        if pos.market == "A":
-            today = self._today_str()
-            if pos.buy_date == today:
-                return {"success": False, "error": "T+1限制：当日买入的股票当日不可卖出", "t1_restricted": True}
+            pos = self._positions[symbol]
 
-        sell_shares = shares if shares and shares > 0 else pos.available_shares
-        if sell_shares <= 0:
-            return {"success": False, "error": f"无可卖股票（可用: {pos.available_shares}，冻结: {pos.shares - pos.available_shares})"}
+            if pos.market == "A":
+                today = self._today_str()
+                if pos.buy_date == today:
+                    return {"success": False, "error": "T+1限制：当日买入的股票当日不可卖出", "t1_restricted": True}
 
-        if sell_shares > pos.available_shares:
-            return {"success": False, "error": f"可卖数量不足：请求{sell_shares}，可用{pos.available_shares}"}
+            sell_shares = shares if shares and shares > 0 else pos.available_shares
+            if sell_shares <= 0:
+                return {"success": False, "error": f"无可卖股票（可用: {pos.available_shares}，冻结: {pos.shares - pos.available_shares})"}
 
-        effective_price = market_price if market_price > 0 else price
-        filled_price = self._get_execution_price(symbol, "sell", price, effective_price, pos.market)
+            if sell_shares > pos.available_shares:
+                return {"success": False, "error": f"可卖数量不足：请求{sell_shares}，可用{pos.available_shares}"}
 
-        if pos.market == "A" and self._check_limit_down(symbol, pos.name, filled_price):
-            return {"success": False, "error": "接近跌停价，卖出可能排队等候", "warning": True}
+            effective_price = market_price if market_price > 0 else price
+            filled_price = self._get_execution_price(symbol, "sell", price, effective_price, pos.market)
 
-        amount = filled_price * sell_shares
-        commission, stamp_tax = self._calc_fee(amount, is_sell=True, market=pos.market)
-        total_fee = commission + stamp_tax
-        net_amount = amount - total_fee
+            if pos.market == "A" and self._check_limit_down(symbol, pos.name, filled_price):
+                return {"success": False, "error": "接近跌停价，卖出可能排队等候", "warning": True}
 
-        self._cash += net_amount
+            amount = filled_price * sell_shares
+            commission, stamp_tax = self._calc_fee(amount, is_sell=True, market=pos.market)
+            total_fee = commission + stamp_tax
+            net_amount = amount - total_fee
 
-        pnl = (filled_price - pos.avg_cost) * sell_shares - total_fee
+            cash_before = self._cash
+            self._cash += net_amount
 
-        pos.shares -= sell_shares
-        pos.available_shares = min(pos.available_shares, pos.shares)
+            if self._cash < 0:
+                self._cash = cash_before
+                return {"success": False, "error": "余额一致性检查失败，交易已回滚"}
 
-        if pos.shares <= 0:
-            del self._positions[symbol]
-            self._entry_price_map.pop(symbol, None)
+            pnl = (filled_price - pos.avg_cost) * sell_shares - total_fee
 
-        trade = TradeRecord(
-            id=str(uuid.uuid4())[:8],
-            symbol=symbol,
-            name=pos.name,
-            market=pos.market,
-            action="sell",
-            price=round(filled_price, 3),
-            shares=sell_shares,
-            amount=round(amount, 2),
-            fee=round(commission, 2),
-            stamp_tax=round(stamp_tax, 2),
-            time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            strategy=reason,
-            reason=reason,
-            entry_price=pos.avg_cost,
-        )
-        self._trade_history.append(trade)
+            pos.shares -= sell_shares
+            pos.available_shares = min(pos.available_shares, pos.shares)
 
-        return {
-            "success": True,
-            "trade": {
-                "id": trade.id,
-                "action": "sell",
-                "symbol": symbol,
-                "name": pos.name,
-                "order_price": price,
-                "filled_price": round(filled_price, 3),
-                "shares": sell_shares,
-                "amount": round(amount, 2),
-                "fee": round(total_fee, 2),
-                "pnl": round(pnl, 2),
-                "time": trade.time,
-                "reason": reason,
-                "slippage": round(price - filled_price, 3),
-            },
-        }
+            if pos.shares <= 0:
+                del self._positions[symbol]
+                self._entry_price_map.pop(symbol, None)
+
+            trade = TradeRecord(
+                id=str(uuid.uuid4())[:8],
+                symbol=symbol,
+                name=pos.name,
+                market=pos.market,
+                action="sell",
+                price=round(filled_price, 3),
+                shares=sell_shares,
+                amount=round(amount, 2),
+                fee=round(commission, 2),
+                stamp_tax=round(stamp_tax, 2),
+                time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                strategy=reason,
+                reason=reason,
+                entry_price=pos.avg_cost,
+            )
+            self._trade_history.append(trade)
+
+            self._write_audit("SELL", {
+                "symbol": symbol, "name": pos.name, "price": filled_price,
+                "shares": sell_shares, "amount": amount, "fee": total_fee,
+                "pnl": pnl, "reason": reason, "cash_after": self._cash,
+            })
+
+            return {
+                "success": True,
+                "trade": {
+                    "id": trade.id,
+                    "action": "sell",
+                    "symbol": symbol,
+                    "name": pos.name,
+                    "order_price": price,
+                    "filled_price": round(filled_price, 3),
+                    "shares": sell_shares,
+                    "amount": round(amount, 2),
+                    "fee": round(total_fee, 2),
+                    "pnl": round(pnl, 2),
+                    "time": trade.time,
+                    "reason": reason,
+                    "slippage": round(price - filled_price, 3),
+                },
+            }
 
     def place_order(
         self,

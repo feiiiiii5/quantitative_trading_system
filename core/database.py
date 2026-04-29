@@ -7,6 +7,7 @@ import logging
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,14 +25,19 @@ class ThreadSafeLRU:
     def __init__(self, maxsize: int = 200, ttl: int = 60):
         self._maxsize = maxsize
         self._ttl = ttl
-        self._cache: dict[str, tuple[Any, float]] = {}
+        self._cache: dict[str, tuple[Any, float, int]] = {}
         self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
             if key in self._cache:
-                value, ts = self._cache[key]
-                if time.time() - ts < self._ttl:
+                item = self._cache[key]
+                if len(item) == 2:
+                    value, ts = item
+                    ttl = self._ttl
+                else:
+                    value, ts, ttl = item
+                if time.time() - ts < ttl:
                     return value
                 del self._cache[key]
         return None
@@ -42,8 +48,7 @@ class ThreadSafeLRU:
             if len(self._cache) >= self._maxsize and key not in self._cache:
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
                 del self._cache[oldest_key]
-            self._cache[key] = (value, time.time())
-            self._last_ttl = effective_ttl
+            self._cache[key] = (value, time.time(), int(effective_ttl))
 
     def delete(self, key: str) -> None:
         with self._lock:
@@ -113,19 +118,59 @@ class SQLiteStore:
         self._buffer_lock = threading.Lock()
         self._buffer_max_size = 50
         self._last_flush = time.time()
+        self._pool: list[sqlite3.Connection] = []
+        self._pool_lock = threading.Lock()
+        self._pool_max_size = 5
         self._init_db()
         self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
         self._flush_thread.start()
 
+    def _create_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-64000")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=67108864")
+        conn.execute("PRAGMA page_size=4096")
+        return conn
+
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(self._db_path, timeout=10)
-            self._local.conn.row_factory = sqlite3.Row
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA synchronous=NORMAL")
-            self._local.conn.execute("PRAGMA cache_size=-64000")
-            self._local.conn.execute("PRAGMA temp_store=MEMORY")
+            self._local.conn = self._acquire_from_pool()
+        try:
+            self._local.conn.execute("SELECT 1")
+        except sqlite3.OperationalError:
+            self._local.conn = self._acquire_from_pool()
         return self._local.conn
+
+    def _acquire_from_pool(self) -> sqlite3.Connection:
+        with self._pool_lock:
+            if self._pool:
+                conn = self._pool.pop()
+                try:
+                    conn.execute("SELECT 1")
+                    return conn
+                except sqlite3.OperationalError:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+        return self._create_conn()
+
+    def _release_to_pool(self, conn: sqlite3.Connection) -> None:
+        with self._pool_lock:
+            if len(self._pool) < self._pool_max_size:
+                try:
+                    conn.execute("SELECT 1")
+                    self._pool.append(conn)
+                    return
+                except sqlite3.OperationalError:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -174,7 +219,47 @@ class SQLiteStore:
                 data TEXT,
                 update_time REAL
             );
+
+            CREATE TABLE IF NOT EXISTS factor_cache (
+                symbol TEXT NOT NULL,
+                factor_name TEXT NOT NULL,
+                date TEXT NOT NULL,
+                value REAL,
+                PRIMARY KEY (symbol, factor_name, date)
+            );
+
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id TEXT PRIMARY KEY,
+                strategy_name TEXT,
+                symbol TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                params TEXT,
+                result_json TEXT,
+                created_at TEXT,
+                sharpe_ratio REAL,
+                total_return REAL,
+                max_drawdown REAL
+            );
+
+            CREATE TABLE IF NOT EXISTS trade_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                strategy_name TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                signal_score REAL,
+                price REAL,
+                created_at TEXT,
+                market_regime TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_backtest_symbol ON backtest_results(symbol, strategy_name);
+            CREATE INDEX IF NOT EXISTS idx_signals_symbol ON trade_signals(symbol, created_at);
+            CREATE INDEX IF NOT EXISTS idx_kline_composite
+            ON kline(symbol, market, kline_type, adjust, date DESC);
+            CREATE INDEX IF NOT EXISTS idx_config_key ON config(key);
         """)
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
         conn.commit()
 
     def _flush_loop(self) -> None:
@@ -385,6 +470,116 @@ class SQLiteStore:
             (symbol, data_str, now)
         )
 
+    def save_backtest_result(self, strategy_name, symbol, start_date, end_date, params, result) -> str:
+        result_id = uuid.uuid4().hex
+        created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        if hasattr(result, "__dict__"):
+            result_data = dict(result.__dict__)
+        elif isinstance(result, dict):
+            result_data = result
+        else:
+            result_data = {"value": str(result)}
+        result_json = json.dumps(result_data, ensure_ascii=False, default=str)
+        params_json = json.dumps(params or {}, ensure_ascii=False, default=str)
+        self.execute(
+            """
+            INSERT INTO backtest_results
+            (id, strategy_name, symbol, start_date, end_date, params, result_json, created_at,
+             sharpe_ratio, total_return, max_drawdown)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result_id, strategy_name, symbol, start_date, end_date, params_json, result_json, created_at,
+                float(result_data.get("sharpe_ratio", 0) or 0),
+                float(result_data.get("total_return", 0) or 0),
+                float(result_data.get("max_drawdown", 0) or 0),
+            ),
+        )
+        return result_id
+
+    def get_backtest_history(self, symbol=None, strategy_name=None, limit=20) -> list[dict]:
+        sql = "SELECT * FROM backtest_results"
+        params: list[Any] = []
+        conditions = []
+        if symbol:
+            conditions.append("symbol=?")
+            params.append(symbol)
+        if strategy_name:
+            conditions.append("strategy_name=?")
+            params.append(strategy_name)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(int(limit))
+        rows = self.fetchall(sql, tuple(params))
+        for row in rows:
+            try:
+                row["params"] = json.loads(row.get("params") or "{}")
+                row["result"] = json.loads(row.get("result_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                row["result"] = {}
+            row.pop("result_json", None)
+        return rows
+
+    def save_trade_signal(self, symbol, strategy_name, signal_type, score, price, regime="") -> None:
+        self.buffered_write(
+            """
+            INSERT INTO trade_signals
+            (symbol, strategy_name, signal_type, signal_score, price, created_at, market_regime)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                symbol,
+                strategy_name,
+                signal_type,
+                float(score or 0),
+                float(price or 0),
+                time.strftime("%Y-%m-%d %H:%M:%S"),
+                regime or "",
+            ),
+        )
+
+    def get_factor_cache(self, symbol, factor_name, start_date="", end_date="") -> pd.DataFrame:
+        sql = "SELECT date, value FROM factor_cache WHERE symbol=? AND factor_name=?"
+        params: list[Any] = [symbol, factor_name]
+        if start_date:
+            sql += " AND date>=?"
+            params.append(start_date)
+        if end_date:
+            sql += " AND date<=?"
+            params.append(end_date)
+        sql += " ORDER BY date ASC"
+        rows = self.fetchall(sql, tuple(params))
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["date", "value"])
+
+    def set_factor_cache(self, symbol, factor_name, dates, values) -> None:
+        params = []
+        for d, v in zip(dates, values):
+            try:
+                value = float(v) if v is not None and pd.notna(v) else None
+            except (TypeError, ValueError):
+                value = None
+            params.append((symbol, factor_name, str(d)[:10], value))
+        if params:
+            self.executemany(
+                "INSERT OR REPLACE INTO factor_cache (symbol, factor_name, date, value) VALUES (?, ?, ?, ?)",
+                params,
+            )
+
+    def get_performance_stats(self) -> dict:
+        total = self.fetchone("SELECT COUNT(*) AS n FROM backtest_results") or {"n": 0}
+        avg = self.fetchone("SELECT AVG(sharpe_ratio) AS avg_sharpe FROM backtest_results") or {"avg_sharpe": 0}
+        best = self.fetchone(
+            "SELECT strategy_name, symbol, sharpe_ratio, total_return FROM backtest_results ORDER BY sharpe_ratio DESC LIMIT 1"
+        ) or {}
+        signals = self.fetchone("SELECT COUNT(*) AS n FROM trade_signals") or {"n": 0}
+        return {
+            "total_backtests": int(total.get("n", 0) or 0),
+            "avg_sharpe": round(float(avg.get("avg_sharpe", 0) or 0), 4),
+            "best_strategy": best,
+            "total_signals": int(signals.get("n", 0) or 0),
+        }
+
     def cleanup_stale_data(self, days: int = 30) -> dict:
         cutoff = time.time() - days * 86400
         try:
@@ -397,6 +592,89 @@ class SQLiteStore:
             logger.debug(f"Cleanup error: {e}")
             return {"error": str(e)}
 
+    def compress_old_data(self, days: int = 90) -> dict:
+        """将90天以前的数据按周聚合压缩存储"""
+        try:
+            cutoff = (pd.Timestamp.now() - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+            conn = self._get_conn()
+
+            rows = self.fetchall(
+                "SELECT symbol, market, kline_type, adjust, COUNT(*) as cnt FROM kline WHERE date < ? GROUP BY symbol, market, kline_type, adjust",
+                (cutoff,),
+            )
+
+            compressed_count = 0
+            deleted_count = 0
+
+            for row in rows:
+                symbol = row["symbol"]
+                market = row["market"]
+                kline_type = row["kline_type"]
+                adjust = row["adjust"]
+                cnt = row.get("cnt", 0)
+                if cnt < 14:
+                    continue
+
+                detail_rows = self.fetchall(
+                    "SELECT date, open, high, low, close, volume, amount, turnover_rate FROM kline WHERE symbol=? AND market=? AND kline_type=? AND adjust=? AND date < ? ORDER BY date ASC",
+                    (symbol, market, kline_type, adjust, cutoff),
+                )
+                if not detail_rows or len(detail_rows) < 5:
+                    continue
+
+                df = pd.DataFrame(detail_rows)
+                for col in ["open", "high", "low", "close", "volume", "amount", "turnover_rate"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.set_index("date")
+
+                weekly = df.resample("W").agg({
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                    "amount": "sum",
+                    "turnover_rate": "mean",
+                }).dropna(subset=["close"])
+
+                if weekly.empty:
+                    continue
+
+                conn.execute(
+                    "DELETE FROM kline WHERE symbol=? AND market=? AND kline_type=? AND adjust=? AND date < ?",
+                    (symbol, market, kline_type, adjust, cutoff),
+                )
+                deleted_count += cnt
+
+                for idx, wr in weekly.iterrows():
+                    conn.execute(
+                        """INSERT OR REPLACE INTO kline
+                        (symbol, market, kline_type, adjust, date, open, high, low, close, volume, amount, turnover_rate)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            symbol, market, kline_type, adjust,
+                            idx.strftime("%Y-%m-%d"),
+                            round(float(wr.get("open", 0)), 4),
+                            round(float(wr.get("high", 0)), 4),
+                            round(float(wr.get("low", 0)), 4),
+                            round(float(wr.get("close", 0)), 4),
+                            int(wr.get("volume", 0)),
+                            round(float(wr.get("amount", 0)), 2),
+                            round(float(wr.get("turnover_rate", 0)), 4),
+                        ),
+                    )
+                    compressed_count += 1
+
+            conn.commit()
+            _db_query_cache.clear()
+            return {"deleted_daily": deleted_count, "compressed_weekly": compressed_count}
+        except Exception as e:
+            logger.debug(f"Compress error: {e}")
+            return {"error": str(e)}
+
     def close(self) -> None:
         self._flush_buffer()
         if hasattr(self._local, "conn") and self._local.conn is not None:
@@ -405,6 +683,13 @@ class SQLiteStore:
             except Exception:
                 pass
             self._local.conn = None
+        with self._pool_lock:
+            for conn in self._pool:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._pool.clear()
 
 
 _db_instance: Optional[SQLiteStore] = None

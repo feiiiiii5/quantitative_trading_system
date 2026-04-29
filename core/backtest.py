@@ -11,6 +11,86 @@ from core.strategies import BaseStrategy, CompositeStrategy, StrategyResult, Sig
 logger = logging.getLogger(__name__)
 
 
+class RealisticCostModel:
+    def __init__(
+        self,
+        commission: float = 0.0002,
+        stamp_tax: float = 0.001,
+        transfer_fee_sh: float = 0.00001,
+        market_impact_pct: float = 0.0005,
+        financing_rate: float = 0.045,
+        min_commission: float = 5.0,
+    ):
+        self.commission = commission
+        self.stamp_tax = stamp_tax
+        self.transfer_fee_sh = transfer_fee_sh
+        self.market_impact_pct = market_impact_pct
+        self.financing_rate = financing_rate / 365
+        self.min_commission = min_commission
+
+    def calc_buy_cost(self, price: float, shares: int, amount: float = 0,
+                      daily_amount: float = 0, is_sh: bool = False) -> dict:
+        if amount <= 0:
+            amount = price * shares
+        fee = max(amount * self.commission, self.min_commission)
+        transfer = shares * self.transfer_fee_sh if is_sh else 0.0
+        impact = 0.0
+        if daily_amount > 0:
+            participation = amount / daily_amount
+            impact = amount * self.market_impact_pct * np.sqrt(participation)
+        total = fee + transfer + impact
+        return {"commission": round(fee, 2), "transfer_fee": round(transfer, 2),
+                "market_impact": round(impact, 2), "total": round(total, 2)}
+
+    def calc_sell_cost(self, price: float, shares: int, amount: float = 0,
+                       daily_amount: float = 0, is_sh: bool = False) -> dict:
+        if amount <= 0:
+            amount = price * shares
+        fee = max(amount * self.commission, self.min_commission)
+        stamp = amount * self.stamp_tax
+        transfer = shares * self.transfer_fee_sh if is_sh else 0.0
+        impact = 0.0
+        if daily_amount > 0:
+            participation = amount / daily_amount
+            impact = amount * self.market_impact_pct * np.sqrt(participation)
+        total = fee + stamp + transfer + impact
+        return {"commission": round(fee, 2), "stamp_tax": round(stamp, 2),
+                "transfer_fee": round(transfer, 2), "market_impact": round(impact, 2),
+                "total": round(total, 2)}
+
+    def calc_financing_cost(self, borrowed: float, days: int) -> float:
+        return round(borrowed * self.financing_rate * days, 2)
+
+
+def _simulate_twap_fill(price: float, shares: int, daily_amount: float,
+                         n_slices: int = 4, rng: np.random.Generator = None) -> float:
+    if daily_amount <= 0 or shares * price < daily_amount * 0.01:
+        return price
+    if rng is None:
+        rng = np.random.default_rng()
+    total_fill = 0.0
+    per_slice = shares // n_slices
+    for s in range(n_slices):
+        slice_shares = per_slice if s < n_slices - 1 else shares - per_slice * s
+        noise = rng.normal(0, 0.001)
+        total_fill += slice_shares * price * (1 + noise)
+    return total_fill / shares
+
+
+def _check_limit_price(prev_close: float, price: float, is_buy: bool) -> tuple[bool, float]:
+    if prev_close <= 0:
+        return True, 1.0
+    upper = prev_close * 1.1
+    lower = prev_close * 0.9
+    if is_buy and price >= upper:
+        fill_prob = max(0.1, 1.0 - (price - upper) / (upper * 0.01 + 1e-9))
+        return False, min(fill_prob, 0.9)
+    if not is_buy and price <= lower:
+        fill_prob = max(0.1, 1.0 - (lower - price) / (lower * 0.01 + 1e-9))
+        return False, min(fill_prob, 0.9)
+    return True, 1.0
+
+
 @dataclass
 class BacktestResult:
     strategy_name: str
@@ -38,6 +118,20 @@ class BacktestResult:
     max_points: int = 0
     sortino_ratio: float = 0.0
     max_consecutive_losses: int = 0
+    omega_ratio: float = 0.0
+    tail_ratio: float = 0.0
+    information_ratio: float = 0.0
+    recovery_factor: float = 0.0
+    avg_mae: float = 0.0
+    avg_mfe: float = 0.0
+    cvar_95: float = 0.0
+    annual_volatility: float = 0.0
+    downside_deviation: float = 0.0
+    monthly_returns: list = field(default_factory=list)
+    monte_carlo: dict = field(default_factory=dict)
+    optimization: dict = field(default_factory=dict)
+    expectancy: float = 0.0
+    payoff_ratio: float = 0.0
 
     def downsample_curves(self, max_points: int = 500) -> None:
         if max_points <= 0 or len(self.equity_curve) <= max_points:
@@ -53,12 +147,16 @@ class BacktestResult:
 
 class BacktestEngine:
     def __init__(self, initial_capital: float = 1000000, commission: float = 0.0003, stamp_tax: float = 0.001,
-                 slippage_pct: float = 0.001, market_impact_pct: float = 0.0005):
+                 slippage_pct: float = 0.001, market_impact_pct: float = 0.0005,
+                 cost_model: RealisticCostModel = None, enable_twap: bool = True,
+                 enable_limit_check: bool = True):
         self._initial_capital = initial_capital
-        self._commission = commission
-        self._stamp_tax = stamp_tax
         self._slippage_pct = slippage_pct
-        self._market_impact_pct = market_impact_pct
+        self._cost_model = cost_model or RealisticCostModel(
+            commission=commission, stamp_tax=stamp_tax, market_impact_pct=market_impact_pct)
+        self._enable_twap = enable_twap
+        self._enable_limit_check = enable_limit_check
+        self._rng = np.random.default_rng(42)
 
     def run(self, strategy: BaseStrategy, df: pd.DataFrame) -> BacktestResult:
         if df is None or len(df) < 10:
@@ -104,6 +202,113 @@ class BacktestEngine:
 
         return self._build_result(strategy.name, df, buy_signals, sell_signals, result)
 
+    def run_multi(self, strategies: list[BaseStrategy], df: pd.DataFrame) -> dict[str, BacktestResult]:
+        results = {}
+        for strategy in strategies:
+            try:
+                results[strategy.name] = self.run(strategy, df)
+            except Exception as e:
+                logger.error(f"Backtest run_multi failed for {strategy.name}: {e}")
+                results[strategy.name] = BacktestResult(strategy_name=strategy.name)
+        return results
+
+    def monte_carlo_analysis(self, result: BacktestResult, n_simulations: int = 1000) -> dict:
+        sell_trades = [t for t in result.trades if t.get("action") == "sell"]
+        if not sell_trades:
+            return {"error": "交易样本不足，无法进行蒙特卡洛分析"}
+
+        pnl = np.array([float(t.get("pnl", 0)) for t in sell_trades], dtype=float)
+        if len(pnl) < 2:
+            return {"error": "交易样本不足，无法进行蒙特卡洛分析"}
+
+        rng = np.random.default_rng(42)
+        finals = []
+        max_dds = []
+        sharpes = []
+        for _ in range(max(1, int(n_simulations))):
+            sampled = rng.choice(pnl, size=len(pnl), replace=True)
+            curve = self._initial_capital + np.cumsum(sampled)
+            peak = np.maximum.accumulate(curve)
+            dd = np.where(peak > 0, (peak - curve) / peak * 100, 0)
+            finals.append(float(curve[-1]))
+            max_dds.append(float(np.max(dd)))
+            trade_ret = sampled / max(self._initial_capital, 1)
+            std = np.std(trade_ret)
+            sharpes.append(float(np.mean(trade_ret) / std * np.sqrt(252)) if std > 0 else 0.0)
+
+        final_arr = np.array(finals)
+        dd_arr = np.array(max_dds)
+        sharpe_arr = np.array(sharpes)
+        sim_sharpe_median = float(np.median(sharpe_arr)) if len(sharpe_arr) else 0.0
+        robustness = result.sharpe_ratio / sim_sharpe_median if abs(sim_sharpe_median) > 1e-9 else 0.0
+        return {
+            "final_equity_p5": round(float(np.percentile(final_arr, 5)), 2),
+            "final_equity_p50": round(float(np.percentile(final_arr, 50)), 2),
+            "final_equity_p95": round(float(np.percentile(final_arr, 95)), 2),
+            "max_drawdown_p5": round(float(np.percentile(dd_arr, 5)), 2),
+            "max_drawdown_p50": round(float(np.percentile(dd_arr, 50)), 2),
+            "max_drawdown_p95": round(float(np.percentile(dd_arr, 95)), 2),
+            "sharpe_p50": round(sim_sharpe_median, 2),
+            "robustness_score": round(float(robustness), 2),
+        }
+
+    def sensitivity_analysis(self, strategy_cls, df: pd.DataFrame,
+                             base_params: dict, param_ranges: dict = None) -> dict:
+        base_params = base_params or {}
+        param_ranges = param_ranges or strategy_cls.get_param_space()
+        if not param_ranges or df is None or df.empty:
+            return {"parameters": {}, "heatmap": [], "recommendation": {}}
+
+        output = {}
+        for name, spec in param_ranges.items():
+            base_val = base_params.get(name, (spec.get("min", 0) + spec.get("max", 0)) / 2)
+            if not isinstance(base_val, (int, float)):
+                continue
+            low = max(spec.get("min", base_val * 0.8), base_val * 0.8)
+            high = min(spec.get("max", base_val * 1.2), base_val * 1.2)
+            values = np.linspace(low, high, 5)
+            points = []
+            sharpes = []
+            for value in values:
+                params = dict(base_params)
+                params[name] = int(round(value)) if isinstance(base_val, int) else round(float(value), 4)
+                try:
+                    result = self.run(strategy_cls(**params), df)
+                    sharpe = float(result.sharpe_ratio)
+                except Exception:
+                    sharpe = 0.0
+                sharpes.append(sharpe)
+                points.append({"value": params[name], "sharpe_ratio": round(sharpe, 4)})
+            denom = abs(base_val) if abs(float(base_val)) > 1e-9 else 1.0
+            elasticity = (max(sharpes) - min(sharpes)) / denom if sharpes else 0.0
+            output[name] = {"points": points, "elasticity": round(float(elasticity), 4)}
+
+        heatmap = []
+        names = list(output.keys())[:2]
+        if len(names) == 2:
+            x_name, y_name = names
+            x_values = [p["value"] for p in output[x_name]["points"]]
+            y_values = [p["value"] for p in output[y_name]["points"]]
+            for xv in x_values:
+                for yv in y_values:
+                    params = dict(base_params)
+                    params[x_name] = xv
+                    params[y_name] = yv
+                    try:
+                        result = self.run(strategy_cls(**params), df)
+                        sharpe = float(result.sharpe_ratio)
+                    except Exception:
+                        sharpe = 0.0
+                    heatmap.append({"x": xv, "y": yv, "sharpe_ratio": round(sharpe, 4)})
+
+        recommendation = {}
+        for name, data in output.items():
+            points = data.get("points", [])
+            if points:
+                best = max(points, key=lambda x: x["sharpe_ratio"])
+                recommendation[name] = best["value"]
+        return {"parameters": output, "heatmap": heatmap, "recommendation": recommendation}
+
     def _build_result(
         self,
         name: str,
@@ -114,6 +319,8 @@ class BacktestEngine:
     ) -> BacktestResult:
         closes = df["close"].values.astype(float) if "close" in df.columns else np.array([])
         opens = df["open"].values.astype(float) if "open" in df.columns else closes
+        highs = df["high"].values.astype(float) if "high" in df.columns else closes
+        lows = df["low"].values.astype(float) if "low" in df.columns else closes
         dates_col = df["date"].values if "date" in df.columns else np.arange(len(closes))
 
         if len(closes) < 2:
@@ -134,6 +341,26 @@ class BacktestEngine:
         volumes = df["volume"].values.astype(float) if "volume" in df.columns else None
         amounts_col = df["amount"].values.astype(float) if "amount" in df.columns else None
 
+        def _excursion(position_data: dict, exit_idx: int) -> tuple[float, float]:
+            entry_price = float(position_data.get("entry_price", 0))
+            entry_idx = int(position_data.get("entry_idx", exit_idx))
+            if entry_price <= 0:
+                return 0.0, 0.0
+            start = max(0, min(entry_idx, exit_idx))
+            end = max(start, min(exit_idx, n - 1)) + 1
+            low_window = lows[start:end] if len(lows) >= end else closes[start:end]
+            high_window = highs[start:end] if len(highs) >= end else closes[start:end]
+            finite_lows = low_window[np.isfinite(low_window)]
+            finite_highs = high_window[np.isfinite(high_window)]
+            if len(finite_lows) == 0 or len(finite_highs) == 0:
+                return 0.0, 0.0
+            mae = (float(np.min(finite_lows)) / entry_price - 1) * 100
+            mfe = (float(np.max(finite_highs)) / entry_price - 1) * 100
+            return round(mae, 2), round(mfe, 2)
+
+        prev_closes = np.roll(closes, 1)
+        prev_closes[0] = closes[0] if len(closes) > 0 else 0
+
         for i in range(1, n):
             while buy_idx < len(buy_signals) and buy_signals[buy_idx].bar_index == i:
                 sig = buy_signals[buy_idx]
@@ -144,6 +371,13 @@ class BacktestEngine:
                 fill_price = opens[i] if i < len(opens) and opens[i] > 0 else closes[i]
                 if fill_price <= 0:
                     continue
+
+                if self._enable_limit_check and i > 0:
+                    prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
+                    is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=True)
+                    if not is_normal:
+                        if self._rng.random() > fill_prob:
+                            continue
 
                 fill_price = fill_price * (1 + self._slippage_pct)
 
@@ -164,35 +398,34 @@ class BacktestEngine:
                 if buy_shares <= 0:
                     continue
 
-                if volumes is not None and amounts_col is not None:
-                    bar_amount = amounts_col[i] if i < len(amounts_col) else 0
-                    if not np.isnan(bar_amount) and bar_amount > 0:
-                        max_amount = bar_amount * 0.25
-                        max_shares_by_amount = int(max_amount / fill_price / lot_size) * lot_size
-                        if max_shares_by_amount > 0 and buy_shares > max_shares_by_amount:
-                            buy_shares = max_shares_by_amount
-                elif volumes is not None:
-                    bar_vol_val = volumes[i] if i < len(volumes) else 0
-                    if not np.isnan(bar_vol_val) and bar_vol_val > 0:
-                        max_amount = bar_vol_val * fill_price * 0.25
-                        max_shares_by_amount = int(max_amount / fill_price / lot_size) * lot_size
-                        if max_shares_by_amount > 0 and buy_shares > max_shares_by_amount:
-                            buy_shares = max_shares_by_amount
+                bar_amount = 0.0
+                if amounts_col is not None and i < len(amounts_col):
+                    bar_amount = float(amounts_col[i]) if not np.isnan(amounts_col[i]) else 0.0
+                if bar_amount <= 0 and volumes is not None and i < len(volumes):
+                    bar_amount = float(volumes[i]) * fill_price
+
+                if bar_amount > 0:
+                    max_shares_by_amount = int(bar_amount * 0.25 / fill_price / lot_size) * lot_size
+                    if max_shares_by_amount > 0 and buy_shares > max_shares_by_amount:
+                        buy_shares = max_shares_by_amount
 
                 if buy_shares <= 0:
                     continue
 
+                if self._enable_twap and bar_amount > 0:
+                    fill_price = _simulate_twap_fill(fill_price, buy_shares, bar_amount, rng=self._rng)
+
                 amount = buy_shares * fill_price
-                fee = max(amount * self._commission, 5.0)
-                total_cost = amount + fee
+                cost_detail = self._cost_model.calc_buy_cost(fill_price, buy_shares, amount, bar_amount)
+                total_cost = amount + cost_detail["total"]
 
                 if total_cost > cash:
                     buy_shares = int(cash * 0.98 / fill_price / lot_size) * lot_size
                     if buy_shares <= 0:
                         continue
                     amount = buy_shares * fill_price
-                    fee = max(amount * self._commission, 5.0)
-                    total_cost = amount + fee
+                    cost_detail = self._cost_model.calc_buy_cost(fill_price, buy_shares, amount, bar_amount)
+                    total_cost = amount + cost_detail["total"]
 
                 cash -= total_cost
                 shares = buy_shares
@@ -214,7 +447,8 @@ class BacktestEngine:
                     "price": fill_price,
                     "shares": buy_shares,
                     "amount": round(amount, 2),
-                    "fee": round(fee, 2),
+                    "fee": round(cost_detail["total"], 2),
+                    "cost_detail": cost_detail,
                     "date": date_str,
                     "bar_index": i,
                     "reason": sig.reason,
@@ -235,35 +469,33 @@ class BacktestEngine:
                 if fill_price <= 0:
                     continue
 
+                if self._enable_limit_check and i > 0:
+                    prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
+                    is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=False)
+                    if not is_normal:
+                        if self._rng.random() > fill_prob:
+                            continue
+
                 fill_price = fill_price * (1 - self._slippage_pct)
 
                 sell_shares = shares
-                if volumes is not None:
-                    bar_vol = volumes[i] if i < len(volumes) else 0
-                    if np.isnan(bar_vol) or bar_vol <= 0:
-                        continue
-                    if amounts_col is not None:
-                        bar_amount = amounts_col[i] if i < len(amounts_col) else 0
-                        if not np.isnan(bar_amount) and bar_amount > 0:
-                            max_amount = bar_amount * 0.25
-                            max_shares_by_amount = int(max_amount / fill_price / lot_size) * lot_size
-                            if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
-                                sell_shares = max_shares_by_amount
-                        else:
-                            max_amount_est = bar_vol * fill_price * 0.25
-                            max_shares_by_amount = int(max_amount_est / fill_price / lot_size) * lot_size
-                            if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
-                                sell_shares = max_shares_by_amount
-                    else:
-                        max_amount_est = bar_vol * fill_price * 0.25
-                        max_shares_by_amount = int(max_amount_est / fill_price / lot_size) * lot_size
-                        if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
-                            sell_shares = max_shares_by_amount
+                bar_amount = 0.0
+                if amounts_col is not None and i < len(amounts_col):
+                    bar_amount = float(amounts_col[i]) if not np.isnan(amounts_col[i]) else 0.0
+                if bar_amount <= 0 and volumes is not None and i < len(volumes):
+                    bar_amount = float(volumes[i]) * fill_price
+
+                if bar_amount > 0:
+                    max_shares_by_amount = int(bar_amount * 0.25 / fill_price / lot_size) * lot_size
+                    if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
+                        sell_shares = max_shares_by_amount
+
+                if self._enable_twap and bar_amount > 0:
+                    fill_price = _simulate_twap_fill(fill_price, sell_shares, bar_amount, rng=self._rng)
 
                 revenue = sell_shares * fill_price
-                fee = max(revenue * self._commission, 5.0)
-                stamp = revenue * self._stamp_tax
-                total_fee = fee + stamp
+                cost_detail = self._cost_model.calc_sell_cost(fill_price, sell_shares, revenue, bar_amount)
+                total_fee = cost_detail["total"]
                 net_revenue = revenue - total_fee
 
                 pnl = (fill_price - position["entry_price"]) * sell_shares - total_fee
@@ -272,6 +504,7 @@ class BacktestEngine:
 
                 date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
                 hold_days = i - position["entry_idx"]
+                mae, mfe = _excursion(position, i)
 
                 trades.append({
                     "action": "sell",
@@ -280,10 +513,13 @@ class BacktestEngine:
                     "shares": sell_shares,
                     "amount": round(revenue, 2),
                     "fee": round(total_fee, 2),
+                    "cost_detail": cost_detail,
                     "date": date_str,
                     "bar_index": i,
                     "pnl": round(pnl, 2),
                     "hold_days": hold_days,
+                    "mae": mae,
+                    "mfe": mfe,
                     "reason": sig.reason,
                 })
 
@@ -297,13 +533,13 @@ class BacktestEngine:
                 current_price = closes[i]
                 if position["stop_loss"] > 0 and current_price <= position["stop_loss"]:
                     revenue = shares * current_price
-                    fee = max(revenue * self._commission, 5.0)
-                    stamp = revenue * self._stamp_tax
-                    total_fee = fee + stamp
+                    cost_detail = self._cost_model.calc_sell_cost(current_price, shares, revenue)
+                    total_fee = cost_detail["total"]
                     pnl = (current_price - position["entry_price"]) * shares - total_fee
                     cash += revenue - total_fee
                     date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
                     hold_days = i - position["entry_idx"]
+                    mae, mfe = _excursion(position, i)
                     trades.append({
                         "action": "sell",
                         "symbol": "",
@@ -311,10 +547,13 @@ class BacktestEngine:
                         "shares": shares,
                         "amount": round(revenue, 2),
                         "fee": round(total_fee, 2),
+                        "cost_detail": cost_detail,
                         "date": date_str,
                         "bar_index": i,
                         "pnl": round(pnl, 2),
                         "hold_days": hold_days,
+                        "mae": mae,
+                        "mfe": mfe,
                         "reason": "止损",
                     })
                     sell_bar_set.add(i)
@@ -322,13 +561,13 @@ class BacktestEngine:
                     position = None
                 elif position["take_profit"] > 0 and current_price >= position["take_profit"]:
                     revenue = shares * current_price
-                    fee = max(revenue * self._commission, 5.0)
-                    stamp = revenue * self._stamp_tax
-                    total_fee = fee + stamp
+                    cost_detail = self._cost_model.calc_sell_cost(current_price, shares, revenue)
+                    total_fee = cost_detail["total"]
                     pnl = (current_price - position["entry_price"]) * shares - total_fee
                     cash += revenue - total_fee
                     date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
                     hold_days = i - position["entry_idx"]
+                    mae, mfe = _excursion(position, i)
                     trades.append({
                         "action": "sell",
                         "symbol": "",
@@ -336,10 +575,13 @@ class BacktestEngine:
                         "shares": shares,
                         "amount": round(revenue, 2),
                         "fee": round(total_fee, 2),
+                        "cost_detail": cost_detail,
                         "date": date_str,
                         "bar_index": i,
                         "pnl": round(pnl, 2),
                         "hold_days": hold_days,
+                        "mae": mae,
+                        "mfe": mfe,
                         "reason": "止盈",
                     })
                     sell_bar_set.add(i)
@@ -430,6 +672,7 @@ class BacktestEngine:
                 bench_returns.append((closes[i] - closes[i - 1]) / closes[i - 1])
 
         beta = 1.0
+        information_ratio = 0.0
         if len(returns) > 1 and len(bench_returns) > 1:
             min_len = min(len(returns), len(bench_returns))
             r = np.array(returns[:min_len])
@@ -437,10 +680,73 @@ class BacktestEngine:
             bench_var = np.var(b)
             if bench_var > 0:
                 beta = float(np.cov(r, b)[0][1] / bench_var)
+            excess = r - b
+            tracking_error = np.std(excess)
+            if tracking_error > 0:
+                information_ratio = float(np.mean(excess) / tracking_error * np.sqrt(252))
+
+        omega_ratio = 0.0
+        tail_ratio = 0.0
+        if returns:
+            ret_arr = np.array(returns, dtype=float)
+            ret_arr = ret_arr[np.isfinite(ret_arr)]
+            if len(ret_arr) > 0:
+                gains = ret_arr[ret_arr > 0].sum()
+                losses = abs(ret_arr[ret_arr < 0].sum())
+                if losses > 0:
+                    omega_ratio = float(gains / losses)
+                elif gains > 0:
+                    omega_ratio = 999.0
+                q95 = float(np.percentile(ret_arr, 95))
+                q05 = float(np.percentile(ret_arr, 5))
+                if q05 < 0:
+                    tail_ratio = abs(q95 / q05)
+
+        recovery_factor = (total_return / max_dd) if max_dd > 0 else 0.0
+        avg_mae = np.mean([abs(t.get("mae", 0)) for t in sell_trades]) if sell_trades else 0.0
+        avg_mfe = np.mean([t.get("mfe", 0) for t in sell_trades]) if sell_trades else 0.0
+        win_rate_frac = win_trades / total_trades if total_trades > 0 else 0.0
+        loss_rate_frac = loss_trades / total_trades if total_trades > 0 else 0.0
+        expectancy = win_rate_frac * avg_profit - loss_rate_frac * avg_loss
+        payoff_ratio = (avg_profit / avg_loss) if avg_loss > 0 else 999 if avg_profit > 0 else 0.0
+
+        cvar_95 = 0.0
+        annual_vol = 0.0
+        downside_dev = 0.0
+        monthly_rets = []
+        if returns:
+            ret_arr = np.array(returns, dtype=float)
+            ret_arr = ret_arr[np.isfinite(ret_arr)]
+            if len(ret_arr) > 1:
+                annual_vol = float(np.std(ret_arr) * np.sqrt(252))
+                neg_rets = ret_arr[ret_arr < 0]
+                if len(neg_rets) > 0:
+                    downside_dev = float(np.std(neg_rets) * np.sqrt(252))
+                var_5 = float(np.percentile(ret_arr, 5))
+                tail_5 = ret_arr[ret_arr <= var_5]
+                if len(tail_5) > 0:
+                    cvar_95 = float(-np.mean(tail_5))
+        if len(dates_list) > 20 and len(equity_curve) > 20:
+            try:
+                eq_arr = np.array(equity_curve, dtype=float)
+                eq_dates = list(dates_list)
+                monthly_map: dict[str, list[float]] = {}
+                for j in range(1, len(eq_arr)):
+                    if j >= len(eq_dates):
+                        break
+                    d = str(eq_dates[j])[:7]
+                    if d not in monthly_map:
+                        monthly_map[d] = []
+                    if eq_arr[j - 1] > 0:
+                        monthly_map[d].append((eq_arr[j] / eq_arr[j - 1]) - 1)
+                for m in sorted(monthly_map.keys()):
+                    vals = monthly_map[m]
+                    if vals:
+                        monthly_rets.append({"month": m, "return": float(np.mean(vals))})
+            except Exception:
+                pass
 
         kline_with_signals = []
-        highs = df["high"].values.astype(float) if "high" in df.columns else np.zeros(n)
-        lows = df["low"].values.astype(float) if "low" in df.columns else np.zeros(n)
         vols = df["volume"].values.astype(float) if "volume" in df.columns else np.zeros(n)
         for idx in range(n):
             item = {
@@ -482,6 +788,18 @@ class BacktestEngine:
             kline_with_signals=kline_with_signals,
             sortino_ratio=round(sortino, 2),
             max_consecutive_losses=max_consec_losses,
+            omega_ratio=round(omega_ratio, 2) if omega_ratio != 999.0 else 999.0,
+            tail_ratio=round(tail_ratio, 2),
+            information_ratio=round(information_ratio, 2),
+            recovery_factor=round(recovery_factor, 2),
+            avg_mae=round(float(avg_mae), 2),
+            avg_mfe=round(float(avg_mfe), 2),
+            cvar_95=round(cvar_95, 4),
+            annual_volatility=round(annual_vol, 4),
+            downside_deviation=round(downside_dev, 4),
+            monthly_returns=monthly_rets,
+            expectancy=round(float(expectancy), 2),
+            payoff_ratio=round(float(payoff_ratio), 2) if payoff_ratio != 999 else 999,
         )
         result.downsample_curves(500)
         return result
@@ -501,6 +819,13 @@ def _get_strategy_min_bars(strategy_name: str, params: dict = None) -> int:
         "adaptive_trend": 70,
         "mean_reversion_pro": 55,
         "vol_squeeze": 45,
+        "ichimoku": 90,
+        "ichimoku_cloud": 90,
+        "vwap_deviation": 40,
+        "order_flow": 30,
+        "order_flow_imbalance": 30,
+        "regime_switching": 90,
+        "fractal_breakout": 35,
     }
     return _min_bars.get(strategy_name, 30)
 
@@ -582,6 +907,12 @@ def run_backtest(
     try:
         engine = BacktestEngine(initial_capital=initial_capital, slippage_pct=0.001, market_impact_pct=0.0005)
         result = engine.run(strategy, df)
+        try:
+            from core.metrics import metrics
+            metrics.increment("backtest_runs", tags={"strategy": strategy_name})
+            metrics.gauge("backtest_sharpe", result.sharpe_ratio, tags={"strategy": strategy_name})
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"Backtest engine failed for {symbol} with {strategy_name}: {e}")
         return {"error": f"回测执行失败: {e}"}
@@ -635,6 +966,14 @@ def run_backtest(
         "slippage_model": "fixed_pct",
         "sortino_ratio": result.sortino_ratio,
         "max_consecutive_losses": result.max_consecutive_losses,
+        "omega_ratio": result.omega_ratio,
+        "tail_ratio": result.tail_ratio,
+        "information_ratio": result.information_ratio,
+        "recovery_factor": result.recovery_factor,
+        "avg_mae": result.avg_mae,
+        "avg_mfe": result.avg_mfe,
+        "expectancy": result.expectancy,
+        "payoff_ratio": result.payoff_ratio,
         "equity_curve": equity_curve,
         "benchmark_curve": benchmark_curve,
         "trades": result.trades,

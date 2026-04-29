@@ -1,409 +1,242 @@
 <template>
   <div class="portfolio-page">
+    <div v-if="loading" class="skeleton-portfolio">
+      <div class="skeleton-row">
+        <div class="skeleton" style="height:60px;flex:1;border-radius:8px" v-for="i in 4" :key="i"></div>
+      </div>
+      <div class="skeleton-row" style="margin-top:12px">
+        <div class="skeleton" style="height:300px;flex:2;border-radius:8px"></div>
+        <div class="skeleton" style="height:300px;flex:1;border-radius:8px;margin-left:12px"></div>
+      </div>
+    </div>
+    <template v-else>
     <div class="page-header">
-      <h1 class="page-title">组合管理</h1>
+      <h1 class="page-title">投资组合</h1>
+      <div class="header-actions">
+        <button class="action-btn" @click="loadData">刷新</button>
+      </div>
     </div>
 
-    <div class="portfolio-content">
-      <div class="overview-section">
-        <div class="overview-card main">
-          <div class="card-title">总资产</div>
-          <div class="card-value">¥{{ formatNumber(account.total_assets || 100000) }}</div>
-          <div class="card-change" :class="account.total_pnl >= 0 ? 'up' : 'down'">
-            {{ account.total_pnl >= 0 ? '+' : '' }}¥{{ formatNumber(account.total_pnl || 0) }}
-            <span>({{ account.total_pnl >= 0 ? '+' : '' }}{{ account.pnl_pct?.toFixed(2) || '0' }}%)</span>
-          </div>
-        </div>
-
-        <div class="overview-grid">
-          <div class="overview-card">
-            <div class="card-title">持仓市值</div>
-            <div class="card-value">¥{{ formatNumber(account.position_value || 50000) }}</div>
-          </div>
-          <div class="overview-card">
-            <div class="card-title">可用资金</div>
-            <div class="card-value">¥{{ formatNumber(account.available_cash || 50000) }}</div>
-          </div>
-          <div class="overview-card">
-            <div class="card-title">持仓数量</div>
-            <div class="card-value">{{ account.positions?.length || 2 }}</div>
-          </div>
-          <div class="overview-card">
-            <div class="card-title">今日盈亏</div>
-            <div class="card-value" :class="account.today_pnl >= 0 ? 'up' : 'down'">
-              {{ account.today_pnl >= 0 ? '+' : '' }}¥{{ formatNumber(account.today_pnl || 1250) }}
-            </div>
-          </div>
-        </div>
+    <div class="summary-row">
+      <div class="summary-card total">
+        <span class="summary-label">总资产</span>
+        <span class="summary-value">¥{{ fmtNum(account.total_assets || 0) }}</span>
       </div>
+      <div class="summary-card" :class="account.total_pnl >= 0 ? 'up' : 'down'">
+        <span class="summary-label">总盈亏</span>
+        <span class="summary-value">{{ account.total_pnl >= 0 ? '+' : '' }}¥{{ fmtNum(account.total_pnl || 0) }}</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">持仓市值</span>
+        <span class="summary-value">¥{{ fmtNum(account.position_value || 0) }}</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">可用资金</span>
+        <span class="summary-value">¥{{ fmtNum(account.available_cash || 0) }}</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">持仓数</span>
+        <span class="summary-value">{{ positions.length }}</span>
+      </div>
+    </div>
 
+    <div class="main-grid">
       <div class="positions-section">
         <h2 class="section-title">持仓列表</h2>
-        <div v-if="positions.length" class="positions-list">
-          <div
-            v-for="pos in positions"
-            :key="pos.symbol"
-            class="position-item"
-            @click="$router.push(`/stock/${pos.symbol}`)"
-          >
-            <div class="position-left">
-              <div class="position-header">
-                <span class="position-code">{{ pos.symbol }}</span>
-                <span class="position-name">{{ pos.name }}</span>
-              </div>
-              <div class="position-info">
-                <span>持仓: {{ pos.shares }}股</span>
-                <span>成本: ¥{{ pos.cost_price.toFixed(2) }}</span>
-              </div>
-            </div>
-            <div class="position-right">
-              <div class="position-price">¥{{ pos.current_price.toFixed(2) }}</div>
-              <div class="position-pnl" :class="pos.pnl >= 0 ? 'up' : 'down'">
-                {{ pos.pnl >= 0 ? '+' : '' }}¥{{ pos.pnl.toFixed(2) }}
-                <span>({{ pos.pnl_pct >= 0 ? '+' : '' }}{{ pos.pnl_pct.toFixed(2) }}%)</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div v-else class="empty-state">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path d="M9 12l2 2 4-4"/>
-          </svg>
-          <p>暂无持仓</p>
-        </div>
+        <DataTable v-if="positions.length" :columns="positionColumns" :data="positions" :striped="true" row-key="symbol" :row-click="(r: any) => $router.push(`/stock/${r.symbol}`)" />
+        <div v-else class="empty-state-small">暂无持仓</div>
       </div>
 
-      <div class="trading-section">
-        <h2 class="section-title">快捷交易</h2>
-        <div class="trading-form">
-          <div class="form-row">
-            <div class="form-group">
-              <label>股票代码</label>
-              <input
-                v-model="tradeSymbol"
-                placeholder="输入股票代码"
-                class="form-input"
-              />
-            </div>
-            <div class="form-group">
-              <label>交易方向</label>
-              <select v-model="tradeDirection" class="form-select">
-                <option value="buy">买入</option>
-                <option value="sell">卖出</option>
-              </select>
-            </div>
+      <div class="right-col">
+        <div class="risk-section">
+          <h2 class="section-title">风险指标</h2>
+          <div v-if="riskMetrics" class="risk-grid">
+            <div class="risk-item"><span class="risk-label">夏普比率</span><span class="risk-value">{{ (riskMetrics.sharpe || 0).toFixed(2) }}</span></div>
+            <div class="risk-item"><span class="risk-label">最大回撤</span><span class="risk-value down">{{ ((riskMetrics.max_drawdown || 0) * 100).toFixed(2) }}%</span></div>
+            <div class="risk-item"><span class="risk-label">波动率</span><span class="risk-value">{{ ((riskMetrics.volatility || 0) * 100).toFixed(2) }}%</span></div>
+            <div class="risk-item"><span class="risk-label">Beta</span><span class="risk-value">{{ (riskMetrics.beta || 1).toFixed(2) }}</span></div>
+            <div class="risk-item"><span class="risk-label">集中度</span><span class="risk-value">{{ ((riskMetrics.concentration || 0) * 100).toFixed(1) }}%</span></div>
+            <div class="risk-item"><span class="risk-label">CVaR(95%)</span><span class="risk-value down">{{ ((riskMetrics.cvar_95 || 0) * 100).toFixed(2) }}%</span></div>
           </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>价格</label>
-              <input
-                v-model.number="tradePrice"
-                type="number"
-                placeholder="输入价格"
-                class="form-input"
-              />
-            </div>
-            <div class="form-group">
-              <label>数量（股）</label>
-              <input
-                v-model.number="tradeShares"
-                type="number"
-                placeholder="输入数量"
-                class="form-input"
-              />
-            </div>
-          </div>
-          <div class="form-actions">
-            <button class="btn btn-primary" @click="submitTrade">
-              {{ tradeDirection === 'buy' ? '买入' : '卖出' }}
-            </button>
-            <button class="btn btn-ghost" @click="resetTrade">重置</button>
-          </div>
+          <div v-else class="empty-state-small">加载中...</div>
+        </div>
+
+        <div class="attribution-section">
+          <h2 class="section-title">收益归因</h2>
+          <div v-if="attribution" ref="attributionChartRef" class="attribution-chart"></div>
+          <div v-else class="empty-state-small">加载中...</div>
         </div>
       </div>
     </div>
+
+    <div class="equity-section" v-if="equityCurve.length">
+      <h2 class="section-title">组合净值曲线</h2>
+      <BaseChart :option="equityOption" height="250px" />
+    </div>
+
+    <div class="trades-section">
+      <h2 class="section-title">交易记录</h2>
+      <DataTable v-if="tradeHistory.length" :columns="tradeColumns" :data="tradeHistory" :striped="true" row-key="id" />
+      <div v-else class="empty-state-small">暂无交易记录</div>
+    </div>
+    </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { api } from '../api'
+import echarts from '../lib/echarts'
+import { DataTable, BaseChart } from '../components'
 
 const account = ref<any>({})
 const positions = ref<any[]>([])
+const riskMetrics = ref<any>(null)
+const attribution = ref<any>(null)
+const loading = ref(true)
+const equityCurve = ref<any[]>([])
+const tradeHistory = ref<any[]>([])
+const attributionChartRef = ref<HTMLElement | null>(null)
+let attrChart: any = null
 
-const tradeSymbol = ref('')
-const tradeDirection = ref('buy')
-const tradePrice = ref(0)
-const tradeShares = ref(0)
+const positionColumns = [
+  { key: 'symbol', label: '代码', width: '70px' },
+  { key: 'name', label: '名称', width: '80px' },
+  { key: 'shares', label: '持仓', align: 'right' as const },
+  { key: 'avg_cost', label: '成本', align: 'right' as const, format: (v: number) => v?.toFixed(2) },
+  { key: 'current_price', label: '现价', align: 'right' as const, format: (v: number) => v?.toFixed(2) },
+  { key: 'market_value', label: '市值', align: 'right' as const, format: (v: number) => '¥' + (v || 0).toLocaleString() },
+  { key: 'pnl', label: '盈亏', align: 'right' as const, format: (v: number) => v ? (v >= 0 ? '+' : '') + '¥' + v.toLocaleString() : '-' },
+  { key: 'pnl_pct', label: '盈亏%', align: 'right' as const, format: (v: number) => v ? (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%' : '-' },
+  { key: 'weight', label: '占比', align: 'right' as const, format: (v: number) => (v * 100).toFixed(1) + '%' },
+]
 
-function formatNumber(num: number): string {
-  return num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const tradeColumns = [
+  { key: 'time', label: '时间', width: '130px' },
+  { key: 'symbol', label: '代码', width: '70px' },
+  { key: 'name', label: '名称', width: '80px' },
+  { key: 'side', label: '方向', width: '50px' },
+  { key: 'price', label: '价格', align: 'right' as const, format: (v: number) => v?.toFixed(2) },
+  { key: 'shares', label: '数量', align: 'right' as const },
+  { key: 'amount', label: '金额', align: 'right' as const, format: (v: number) => '¥' + (v || 0).toLocaleString() },
+  { key: 'pnl', label: '盈亏', align: 'right' as const, format: (v: number) => v ? (v >= 0 ? '+' : '') + '¥' + v.toLocaleString() : '-' },
+]
+
+function fmtNum(n: number): string {
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-async function loadAccount() {
-  const data = await api.getAccount()
-  if (data) {
-    account.value = data
-    positions.value = data.positions || [
-      { symbol: '600519', name: '贵州茅台', shares: 100, cost_price: 1380, current_price: 1402.9, pnl: 2290, pnl_pct: 1.66 },
-      { symbol: '000858', name: '五粮液', shares: 500, cost_price: 102, current_price: 98, pnl: -2000, pnl_pct: -3.92 },
-    ]
+const equityOption = computed(() => {
+  if (!equityCurve.value.length) return {}
+  const dates = equityCurve.value.map(d => (d.date || '').slice(0, 10))
+  const values = equityCurve.value.map(d => d.value || d.equity)
+  return {
+    backgroundColor: 'transparent', animation: false,
+    tooltip: { trigger: 'axis' },
+    grid: { left: 60, right: 20, top: 10, bottom: 30 },
+    xAxis: { type: 'category', data: dates, axisLabel: { color: '#888', fontSize: 9 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { color: '#888', fontSize: 9 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } } },
+    series: [{ type: 'line', data: values, showSymbol: false, lineStyle: { width: 1.5, color: '#4d9fff' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(77,159,255,0.12)' }, { offset: 1, color: 'rgba(77,159,255,0)' }] } } }],
   }
-}
-
-async function submitTrade() {
-  if (!tradeSymbol.value || !tradePrice.value || !tradeShares.value) return
-  
-  if (tradeDirection.value === 'buy') {
-    await api.buy(tradeSymbol.value, tradePrice.value, tradeShares.value)
-  } else {
-    await api.sell(tradeSymbol.value, tradePrice.value, tradeShares.value)
-  }
-  
-  resetTrade()
-  await loadAccount()
-}
-
-function resetTrade() {
-  tradeSymbol.value = ''
-  tradePrice.value = 0
-  tradeShares.value = 0
-}
-
-onMounted(() => {
-  loadAccount()
 })
+
+function renderAttributionChart() {
+  if (!attributionChartRef.value || !attribution.value) return
+  if (!attrChart) {
+    attrChart = echarts.init(attributionChartRef.value, undefined, { renderer: 'canvas' })
+  }
+  const attr = attribution.value
+  const items = Object.entries(attr).filter(([_, v]) => typeof v === 'number').map(([k, v]) => ({ name: k, value: v as number }))
+  attrChart.setOption({
+    animation: false,
+    tooltip: { trigger: 'item', formatter: '{b}: {c}%' },
+    series: [{
+      type: 'pie', radius: ['40%', '70%'], center: ['50%', '50%'],
+      data: items.map(d => ({
+        name: d.name, value: Math.abs(d.value).toFixed(1),
+        itemStyle: { color: d.value >= 0 ? '#4d9fff' : '#f43f5e' },
+      })),
+      label: { color: '#888', fontSize: 10 },
+    }],
+  }, true)
+}
+
+async function loadData() {
+  try {
+    const acc = await api.getAccount()
+    if (acc) {
+      account.value = acc
+      positions.value = acc.positions || []
+    }
+    const syms = positions.value.map((p: any) => p.symbol).join(',')
+    const [risk, attr, eq, trades] = await Promise.allSettled([
+      syms ? api.getPortfolioRiskAnalysis(syms) : Promise.resolve(null),
+      syms ? api.getPortfolioAttribution(syms) : Promise.resolve(null),
+      syms ? api.getPortfolioEquity(syms) : Promise.resolve(null),
+      api.getTradeHistory(),
+    ])
+    if (risk.status === 'fulfilled' && risk.value) riskMetrics.value = risk.value
+    if (attr.status === 'fulfilled' && attr.value) {
+      attribution.value = attr.value
+      nextTick(() => renderAttributionChart())
+    }
+    if (eq.status === 'fulfilled' && eq.value) equityCurve.value = eq.value.equity_curve || eq.value || []
+    if (trades.status === 'fulfilled' && trades.value) tradeHistory.value = trades.value.trades || trades.value || []
+  } catch (e) {
+    console.error('Load portfolio error:', e)
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => loadData())
 </script>
 
 <style scoped>
-.portfolio-page {
-  padding: 24px;
-  max-width: 1000px;
-  margin: 0 auto;
+.skeleton-portfolio { padding: 20px; }
+.skeleton-row { display: flex; gap: 12px; }
+.skeleton { border-radius: 8px; background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-tertiary, #1a1a24) 50%, var(--bg-secondary) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.portfolio-page { padding: 20px; max-width: 1440px; margin: 0 auto; }
+.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.page-title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
+.action-btn { padding: 6px 14px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.action-btn:hover { color: var(--text-primary); }
+
+.summary-row { display: flex; gap: 10px; margin-bottom: 16px; overflow-x: auto; }
+.summary-card { flex: 1; min-width: 120px; padding: 14px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); }
+.summary-card.total { border-left: 3px solid var(--accent-cyan); }
+.summary-card.up { border-left: 3px solid var(--accent-red); }
+.summary-card.down { border-left: 3px solid var(--accent-green); }
+.summary-label { display: block; font-size: 10px; color: var(--text-tertiary); margin-bottom: 4px; }
+.summary-value { font-size: 16px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); }
+.summary-card.up .summary-value { color: var(--accent-red); }
+.summary-card.down .summary-value { color: var(--accent-green); }
+
+.main-grid { display: grid; grid-template-columns: 1fr 320px; gap: 14px; margin-bottom: 14px; }
+.right-col { display: flex; flex-direction: column; gap: 14px; }
+
+.positions-section, .risk-section, .attribution-section, .equity-section, .trades-section {
+  background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 14px;
 }
 
-.page-header {
-  margin-bottom: 24px;
-}
+.section-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px; }
 
-.page-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
+.risk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.risk-item { display: flex; justify-content: space-between; padding: 6px 8px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); }
+.risk-label { font-size: 11px; color: var(--text-secondary); }
+.risk-value { font-size: 11px; font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; }
+.risk-value.down { color: var(--accent-green); }
 
-.overview-section {
-  margin-bottom: 24px;
-}
+.attribution-chart { width: 100%; height: 200px; }
+.empty-state-small { text-align: center; padding: 30px; color: var(--text-tertiary); font-size: 13px; }
 
-.overview-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 20px;
+@media (max-width: 1024px) {
+  .main-grid { grid-template-columns: 1fr; }
 }
-
-.overview-card.main {
-  margin-bottom: 16px;
-}
-
-.card-title {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-bottom: 8px;
-}
-
-.card-value {
-  font-size: 28px;
-  font-weight: 700;
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-}
-
-.card-change {
-  font-size: 14px;
-  margin-top: 4px;
-}
-
-.card-change.up {
-  color: var(--accent-red);
-}
-
-.card-change.down {
-  color: var(--accent-green);
-}
-
-.overview-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-}
-
-.section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 16px;
-}
-
-.positions-section, .trading-section {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-  margin-bottom: 20px;
-}
-
-.positions-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.position-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 14px;
-  background: rgba(255,255,255,0.03);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.position-item:hover {
-  background: rgba(255,255,255,0.05);
-}
-
-.position-left {
-  flex: 1;
-}
-
-.position-header {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-
-.position-code {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--accent-cyan);
-}
-
-.position-name {
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.position-info {
-  display: flex;
-  gap: 16px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-}
-
-.position-right {
-  text-align: right;
-}
-
-.position-price {
-  font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.position-pnl {
-  font-size: 12px;
-}
-
-.position-pnl.up {
-  color: var(--accent-red);
-}
-
-.position-pnl.down {
-  color: var(--accent-green);
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 32px;
-  color: var(--text-tertiary);
-}
-
-.empty-state svg {
-  margin-bottom: 12px;
-  opacity: 0.5;
-}
-
-.empty-state p {
-  font-size: 13px;
-}
-
-.trading-form {
-  background: rgba(255,255,255,0.03);
-  border-radius: var(--radius-md);
-  padding: 20px;
-}
-
-.form-row {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
-  margin-bottom: 16px;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-}
-
-.form-group label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 6px;
-}
-
-.form-input {
-  height: 36px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  padding: 0 10px;
-  color: var(--text-primary);
-  font-size: 13px;
-  outline: none;
-}
-
-.form-input:focus {
-  border-color: var(--accent-blue);
-}
-
-.form-select {
-  height: 36px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  padding: 0 10px;
-  color: var(--text-primary);
-  font-size: 13px;
-  outline: none;
-}
-
-.form-select:focus {
-  border-color: var(--accent-blue);
-}
-
-.form-actions {
-  display: flex;
-  gap: 12px;
-  justify-content: flex-end;
+@media (max-width: 768px) {
+  .portfolio-page { padding: 10px; }
+  .summary-row { flex-wrap: wrap; }
+  .summary-card { min-width: 100px; }
 }
 </style>

@@ -19,6 +19,16 @@ from core.strategies import (
     VolatilitySqueezeBreakoutStrategy,
     RSIMeanReversionStrategy,
     SuperTrendStrategy,
+    IchimokuCloudStrategy,
+    VWAPDeviationStrategy,
+    OrderFlowImbalanceStrategy,
+    RegimeSwitchingStrategy,
+    FractalBreakoutStrategy,
+    WyckoffAccumulationStrategy,
+    ElliottWaveAIStrategy,
+    MarketMicrostructureStrategy,
+    CopulaCorrelationStrategy,
+    QuantileRegressionStrategy,
     SignalType,
     StrategyResult,
     TradeSignal,
@@ -36,6 +46,8 @@ class MarketRegime(Enum):
     LOW_VOLATILITY_CONSOLIDATION = "low_volatility_consolidation"
     MILD_TREND_DOWN = "mild_trend_down"
     STRONG_TREND_DOWN = "strong_trend_down"
+    BEAR_TRAP = "bear_trap"
+    DISTRIBUTION_TOP = "distribution_top"
 
 
 REGIME_LABELS = {
@@ -45,6 +57,8 @@ REGIME_LABELS = {
     MarketRegime.LOW_VOLATILITY_CONSOLIDATION: "低波动盘整",
     MarketRegime.MILD_TREND_DOWN: "温和趋势下跌",
     MarketRegime.STRONG_TREND_DOWN: "强趋势下跌",
+    MarketRegime.BEAR_TRAP: "空头陷阱",
+    MarketRegime.DISTRIBUTION_TOP: "派发顶部",
 }
 
 STRATEGY_ALLOCATION = {
@@ -72,6 +86,14 @@ STRATEGY_ALLOCATION = {
         "strategies": [AdaptiveTrendFollowingStrategy, SuperTrendStrategy],
         "weights": [0.55, 0.45],
     },
+    MarketRegime.BEAR_TRAP: {
+        "strategies": [WyckoffAccumulationStrategy, MeanReversionProStrategy, RSIMeanReversionStrategy, OrderFlowImbalanceStrategy],
+        "weights": [0.30, 0.30, 0.20, 0.20],
+    },
+    MarketRegime.DISTRIBUTION_TOP: {
+        "strategies": [ElliottWaveAIStrategy, SuperTrendStrategy, MarketMicrostructureStrategy],
+        "weights": [0.35, 0.35, 0.30],
+    },
 }
 
 BUY_THRESHOLD = 0.60
@@ -82,6 +104,153 @@ MAX_DRAWDOWN_PROTECTION = 0.08
 KELLY_FRACTION = 0.5
 CHANDELIER_PERIOD = 22
 CHANDELIER_MULT = 3.0
+CVAR_CONFIDENCE = 0.95
+CVAR_LIMIT = 0.03
+Q_LEARNING_RATE = 0.1
+Q_DISCOUNT = 0.9
+Q_EPSILON = 0.15
+
+
+class QLearningWeightAdapter:
+    """Q-Learning策略权重自适应调整器"""
+
+    def __init__(self, n_strategies: int, learning_rate: float = Q_LEARNING_RATE,
+                 discount: float = Q_DISCOUNT, epsilon: float = Q_EPSILON):
+        self._n = n_strategies
+        self._lr = learning_rate
+        self._discount = discount
+        self._epsilon = epsilon
+        self._q_table: Dict[str, np.ndarray] = {}
+        self._last_state: Optional[str] = None
+        self._last_action: Optional[int] = None
+
+    def _discretize_state(self, regime: MarketRegime, volatility: float, trend: float) -> str:
+        vol_bin = "low" if volatility < 0.15 else ("mid" if volatility < 0.30 else "high")
+        trend_bin = "up" if trend > 0.01 else ("down" if trend < -0.01 else "flat")
+        return f"{regime.value}_{vol_bin}_{trend_bin}"
+
+    def select_weights(self, regime: MarketRegime, volatility: float, trend: float,
+                       base_weights: List[float]) -> List[float]:
+        state = self._discretize_state(regime, volatility, trend)
+        if state not in self._q_table:
+            self._q_table[state] = np.zeros(self._n)
+
+        q_values = self._q_table[state]
+        if np.random.random() < self._epsilon:
+            adapted = np.array(base_weights) + np.random.normal(0, 0.02, self._n)
+        else:
+            best_action = int(np.argmax(q_values))
+            adapted = np.array(base_weights)
+            adapted[best_action] += 0.05
+
+        adapted = np.clip(adapted, 0.05, 0.60)
+        total = adapted.sum()
+        if total > 0:
+            adapted = adapted / total
+        return adapted.tolist()
+
+    def update(self, regime: MarketRegime, volatility: float, trend: float,
+               strategy_idx: int, reward: float):
+        state = self._discretize_state(regime, volatility, trend)
+        if state not in self._q_table:
+            self._q_table[state] = np.zeros(self._n)
+        old_q = self._q_table[state][strategy_idx]
+        max_future_q = float(np.max(self._q_table[state]))
+        self._q_table[state][strategy_idx] = old_q + self._lr * (
+            reward + self._discount * max_future_q - old_q
+        )
+
+
+class MultiTimeframeAnalyzer:
+    """多周期分析器 - 融合日线/周线/月线信号"""
+
+    @staticmethod
+    def resample_weekly(df: pd.DataFrame) -> pd.DataFrame:
+        if "date" not in df.columns:
+            return df
+        df_copy = df.copy()
+        df_copy["date"] = pd.to_datetime(df_copy["date"], errors="coerce")
+        df_copy = df_copy.dropna(subset=["date"]).set_index("date")
+        weekly = df_copy.resample("W").agg({
+            "open": "first", "high": "max", "low": "min",
+            "close": "last", "volume": "sum",
+        }).dropna()
+        weekly = weekly.reset_index()
+        return weekly
+
+    @staticmethod
+    def resample_monthly(df: pd.DataFrame) -> pd.DataFrame:
+        if "date" not in df.columns:
+            return df
+        df_copy = df.copy()
+        df_copy["date"] = pd.to_datetime(df_copy["date"], errors="coerce")
+        df_copy = df_copy.dropna(subset=["date"]).set_index("date")
+        monthly = df_copy.resample("ME").agg({
+            "open": "first", "high": "max", "low": "min",
+            "close": "last", "volume": "sum",
+        }).dropna()
+        monthly = monthly.reset_index()
+        return monthly
+
+    @staticmethod
+    def get_trend_alignment(daily_df: pd.DataFrame) -> float:
+        """返回多周期趋势一致性分数 -1~1"""
+        score = 0.0
+        c = daily_df["close"].astype(float)
+        if len(c) < 20:
+            return 0.0
+
+        # 日线趋势
+        ma5 = float(c.rolling(5).mean().iloc[-1])
+        ma20 = float(c.rolling(20).mean().iloc[-1])
+        last_close = float(c.iloc[-1])
+        if ma5 > ma20 and last_close > ma5:
+            score += 0.4
+        elif ma5 < ma20 and last_close < ma5:
+            score -= 0.4
+
+        # 周线趋势
+        try:
+            weekly = MultiTimeframeAnalyzer.resample_weekly(daily_df)
+            if len(weekly) >= 10:
+                wc = weekly["close"].astype(float)
+                wma5 = float(wc.rolling(5).mean().iloc[-1])
+                wma10 = float(wc.rolling(10).mean().iloc[-1])
+                wlast = float(wc.iloc[-1])
+                if wma5 > wma10 and wlast > wma5:
+                    score += 0.3
+                elif wma5 < wma10 and wlast < wma5:
+                    score -= 0.3
+        except Exception:
+            pass
+
+        # 月线趋势
+        try:
+            monthly = MultiTimeframeAnalyzer.resample_monthly(daily_df)
+            if len(monthly) >= 6:
+                mc = monthly["close"].astype(float)
+                mma3 = float(mc.rolling(3).mean().iloc[-1])
+                mlast = float(mc.iloc[-1])
+                if mlast > mma3:
+                    score += 0.3
+                elif mlast < mma3:
+                    score -= 0.3
+        except Exception:
+            pass
+
+        return max(-1.0, min(1.0, score))
+
+
+def calc_cvar(returns: np.ndarray, confidence: float = CVAR_CONFIDENCE) -> float:
+    """计算条件风险价值(CVaR/ES)"""
+    if len(returns) < 10:
+        return 0.0
+    sorted_ret = np.sort(returns)
+    cutoff = int(np.floor(len(sorted_ret) * (1 - confidence)))
+    if cutoff < 1:
+        cutoff = 1
+    tail = sorted_ret[:cutoff]
+    return float(np.mean(tail)) if len(tail) > 0 else 0.0
 
 
 def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketRegime]:
@@ -98,6 +267,17 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
 
     adx_full = calc_adx(h, low_arr, c, period=14)
     atr_full = calc_atr(h, low_arr, c, period=14)
+
+    # 自适应ADX阈值：用过去252日的百分位数
+    adx_strong_threshold = 30.0
+    adx_mild_threshold = 20.0
+    adx_window = adx_full[max(0, len(adx_full) - 252):]
+    valid_adx = adx_window[np.isfinite(adx_window)]
+    if len(valid_adx) > 60:
+        adx_strong_threshold = float(np.percentile(valid_adx, 75))
+        adx_mild_threshold = float(np.percentile(valid_adx, 50))
+        adx_strong_threshold = max(25, min(40, adx_strong_threshold))
+        adx_mild_threshold = max(15, min(30, adx_mild_threshold))
 
     for i in range(window, n):
         try:
@@ -121,9 +301,33 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
             deviation = (price - ma20) / ma20 if ma20 > 0 else 0
 
             trend_strength = adx_val
-            is_strong_trend = trend_strength > 30
-            is_mild_trend = trend_strength > 20
-            is_ranging = trend_strength < 20
+            is_strong_trend = trend_strength > adx_strong_threshold
+            is_mild_trend = trend_strength > adx_mild_threshold
+            is_ranging = trend_strength < adx_mild_threshold
+
+            # 空头陷阱检测：价格跌破支撑后快速反弹+成交量放大
+            if i >= window + 10:
+                support = float(np.min(low_arr[i - window:i - 5]))
+                recent_low = float(np.min(low_arr[i - 5:i + 1]))
+                recent_high = float(np.max(h[i - 3:i + 1]))
+                recent_vol = float(np.mean(v[i - 3:i + 1]))
+                avg_vol = float(np.mean(v[i - window:i - 5])) if i > window + 5 else 1
+                if (recent_low < support and price > support and
+                        recent_vol > avg_vol * 1.5 and price > ma20 * 0.98):
+                    regimes[i] = MarketRegime.BEAR_TRAP
+                    continue
+
+            # 派发顶部检测：价格创新高但ADX下降+成交量萎缩
+            if i >= window + 5:
+                prev_high = float(np.max(h[i - window:i - 3]))
+                recent_peak = float(np.max(h[i - 3:i + 1]))
+                recent_vol_avg = float(np.mean(v[i - 5:i + 1]))
+                longer_vol_avg = float(np.mean(v[i - window:i - 5])) if i > window + 5 else 1
+                adx_declining = adx_val < 25
+                if (recent_peak >= prev_high * 0.99 and adx_declining and
+                        recent_vol_avg < longer_vol_avg * 0.8 and deviation > 0.01):
+                    regimes[i] = MarketRegime.DISTRIBUTION_TOP
+                    continue
 
             if is_strong_trend:
                 if deviation > 0.02:
@@ -167,6 +371,9 @@ class AdaptiveStrategyEngine:
         self._stamp_tax = stamp_tax
         self._strategy_perf = {}
         self._dynamic_weights = {}
+        self._q_adapters: Dict[str, QLearningWeightAdapter] = {}
+        self._mtf_analyzer = MultiTimeframeAnalyzer()
+        self._returns_history: List[float] = []
 
     def _kelly_position(self, c: np.ndarray, lookback: int = 60) -> float:
         return calc_kelly_fraction(c, lookback, half_kelly=KELLY_FRACTION)
@@ -174,6 +381,52 @@ class AdaptiveStrategyEngine:
     def _calc_chandelier(self, h: np.ndarray, low_arr: np.ndarray, c: np.ndarray,
                           atr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         return calc_chandelier_exit(h, low_arr, c, atr, CHANDELIER_PERIOD, CHANDELIER_MULT)
+
+    def _get_q_adapter(self, regime: MarketRegime, n_strategies: int) -> QLearningWeightAdapter:
+        key = regime.value
+        if key not in self._q_adapters:
+            self._q_adapters[key] = QLearningWeightAdapter(n_strategies)
+        return self._q_adapters[key]
+
+    def _cvar_position_adjustment(self) -> float:
+        """基于CVaR的仓位调整因子"""
+        if len(self._returns_history) < 20:
+            return 1.0
+        ret_arr = np.array(self._returns_history[-60:])
+        cvar = calc_cvar(ret_arr, CVAR_CONFIDENCE)
+        if abs(cvar) > CVAR_LIMIT:
+            reduction = min(0.5, abs(cvar) / CVAR_LIMIT * 0.3)
+            return max(0.3, 1.0 - reduction)
+        return 1.0
+
+    def _correlation_dedup_adjustment(self, new_symbol: str, existing_positions: dict,
+                                       correlation_threshold: float = 0.85) -> float:
+        """相关性去重：新标的与现有持仓相关性>0.85时降低仓位至50%"""
+        if not existing_positions or len(existing_positions) < 1:
+            return 1.0
+        if len(existing_positions) < 3:
+            return 1.0
+        # 用收益率相关性判断：基于已有的收益率历史
+        if len(self._returns_history) < 30:
+            return 1.0
+        new_rets = np.array(self._returns_history[-60:])
+        for sym, pos_info in existing_positions.items():
+            pos_rets = pos_info.get("returns_history")
+            if pos_rets is None or len(pos_rets) < 30:
+                continue
+            pos_ret_arr = np.array(pos_rets[-60:])
+            min_len = min(len(new_rets), len(pos_ret_arr))
+            if min_len < 20:
+                continue
+            r_new = new_rets[-min_len:]
+            r_pos = pos_ret_arr[-min_len:]
+            valid = np.isfinite(r_new) & np.isfinite(r_pos)
+            if valid.sum() < 20:
+                continue
+            corr = np.corrcoef(r_new[valid], r_pos[valid])[0, 1]
+            if np.isfinite(corr) and abs(corr) > correlation_threshold:
+                return 0.5
+        return 1.0
 
     def _precompute_scores(self, strategy_instances: dict, df: pd.DataFrame, n: int) -> dict:
         scores = {}
@@ -195,16 +448,19 @@ class AdaptiveStrategyEngine:
             scores[regime] = regime_scores
         return scores
 
-    def _adapt_strategy_weights(self, regime: MarketRegime, alloc: dict):
+    def _adapt_strategy_weights(self, regime: MarketRegime, alloc: dict,
+                                 volatility: float = 0.0, trend: float = 0.0):
         key = regime.value
-        if key not in self._dynamic_weights:
-            self._dynamic_weights[key] = list(alloc.get("weights", []))
-            return self._dynamic_weights[key]
-
         base_weights = alloc.get("weights", [])
         strategy_names = [cls.__name__ for cls in alloc.get("strategies", [])]
-        adapted = list(base_weights)
+        n_strategies = len(strategy_names)
 
+        # Q-Learning权重调整
+        q_adapter = self._get_q_adapter(regime, n_strategies)
+        q_weights = q_adapter.select_weights(regime, volatility, trend, base_weights)
+
+        # 历史表现调整
+        adapted = list(q_weights)
         for idx, name in enumerate(strategy_names):
             if name in self._strategy_perf and len(self._strategy_perf[name]) >= 3:
                 recent = self._strategy_perf[name][-5:]
@@ -254,6 +510,9 @@ class AdaptiveStrategyEngine:
         n = len(c)
         precomputed_scores = self._precompute_scores(strategy_instances, df, n)
 
+        # 多周期趋势一致性
+        mtf_score = self._mtf_analyzer.get_trend_alignment(df)
+
         cash = float(self._initial_capital)
         shares = 0
         position = None
@@ -266,9 +525,18 @@ class AdaptiveStrategyEngine:
         strategy_allocation_records = []
         seen_regimes = set()
 
+        # 预计算波动率和趋势用于Q-Learning状态
+        returns_arr = np.diff(c) / np.where(c[:-1] > 0, c[:-1], 1)
+        returns_arr = np.where(np.isfinite(returns_arr), returns_arr, 0)
+
         for i in range(1, n):
             regime = regimes[i]
             market_regime_labels.append(REGIME_LABELS.get(regime, "未知"))
+
+            # 当前波动率和趋势
+            lookback_vol = min(i, 20)
+            current_vol = float(np.std(returns_arr[max(0, i - lookback_vol):i]) * np.sqrt(252)) if i > 1 else 0
+            current_trend = float((c[i] - c[max(0, i - 20)]) / c[max(0, i - 20)]) if c[max(0, i - 20)] > 0 else 0
 
             if regime not in seen_regimes:
                 seen_regimes.add(regime)
@@ -341,7 +609,7 @@ class AdaptiveStrategyEngine:
             strong_sell = False
 
             instances = strategy_instances.get(regime, [])
-            weights = self._adapt_strategy_weights(regime, alloc)
+            weights = self._adapt_strategy_weights(regime, alloc, current_vol, current_trend)
             regime_scores = precomputed_scores.get(regime, {})
 
             for idx, strategy in enumerate(instances):
@@ -455,8 +723,24 @@ class AdaptiveStrategyEngine:
                         self._strategy_perf[name].append(pnl)
                         if len(self._strategy_perf[name]) > 20:
                             self._strategy_perf[name] = self._strategy_perf[name][-20:]
+                        # Q-Learning更新
+                        reward = 1.0 if pnl > 0 else -1.0
+                        q_adapter = self._get_q_adapter(regime, len(instances))
+                        q_adapter.update(regime, current_vol, current_trend, idx, reward)
 
             if position is None and buy_score > BUY_THRESHOLD:
+                # 多周期趋势一致性过滤：逆趋势时降低买入分数
+                adjusted_buy_score = buy_score
+                if mtf_score < -0.3:
+                    adjusted_buy_score *= 0.6
+                elif mtf_score > 0.3:
+                    adjusted_buy_score = min(1.0, adjusted_buy_score * 1.1)
+
+                if adjusted_buy_score < BUY_THRESHOLD:
+                    bar_equity = cash
+                    equity_curve.append(bar_equity)
+                    continue
+
                 fill_price = opens[i] if i < len(opens) and opens[i] > 0 else c[i]
                 if fill_price <= 0:
                     fill_price = c[i]
@@ -472,12 +756,15 @@ class AdaptiveStrategyEngine:
                         equity_curve.append(bar_equity)
                         continue
 
-                if buy_score > STRONG_BUY_THRESHOLD:
+                # CVaR仓位调整
+                cvar_adj = self._cvar_position_adjustment()
+
+                if adjusted_buy_score > STRONG_BUY_THRESHOLD:
                     kelly = self._kelly_position(c[:i + 1])
-                    alloc_pct = min(0.60, kelly * 1.2)
+                    alloc_pct = min(0.60, kelly * 1.2) * cvar_adj
                 else:
                     kelly = self._kelly_position(c[:i + 1])
-                    alloc_pct = min(0.40, kelly)
+                    alloc_pct = min(0.40, kelly) * cvar_adj
 
                 alloc_amount = equity_curve[-1] * alloc_pct
                 if alloc_amount > cash * 0.98:
@@ -558,6 +845,10 @@ class AdaptiveStrategyEngine:
 
             bar_equity = cash + (shares * c[i] if shares > 0 else 0)
             equity_curve.append(bar_equity)
+            # 记录每日收益率用于CVaR计算
+            if len(equity_curve) >= 2 and equity_curve[-2] > 0:
+                daily_ret = (equity_curve[-1] - equity_curve[-2]) / equity_curve[-2]
+                self._returns_history.append(daily_ret)
 
         if position is not None and shares > 0:
             cash += shares * c[-1]
@@ -712,6 +1003,8 @@ class AdaptiveStrategyEngine:
             "benchmark_return": benchmark_return / 100 if benchmark_return else 0,
             "alpha": round(alpha, 2),
             "beta": round(beta, 2),
+            "cvar_95": round(calc_cvar(np.array(self._returns_history[-60:]), 0.95), 4) if len(self._returns_history) >= 20 else 0,
+            "mtf_alignment": round(mtf_score, 2),
             "equity_curve": equity_curve_out,
             "benchmark_curve": benchmark_curve,
             "trades": trades,

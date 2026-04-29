@@ -10,5 +10,16 @@ export default defineConfig({
   build: {
     outDir: '../static',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor': ['vue', 'vue-router', 'pinia'],
+          'echarts': ['echarts'],
+          'utils': ['axios'],
+        }
+      }
+    },
+    minify: 'terser',
+    terserOptions: { compress: { drop_console: true } },
   }
 })

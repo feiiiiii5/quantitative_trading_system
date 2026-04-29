@@ -1,11 +1,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import Dashboard from '../views/Dashboard.vue'
-import Market from '../views/Market.vue'
-import StrategyIntro from '../views/StrategyIntro.vue'
-import Strategy from '../views/Strategy.vue'
-import Portfolio from '../views/Portfolio.vue'
-import Watchlist from '../views/Watchlist.vue'
-import StockDetail from '../views/StockDetail.vue'
+
+const Dashboard = () => import('../views/Dashboard.vue')
+const Market = () => import('../views/Market.vue')
+const StrategyIntro = () => import('../views/StrategyIntro.vue')
+const Strategy = () => import('../views/Strategy.vue')
+const Portfolio = () => import('../views/Portfolio.vue')
+const Watchlist = () => import('../views/Watchlist.vue')
+const StockDetail = () => import('../views/StockDetail.vue')
 
 const routes = [
   { path: '/', name: 'Dashboard', component: Dashboard },

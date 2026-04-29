@@ -3,12 +3,14 @@ QuantCore - 量化交易系统
 简洁高效，一键启动
 """
 import asyncio
+import gc
 import logging
 import multiprocessing
 import os
 import subprocess
 import threading
 import time
+import traceback
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,9 +22,9 @@ except ImportError:
     pass
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routes import router, push_realtime_data
@@ -35,6 +37,7 @@ except RuntimeError:
 
 setup_logger(logging.INFO)
 logger = logging.getLogger(__name__)
+gc.set_threshold(700, 10, 10)
 
 BASE_DIR = Path(__file__).parent
 PORT = 8080
@@ -47,14 +50,19 @@ async def lifespan(app: FastAPI):
 
     from core.database import get_db, get_cache_manager
     from core.data_fetcher import SmartDataFetcher
+    from core.backtest import BacktestEngine
     from core.strategies import CompositeStrategy
     from core.simulated_trading import SimulatedTrading
 
     app.state.db = get_db()
     app.state.fetcher = SmartDataFetcher()
     app.state.composite_strategy = CompositeStrategy()
+    app.state.backtest_engine = BacktestEngine()
     app.state.trading = SimulatedTrading()
     app.state.start_time = time.time()
+    app.state._request_count = 0
+    app.state._total_response_time = 0.0
+    app.state._start_time = time.time()
 
     try:
         from core.data_fetcher import get_aiohttp_session
@@ -236,12 +244,39 @@ async def _scheduler_loop(app):
 
 app = FastAPI(title="QuantCore", version="3.0.0", lifespan=lifespan)
 
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": "服务器内部错误，请稍后重试", "error_type": type(exc).__name__},
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    elapsed = (time.time() - start) * 1000
+    try:
+        app.state._request_count = getattr(app.state, "_request_count", 0) + 1
+        app.state._total_response_time = getattr(app.state, "_total_response_time", 0.0) + elapsed
+    except Exception:
+        pass
+    return response
 
 app.include_router(router, prefix="/api")
 
@@ -254,9 +289,79 @@ def index():
     return {"name": "QuantCore", "version": "3.0.0", "status": "running", "docs": "/docs"}
 
 
+@app.get("/health")
+async def health_check(request: Request):
+    checks = {}
+    try:
+        db = request.app.state.db
+        db.fetchone("SELECT 1")
+        checks["database"] = {"status": "ok"}
+    except Exception as e:
+        checks["database"] = {"status": "error", "message": str(e)}
+
+    try:
+        from core.data_fetcher import get_aiohttp_session
+        session = await get_aiohttp_session()
+        checks["network"] = {"status": "ok" if session and not session.closed else "error"}
+    except Exception as e:
+        checks["network"] = {"status": "error", "message": str(e)}
+
+    try:
+        import psutil
+        process = psutil.Process()
+        mem = process.memory_info()
+        checks["memory"] = {
+            "rss_mb": round(mem.rss / 1024 ** 2, 1),
+            "status": "ok" if mem.rss < 512 * 1024 * 1024 else "warning",
+        }
+    except Exception as e:
+        checks["memory"] = {"status": "warning", "message": str(e)}
+
+    try:
+        from core.data_fetcher import _history_cache, _realtime_cache
+        checks["cache"] = {
+            "status": "ok",
+            "realtime_entries": len(_realtime_cache),
+            "history_entries": len(_history_cache),
+        }
+    except Exception as e:
+        checks["cache"] = {"status": "warning", "message": str(e)}
+
+    uptime = time.time() - getattr(request.app.state, "start_time", time.time())
+    all_ok = all(v.get("status") == "ok" for v in checks.values())
+    return {
+        "status": "healthy" if all_ok else "degraded",
+        "uptime_seconds": round(uptime),
+        "checks": checks,
+        "version": "3.0.0",
+    }
+
+
+@app.get("/api/system/metrics")
+async def get_system_metrics(request: Request):
+    from core.metrics import metrics
+    return {"success": True, "data": metrics.get_summary()}
+
+
 assets_dir = BASE_DIR / "static" / "assets"
 if assets_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+
+@app.middleware("http")
+async def api_metrics_middleware(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    elapsed = time.time() - start
+    path = request.url.path
+    if path.startswith("/api"):
+        try:
+            from core.metrics import metrics
+            metrics.increment("api_requests_total", tags={"path": path.split("/")[2] if len(path.split("/")) > 2 else "other"})
+            metrics.timer("api_request_duration", elapsed, tags={"path": path.split("/")[2] if len(path.split("/")) > 2 else "other"})
+        except Exception:
+            pass
+    return response
 
 
 @app.middleware("http")
@@ -336,7 +441,9 @@ if __name__ == "__main__":
         workers=1,
         loop="uvloop",
         http="httptools",
-        limit_concurrency=500,
+        limit_concurrency=200,
         limit_max_requests=10000,
         backlog=2048,
+        timeout_keep_alive=30,
+        access_log=False,
     )

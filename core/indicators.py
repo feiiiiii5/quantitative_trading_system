@@ -16,7 +16,7 @@ class TechnicalIndicators:
         cache_key = f"{symbol}:{period}"
         if df is not None and "date" in df.columns and len(df) > 0:
             last_date = str(df["date"].iloc[-1])[:10]
-            cache_key = f"{symbol}:{period}:{last_date}"
+            cache_key = f"{symbol}:{period}:{last_date}:{len(df)}"
 
         cached = _indicator_cache.get(cache_key)
         if cached is not None:
@@ -850,3 +850,346 @@ def calc_kelly_fraction(c: np.ndarray, lookback: int = 60, half_kelly: float = 0
     kelly = win_rate - (1 - win_rate) / win_loss_ratio
     kelly = max(0.05, min(0.5, kelly * half_kelly))
     return kelly
+
+
+def _factor_arr(values) -> np.ndarray:
+    return np.asarray(values, dtype=float).reshape(-1)
+
+
+def _rolling_sum_np(values: np.ndarray, period: int) -> np.ndarray:
+    arr = _factor_arr(values)
+    out = np.full(len(arr), np.nan)
+    if period <= 0 or len(arr) < period:
+        return out
+    finite = np.isfinite(arr)
+    clean = np.where(finite, arr, 0.0)
+    sums = np.convolve(clean, np.ones(period), mode="valid")
+    counts = np.convolve(finite.astype(float), np.ones(period), mode="valid")
+    vals = np.where(counts == period, sums, np.nan)
+    out[period - 1:] = vals
+    return out
+
+
+def _rolling_mean_np(values: np.ndarray, period: int) -> np.ndarray:
+    sums = _rolling_sum_np(values, period)
+    return sums / period
+
+
+def _rolling_std_np(values: np.ndarray, period: int) -> np.ndarray:
+    arr = _factor_arr(values)
+    mean = _rolling_mean_np(arr, period)
+    mean_sq = _rolling_mean_np(arr * arr, period)
+    var = mean_sq - mean * mean
+    return np.sqrt(np.maximum(var, 0))
+
+
+def _ema_np(values: np.ndarray, period: int) -> np.ndarray:
+    arr = _factor_arr(values)
+    out = np.full(len(arr), np.nan)
+    if len(arr) == 0 or period <= 0:
+        return out
+    alpha = 2 / (period + 1)
+    finite = np.isfinite(arr)
+    if not finite.any():
+        return out
+    start = int(np.argmax(finite))
+    out[start] = arr[start]
+    for i in range(start + 1, len(arr)):
+        val = arr[i] if np.isfinite(arr[i]) else out[i - 1]
+        out[i] = alpha * val + (1 - alpha) * out[i - 1]
+    return out
+
+
+def _wma_np(values: np.ndarray, period: int) -> np.ndarray:
+    arr = _factor_arr(values)
+    out = np.full(len(arr), np.nan)
+    if period <= 0 or len(arr) < period:
+        return out
+    weights = np.arange(1, period + 1, dtype=float)
+    denom = weights.sum()
+    windows = np.lib.stride_tricks.sliding_window_view(arr, period)
+    vals = np.where(np.isfinite(windows).all(axis=1), windows @ weights / denom, np.nan)
+    out[period - 1:] = vals
+    return out
+
+
+def _rsi_np(values: np.ndarray, period: int = 14) -> np.ndarray:
+    arr = _factor_arr(values)
+    out = np.full(len(arr), np.nan)
+    if len(arr) < period + 1:
+        return out
+    delta = np.diff(arr, prepend=arr[0])
+    gain = np.where(delta > 0, delta, 0.0)
+    loss = np.where(delta < 0, -delta, 0.0)
+    avg_gain = _rolling_mean_np(gain, period)
+    avg_loss = _rolling_mean_np(loss, period)
+    rs = np.divide(avg_gain, avg_loss, out=np.full(len(arr), np.nan), where=avg_loss > 0)
+    out = 100 - 100 / (1 + rs)
+    out[(avg_loss == 0) & np.isfinite(avg_gain)] = 100
+    return out
+
+
+def calc_factor_momentum_quality(c, v, period=20) -> np.ndarray:
+    """动量质量因子：上涨日成交量/下跌日成交量的滚动比值"""
+    c = _factor_arr(c)
+    v = _factor_arr(v)
+    n = min(len(c), len(v))
+    out = np.full(n, np.nan)
+    if n == 0:
+        return out
+    ret = np.diff(c[:n], prepend=np.nan)
+    up_vol = np.where(ret > 0, v[:n], 0.0)
+    down_vol = np.where(ret < 0, v[:n], 0.0)
+    up_sum = _rolling_sum_np(up_vol, period)
+    down_sum = _rolling_sum_np(down_vol, period)
+    out = np.divide(up_sum, down_sum, out=np.full(n, np.nan), where=down_sum > 0)
+    return out
+
+
+def calc_factor_price_acceleration(c, period=10) -> np.ndarray:
+    """价格加速度：一阶导数变化率，用二阶差分近似"""
+    c = _factor_arr(c)
+    out = np.full(len(c), np.nan)
+    if len(c) < period + 2:
+        return out
+    second_diff = np.diff(c, n=2, prepend=[np.nan, np.nan])
+    denom = np.where(np.abs(c) > 1e-12, np.abs(c), np.nan)
+    accel = second_diff / denom
+    return _rolling_mean_np(accel, period)
+
+
+def calc_factor_volume_price_trend(c, v, period=14) -> np.ndarray:
+    """VPT量价趋势因子"""
+    c = _factor_arr(c)
+    v = _factor_arr(v)
+    n = min(len(c), len(v))
+    out = np.full(n, np.nan)
+    if n < 2:
+        return out
+    pct = np.zeros(n)
+    pct[1:] = np.divide(c[1:n] - c[:n - 1], c[:n - 1], out=np.zeros(n - 1), where=c[:n - 1] != 0)
+    vpt = np.cumsum(np.nan_to_num(v[:n] * pct, nan=0.0))
+    out[period:] = vpt[period:] - vpt[:-period]
+    vol_base = _rolling_sum_np(v[:n], period)
+    out = np.divide(out, vol_base, out=np.full(n, np.nan), where=vol_base > 0)
+    return out
+
+
+def calc_factor_efficiency_ratio(c, period=10) -> np.ndarray:
+    """Kaufman效率比率：净移动/总移动，衡量趋势纯度，0-1之间"""
+    c = _factor_arr(c)
+    out = np.full(len(c), np.nan)
+    if len(c) < period + 1:
+        return out
+    net = np.abs(c[period:] - c[:-period])
+    diff_abs = np.abs(np.diff(c))
+    total = _rolling_sum_np(diff_abs, period)
+    denom = total[period - 1:]
+    vals = np.divide(net, denom, out=np.full(len(net), np.nan), where=denom > 0)
+    out[period:] = np.clip(vals, 0, 1)
+    return out
+
+
+def calc_factor_fractal_dimension(c, period=30) -> np.ndarray:
+    """用Hurst指数近似的分形维度，衡量价格随机性"""
+    c = _factor_arr(c)
+    out = np.full(len(c), np.nan)
+    if len(c) < period or period < 5:
+        return out
+    windows = np.lib.stride_tricks.sliding_window_view(c, period)
+    finite = np.isfinite(windows).all(axis=1)
+    centered = windows - np.nanmean(windows, axis=1, keepdims=True)
+    cumulative = np.cumsum(centered, axis=1)
+    r = np.nanmax(cumulative, axis=1) - np.nanmin(cumulative, axis=1)
+    s = np.nanstd(windows, axis=1)
+    rs = np.divide(r, s, out=np.full(len(windows), np.nan), where=s > 0)
+    hurst = np.log(np.maximum(rs, 1e-12)) / np.log(period)
+    dimension = 2 - np.clip(hurst, 0, 1)
+    vals = np.where(finite, dimension, np.nan)
+    out[period - 1:] = vals
+    return out
+
+
+def calc_factor_relative_volume(v, short=5, long=20) -> np.ndarray:
+    """相对成交量：短期均量/长期均量"""
+    v = _factor_arr(v)
+    short_ma = _rolling_mean_np(v, short)
+    long_ma = _rolling_mean_np(v, long)
+    return np.divide(short_ma, long_ma, out=np.full(len(v), np.nan), where=long_ma > 0)
+
+
+def calc_factor_money_flow_index(h, l, c, v, period=14) -> np.ndarray:
+    """资金流量指数MFI，量价结合版RSI"""
+    h = _factor_arr(h)
+    l = _factor_arr(l)
+    c = _factor_arr(c)
+    v = _factor_arr(v)
+    n = min(len(h), len(l), len(c), len(v))
+    out = np.full(n, np.nan)
+    if n < period + 1:
+        return out
+    tp = (h[:n] + l[:n] + c[:n]) / 3
+    raw = tp * v[:n]
+    delta = np.diff(tp, prepend=np.nan)
+    pos = np.where(delta > 0, raw, 0.0)
+    neg = np.where(delta < 0, raw, 0.0)
+    pos_sum = _rolling_sum_np(pos, period)
+    neg_sum = _rolling_sum_np(neg, period)
+    ratio = np.divide(pos_sum, neg_sum, out=np.full(n, np.nan), where=neg_sum > 0)
+    out = 100 - 100 / (1 + ratio)
+    out[(neg_sum == 0) & np.isfinite(pos_sum)] = 100
+    return out
+
+
+def calc_factor_elder_ray(c, period=13) -> tuple[np.ndarray, np.ndarray]:
+    """Elder Ray牛市/熊市力量：高价-EMA, 低价-EMA"""
+    c = _factor_arr(c)
+    ema = _ema_np(c, period)
+    bull_power = c - ema
+    bear_power = ema - c
+    return bull_power, bear_power
+
+
+def calc_factor_dpo(c, period=20) -> np.ndarray:
+    """去趋势价格振荡器DPO：剔除长期趋势"""
+    c = _factor_arr(c)
+    out = np.full(len(c), np.nan)
+    if len(c) < period:
+        return out
+    shift = period // 2 + 1
+    ma = _rolling_mean_np(c, period)
+    if shift < len(c):
+        out[shift:] = c[:-shift] - ma[shift:]
+    return out
+
+
+def calc_factor_coppock_curve(c) -> np.ndarray:
+    """Coppock曲线：长期底部识别，11+14月ROC的10月WMA"""
+    c = _factor_arr(c)
+    month = 21 if len(c) > 320 else 1
+    p11, p14, w = 11 * month, 14 * month, 10 * month
+    out = np.full(len(c), np.nan)
+    if len(c) < p14 + w:
+        return out
+    roc11 = np.full(len(c), np.nan)
+    roc14 = np.full(len(c), np.nan)
+    roc11[p11:] = np.divide(c[p11:] - c[:-p11], c[:-p11], out=np.full(len(c) - p11, np.nan), where=c[:-p11] != 0) * 100
+    roc14[p14:] = np.divide(c[p14:] - c[:-p14], c[:-p14], out=np.full(len(c) - p14, np.nan), where=c[:-p14] != 0) * 100
+    return _wma_np(roc11 + roc14, w)
+
+
+def calc_factor_trix(c, period=15) -> np.ndarray:
+    """TRIX三重平滑EMA，过滤噪声"""
+    c = _factor_arr(c)
+    ema1 = _ema_np(c, period)
+    ema2 = _ema_np(ema1, period)
+    ema3 = _ema_np(ema2, period)
+    out = np.full(len(c), np.nan)
+    out[1:] = np.divide(ema3[1:] - ema3[:-1], ema3[:-1], out=np.full(len(c) - 1, np.nan), where=ema3[:-1] != 0) * 100
+    return out
+
+
+def calc_factor_ultimate_oscillator(h, l, c, p1=7, p2=14, p3=28) -> np.ndarray:
+    """终极振荡器，多周期综合"""
+    h = _factor_arr(h)
+    l = _factor_arr(l)
+    c = _factor_arr(c)
+    n = min(len(h), len(l), len(c))
+    out = np.full(n, np.nan)
+    if n < max(p1, p2, p3) + 1:
+        return out
+    prev_close = np.r_[c[0], c[:n - 1]]
+    bp = c[:n] - np.minimum(l[:n], prev_close)
+    tr = np.maximum(h[:n], prev_close) - np.minimum(l[:n], prev_close)
+
+    def avg(period):
+        bp_sum = _rolling_sum_np(bp, period)
+        tr_sum = _rolling_sum_np(tr, period)
+        return np.divide(bp_sum, tr_sum, out=np.full(n, np.nan), where=tr_sum > 0)
+
+    out = 100 * (4 * avg(p1) + 2 * avg(p2) + avg(p3)) / 7
+    return out
+
+
+def calc_factor_chaikin_volatility(h, l, period=10) -> np.ndarray:
+    """Chaikin波动率：EMA(H-L)的变化率"""
+    h = _factor_arr(h)
+    l = _factor_arr(l)
+    n = min(len(h), len(l))
+    spread = h[:n] - l[:n]
+    ema = _ema_np(spread, period)
+    out = np.full(n, np.nan)
+    if n > period:
+        out[period:] = np.divide(ema[period:] - ema[:-period], ema[:-period],
+                                 out=np.full(n - period, np.nan), where=ema[:-period] != 0) * 100
+    return out
+
+
+def calc_factor_connors_rsi(c, rsi_p=3, streak_p=2, rank_p=100) -> np.ndarray:
+    """Connors RSI：复合短线超买超卖指标"""
+    c = _factor_arr(c)
+    n = len(c)
+    out = np.full(n, np.nan)
+    if n < max(rsi_p, streak_p, min(rank_p, n - 1)) + 2:
+        return out
+    price_rsi = _rsi_np(c, rsi_p)
+    diff = np.diff(c, prepend=c[0])
+    streak = np.zeros(n)
+    for i in range(1, n):
+        if diff[i] > 0:
+            streak[i] = streak[i - 1] + 1 if streak[i - 1] > 0 else 1
+        elif diff[i] < 0:
+            streak[i] = streak[i - 1] - 1 if streak[i - 1] < 0 else -1
+        else:
+            streak[i] = 0
+    streak_rsi = _rsi_np(streak, streak_p)
+    returns = np.diff(c, prepend=np.nan)
+    window = min(int(rank_p), max(2, n - 1))
+    rank = np.full(n, np.nan)
+    if n >= window:
+        windows = np.lib.stride_tricks.sliding_window_view(returns, window)
+        latest = windows[:, -1]
+        pct_rank = np.sum(windows < latest[:, None], axis=1) / window * 100
+        rank[window - 1:] = pct_rank
+    out = (price_rsi + streak_rsi + rank) / 3
+    return out
+
+
+def calc_composite_score(factor_dict: dict, weights: dict = None) -> np.ndarray:
+    """
+    多因子合成打分
+    - Z-score标准化各因子
+    - 按weights加权求和
+    - 输出分位数排名[0,1]
+    """
+    if not factor_dict:
+        return np.array([])
+    weights = weights or {}
+    arrays = {name: _factor_arr(values) for name, values in factor_dict.items()}
+    n = min((len(v) for v in arrays.values()), default=0)
+    if n == 0:
+        return np.array([])
+    score = np.zeros(n)
+    total_w = 0.0
+    for name, arr in arrays.items():
+        x = arr[-n:]
+        finite = np.isfinite(x)
+        if finite.sum() < 2:
+            continue
+        mean = np.nanmean(x)
+        std = np.nanstd(x)
+        if std <= 1e-12:
+            continue
+        z = (x - mean) / std
+        z = np.nan_to_num(z, nan=0.0, posinf=0.0, neginf=0.0)
+        w = float(weights.get(name, 1.0))
+        score += z * w
+        total_w += abs(w)
+    if total_w <= 0:
+        return np.full(n, np.nan)
+    score = score / total_w
+    order = np.argsort(np.argsort(score))
+    denom = max(n - 1, 1)
+    ranks = order / denom
+    ranks[~np.isfinite(score)] = np.nan
+    return ranks.astype(float)
