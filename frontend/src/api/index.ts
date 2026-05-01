@@ -8,13 +8,27 @@ async function _fetch(path: string, params?: Record<string, string>, method = 'G
     }
   }
   const resp = await fetch(url.toString(), { method })
+  if (!resp.ok) {
+    throw new Error(`请求失败: ${resp.status} ${resp.statusText}`)
+  }
   const data = await resp.json()
-  return data.success ? data.data : null
+  if (!data.success) {
+    throw new Error(data.error || '操作失败')
+  }
+  return data.data
 }
 
 export const api = {
   async getMarketOverview() {
     return _fetch('/market/overview')
+  },
+
+  async getStockList(market = 'A', limit = 100) {
+    return _fetch('/market/stocks', { market, limit: String(limit) })
+  },
+
+  async getAnomalyList() {
+    return _fetch('/market/anomaly')
   },
 
   async getMarketStatus() {
@@ -23,6 +37,18 @@ export const api = {
 
   async getRealtime(symbol: string) {
     return _fetch(`/stock/realtime/${symbol}`)
+  },
+
+  async getRealtimeBatch(symbols: string[]) {
+    const results: Record<string, any> = {}
+    const tasks = symbols.map(s => _fetch(`/stock/realtime/${s}`))
+    const responses = await Promise.allSettled(tasks)
+    responses.forEach((res, i) => {
+      if (res.status === 'fulfilled' && res.value) {
+        results[symbols[i]] = res.value
+      }
+    })
+    return results
   },
 
   async getHistory(symbol: string, period = '1y', klineType = 'daily', adjust = '') {
@@ -103,6 +129,8 @@ export const api = {
       initial_capital: String(initialCapital),
       monte_carlo: String(options.monte_carlo ?? false),
       n_simulations: String(options.n_simulations ?? 500),
+      sensitivity: String(options.sensitivity ?? false),
+      walk_forward: String(options.walk_forward ?? false),
     }
     return _fetch('/backtest/advanced', params, 'POST')
   },
@@ -207,10 +235,22 @@ export const api = {
   },
 
   async removeAlert(id: string) {
-    return _fetch('/watchlist/alert/remove', { id }, 'POST')
+    return _fetch('/watchlist/alert/remove', { alert_id: id }, 'POST')
   },
 
   async reorderWatchlist(symbols: string[]) {
     return _fetch('/watchlist/reorder', { symbols: symbols.join(',') }, 'POST')
+  },
+
+  async getStrategies() {
+    return _fetch('/backtest/strategies')
+  },
+
+  async getPortfolio() {
+    return _fetch('/trading/account')
+  },
+
+  async getRecentTrades() {
+    return _fetch('/trading/history', { limit: '10' })
   },
 }

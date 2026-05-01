@@ -1080,6 +1080,307 @@ class QuantileRegressionStrategy(BaseStrategy):
         return {"window": {"min": 40, "max": 80, "step": 10}}
 
 
+class TurtleTradingStrategy(BaseStrategy):
+    """海龟交易策略 - 经典唐奇安通道突破+ATR仓位管理"""
+
+    min_bars = 30
+
+    def __init__(self, entry_window: int = 20, exit_window: int = 10, atr_period: int = 20, risk_pct: float = 0.02):
+        super().__init__()
+        self._entry_window = int(entry_window)
+        self._exit_window = int(exit_window)
+        self._atr_period = int(atr_period)
+        self._risk_pct = float(risk_pct)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._entry_window + 5:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float).reset_index(drop=True)
+        h = df["high"].astype(float).reset_index(drop=True)
+        l = df["low"].astype(float).reset_index(drop=True)
+
+        entry_high = h.iloc[-self._entry_window - 1:-1].max()
+        entry_low = l.iloc[-self._entry_window - 1:-1].min()
+        exit_high = h.iloc[-self._exit_window - 1:-1].max()
+        exit_low = l.iloc[-self._exit_window - 1:-1].min()
+
+        last_close = _safe_float(c.iloc[-1])
+        prev_close = _safe_float(c.iloc[-2])
+
+        tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
+        atr = _safe_float(tr.rolling(self._atr_period).mean().iloc[-1])
+
+        if last_close > entry_high and prev_close <= entry_high:
+            strength = min(0.95, 0.6 + (last_close - entry_high) / max(atr, 1e-9) * 0.1)
+            return _signal(SignalType.BUY, strength, f"海龟突破{self._entry_window}日高点({entry_high:.2f})", 0.50)
+
+        if last_close < exit_low and prev_close >= exit_low:
+            return _signal(SignalType.SELL, 0.8, f"海龟跌破{self._exit_window}日低点({exit_low:.2f})")
+
+        if last_close < entry_low and prev_close >= entry_low:
+            return _signal(SignalType.SELL, 0.8, f"海龟跌破{self._entry_window}日低点({entry_low:.2f})")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"entry_window": {"min": 15, "max": 30, "step": 5}, "exit_window": {"min": 7, "max": 15, "step": 2}}
+
+
+class DualThrustStrategy(BaseStrategy):
+    """Dual Thrust策略 - 经典日内突破策略的日线版本"""
+
+    min_bars = 25
+
+    def __init__(self, lookback: int = 4, k1: float = 0.5, k2: float = 0.5):
+        super().__init__()
+        self._lookback = int(lookback)
+        self._k1 = float(k1)
+        self._k2 = float(k2)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._lookback + 5:
+            return TradeSignal(SignalType.HOLD)
+        h = df["high"].astype(float).reset_index(drop=True)
+        l = df["low"].astype(float).reset_index(drop=True)
+        c = df["close"].astype(float).reset_index(drop=True)
+        o = df["open"].astype(float).reset_index(drop=True) if "open" in df.columns else c
+
+        n = len(df)
+        hh = h.iloc[-self._lookback - 1:-1].max()
+        hc = c.iloc[-self._lookback - 1:-1].max()
+        lc = c.iloc[-self._lookback - 1:-1].min()
+        ll = l.iloc[-self._lookback - 1:-1].min()
+
+        range_val = max(hh - lc, hc - ll)
+        if range_val <= 0:
+            return TradeSignal(SignalType.HOLD)
+
+        last_open = _safe_float(o.iloc[-1])
+        last_close = _safe_float(c.iloc[-1])
+        prev_close = _safe_float(c.iloc[-2])
+
+        upper_break = last_open + self._k1 * range_val
+        lower_break = last_open - self._k2 * range_val
+
+        if last_close > upper_break and prev_close <= upper_break:
+            strength = min(0.9, 0.5 + (last_close - upper_break) / range_val * 0.3)
+            return _signal(SignalType.BUY, strength, f"Dual Thrust上破({upper_break:.2f})", 0.45)
+
+        if last_close < lower_break and prev_close >= lower_break:
+            strength = min(0.9, 0.5 + (lower_break - last_close) / range_val * 0.3)
+            return _signal(SignalType.SELL, strength, f"Dual Thrust下破({lower_break:.2f})")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"lookback": {"min": 3, "max": 7, "step": 1}, "k1": {"min": 0.3, "max": 0.7, "step": 0.1}}
+
+
+class ATRChannelBreakoutStrategy(BaseStrategy):
+    """ATR通道突破策略 - Keltner Channel突破"""
+
+    min_bars = 25
+
+    def __init__(self, ema_period: int = 20, atr_period: int = 14, atr_mult: float = 2.0):
+        super().__init__()
+        self._ema_period = int(ema_period)
+        self._atr_period = int(atr_period)
+        self._atr_mult = float(atr_mult)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < max(self._ema_period, self._atr_period) + 5:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        h = df["high"].astype(float)
+        l = df["low"].astype(float)
+
+        ema = c.ewm(span=self._ema_period, adjust=False).mean()
+        tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(self._atr_period).mean()
+
+        upper = ema + self._atr_mult * atr
+        lower = ema - self._atr_mult * atr
+
+        last_close = _safe_float(c.iloc[-1])
+        last_ema = _safe_float(ema.iloc[-1])
+        last_upper = _safe_float(upper.iloc[-1])
+        last_lower = _safe_float(lower.iloc[-1])
+        prev_close = _safe_float(c.iloc[-2])
+        prev_upper = _safe_float(upper.iloc[-2])
+        prev_lower = _safe_float(lower.iloc[-2])
+
+        if last_close > last_upper and prev_close <= prev_upper:
+            return _signal(SignalType.BUY, 0.8, f"ATR通道上轨突破({last_upper:.2f})", 0.45)
+
+        if last_close < last_lower and prev_close >= prev_lower:
+            return _signal(SignalType.SELL, 0.8, f"ATR通道下轨突破({last_lower:.2f})")
+
+        if last_close > last_ema and prev_close <= last_ema:
+            return _signal(SignalType.BUY, 0.4, "价格回到EMA上方", 0.30)
+
+        if last_close < last_ema and prev_close >= last_ema:
+            return _signal(SignalType.SELL, 0.4, "价格回到EMA下方")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"ema_period": {"min": 10, "max": 30, "step": 5}, "atr_mult": {"min": 1.5, "max": 3.0, "step": 0.25}}
+
+
+class DonchianChannelStrategy(BaseStrategy):
+    """唐奇安通道策略 - 价格突破N日高低点"""
+
+    min_bars = 25
+
+    def __init__(self, upper_period: int = 20, lower_period: int = 20):
+        super().__init__()
+        self._upper_period = int(upper_period)
+        self._lower_period = int(lower_period)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < max(self._upper_period, self._lower_period) + 2:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float).reset_index(drop=True)
+        h = df["high"].astype(float).reset_index(drop=True)
+        l = df["low"].astype(float).reset_index(drop=True)
+
+        upper_channel = h.iloc[-self._upper_period - 1:-1].max()
+        lower_channel = l.iloc[-self._lower_period - 1:-1].min()
+        mid_channel = (upper_channel + lower_channel) / 2
+
+        last_close = _safe_float(c.iloc[-1])
+        prev_close = _safe_float(c.iloc[-2])
+
+        if last_close > upper_channel and prev_close <= upper_channel:
+            return _signal(SignalType.BUY, 0.85, f"突破{self._upper_period}日高点({upper_channel:.2f})", 0.45)
+
+        if last_close < lower_channel and prev_close >= lower_channel:
+            return _signal(SignalType.SELL, 0.85, f"跌破{self._lower_period}日低点({lower_channel:.2f})")
+
+        if last_close > mid_channel and prev_close <= mid_channel:
+            return _signal(SignalType.BUY, 0.35, "价格回到通道中轨上方", 0.25)
+
+        if last_close < mid_channel and prev_close >= mid_channel:
+            return _signal(SignalType.SELL, 0.35, "价格回到通道中轨下方")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"upper_period": {"min": 10, "max": 30, "step": 5}, "lower_period": {"min": 10, "max": 30, "step": 5}}
+
+
+class ChandeKrollStopStrategy(BaseStrategy):
+    """Chande-Kroll止损策略 - 基于ATR的动态止损追踪"""
+
+    min_bars = 30
+
+    def __init__(self, atr_period: int = 10, atr_mult_first: float = 2.0, atr_mult_second: float = 3.0, lookback: int = 10):
+        super().__init__()
+        self._atr_period = int(atr_period)
+        self._mult1 = float(atr_mult_first)
+        self._mult2 = float(atr_mult_second)
+        self._lookback = int(lookback)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._atr_period + self._lookback + 5:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float).reset_index(drop=True)
+        h = df["high"].astype(float).reset_index(drop=True)
+        l = df["low"].astype(float).reset_index(drop=True)
+
+        tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(self._atr_period).mean()
+
+        first_high_stop = h - self._mult1 * atr
+        first_low_stop = l + self._mult1 * atr
+
+        stop_long = first_high_stop.rolling(self._lookback).min()
+        stop_short = first_low_stop.rolling(self._lookback).max()
+
+        last_close = _safe_float(c.iloc[-1])
+        last_stop_long = _safe_float(stop_long.iloc[-1])
+        last_stop_short = _safe_float(stop_short.iloc[-1])
+        prev_close = _safe_float(c.iloc[-2])
+        prev_stop_long = _safe_float(stop_long.iloc[-2]) if len(stop_long) > 1 else 0
+        prev_stop_short = _safe_float(stop_short.iloc[-2]) if len(stop_short) > 1 else float('inf')
+
+        if prev_close <= prev_stop_long and last_close > last_stop_long:
+            return _signal(SignalType.BUY, 0.8, f"突破Chande-Kroll多头止损线({last_stop_long:.2f})", 0.45)
+
+        if prev_close >= prev_stop_short and last_close < last_stop_short:
+            return _signal(SignalType.SELL, 0.8, f"跌破Chande-Kroll空头止损线({last_stop_short:.2f})")
+
+        if last_close > last_stop_long:
+            return _signal(SignalType.BUY, 0.3, "价格在多头止损线上方", 0.20)
+
+        if last_close < last_stop_short:
+            return _signal(SignalType.SELL, 0.3, "价格在空头止损线下方")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"atr_period": {"min": 7, "max": 14, "step": 1}, "atr_mult_first": {"min": 1.5, "max": 3.0, "step": 0.25}}
+
+
+class VolumeWeightedMACDStrategy(BaseStrategy):
+    """成交量加权MACD策略 - 将成交量融入MACD信号"""
+
+    min_bars = 40
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < 40:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
+
+        vol_ratio = v / v.rolling(20).mean().replace(0, np.nan)
+        vol_ratio = vol_ratio.fillna(1.0)
+
+        weighted_close = c * vol_ratio
+        ema12 = weighted_close.ewm(span=12, adjust=False).mean()
+        ema26 = weighted_close.ewm(span=26, adjust=False).mean()
+        dif = ema12 - ema26
+        dea = dif.ewm(span=9, adjust=False).mean()
+        hist = (dif - dea) * 2
+
+        last_dif = _safe_float(dif.iloc[-1])
+        last_dea = _safe_float(dea.iloc[-1])
+        prev_dif = _safe_float(dif.iloc[-2])
+        prev_dea = _safe_float(dea.iloc[-2])
+        last_hist = _safe_float(hist.iloc[-1])
+        prev_hist = _safe_float(hist.iloc[-2])
+        last_vol_ratio = _safe_float(vol_ratio.iloc[-1])
+
+        if last_dif > last_dea and prev_dif <= prev_dea:
+            vol_confirm = last_vol_ratio > 1.0
+            strength = 0.85 if vol_confirm else 0.6
+            reason = f"量价MACD金叉(量比={last_vol_ratio:.1f})" if vol_confirm else "量价MACD金叉(量能不足)"
+            return _signal(SignalType.BUY, strength, reason, 0.45 if vol_confirm else 0.30)
+
+        if last_dif < last_dea and prev_dif >= prev_dea:
+            vol_confirm = last_vol_ratio > 1.0
+            strength = 0.85 if vol_confirm else 0.6
+            reason = f"量价MACD死叉(量比={last_vol_ratio:.1f})" if vol_confirm else "量价MACD死叉(量能不足)"
+            return _signal(SignalType.SELL, strength, reason)
+
+        if last_hist > 0 and last_hist > prev_hist and last_vol_ratio > 1.2:
+            return _signal(SignalType.BUY, 0.45, "量价MACD柱放量增长", 0.25)
+
+        if last_hist < 0 and last_hist < prev_hist and last_vol_ratio > 1.2:
+            return _signal(SignalType.SELL, 0.45, "量价MACD柱放量缩短")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"vol_ma_window": {"min": 10, "max": 30, "step": 5}}
+
+
 class CompositeStrategy:
     """组合策略"""
 
@@ -1100,7 +1401,35 @@ class CompositeStrategy:
             MarketMicrostructureStrategy(),
             CopulaCorrelationStrategy(),
             QuantileRegressionStrategy(),
+            TurtleTradingStrategy(),
+            DualThrustStrategy(),
+            ATRChannelBreakoutStrategy(),
+            DonchianChannelStrategy(),
+            ChandeKrollStopStrategy(),
+            VolumeWeightedMACDStrategy(),
         ]
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        buy_count = 0
+        sell_count = 0
+        total_strength = 0.0
+        for s in self.strategies:
+            try:
+                sig = s.generate_signal(df)
+                if sig.signal_type == SignalType.BUY:
+                    buy_count += 1
+                    total_strength += sig.strength
+                elif sig.signal_type == SignalType.SELL:
+                    sell_count += 1
+                    total_strength -= sig.strength
+            except Exception:
+                pass
+        n = len(self.strategies) or 1
+        if buy_count >= 2 and buy_count > sell_count:
+            return TradeSignal(signal_type=SignalType.BUY, strength=round(buy_count / n, 2), reason=f"{buy_count}个策略看多")
+        elif sell_count >= 2 and sell_count > buy_count:
+            return TradeSignal(signal_type=SignalType.SELL, strength=round(sell_count / n, 2), reason=f"{sell_count}个策略看空")
+        return TradeSignal(signal_type=SignalType.HOLD, strength=0.0, reason="多空分歧")
 
     def get_strategy_info(self) -> list[dict]:
         return [s.get_info() for s in self.strategies]
@@ -1159,4 +1488,21 @@ STRATEGY_REGISTRY = {
     "quantile": QuantileRegressionStrategy,
     "quantile_regression": QuantileRegressionStrategy,
     "QuantileRegressionStrategy": QuantileRegressionStrategy,
+    "turtle": TurtleTradingStrategy,
+    "turtle_trading": TurtleTradingStrategy,
+    "TurtleTradingStrategy": TurtleTradingStrategy,
+    "dual_thrust": DualThrustStrategy,
+    "DualThrustStrategy": DualThrustStrategy,
+    "atr_channel": ATRChannelBreakoutStrategy,
+    "atr_channel_breakout": ATRChannelBreakoutStrategy,
+    "ATRChannelBreakoutStrategy": ATRChannelBreakoutStrategy,
+    "donchian": DonchianChannelStrategy,
+    "donchian_channel": DonchianChannelStrategy,
+    "DonchianChannelStrategy": DonchianChannelStrategy,
+    "chande_kroll": ChandeKrollStopStrategy,
+    "chande_kroll_stop": ChandeKrollStopStrategy,
+    "ChandeKrollStopStrategy": ChandeKrollStopStrategy,
+    "vw_macd": VolumeWeightedMACDStrategy,
+    "volume_weighted_macd": VolumeWeightedMACDStrategy,
+    "VolumeWeightedMACDStrategy": VolumeWeightedMACDStrategy,
 }

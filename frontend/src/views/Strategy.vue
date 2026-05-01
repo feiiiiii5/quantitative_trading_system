@@ -1,614 +1,502 @@
 <template>
   <div class="strategy-page">
-    <div v-if="loading" class="skeleton-strategy">
-      <div class="skeleton-row">
-        <div class="skeleton" style="height:500px;width:300px;border-radius:8px"></div>
-        <div class="skeleton" style="height:500px;flex:1;border-radius:8px;margin-left:12px"></div>
-      </div>
-    </div>
-    <template v-else>
     <div class="page-header">
-      <h1 class="page-title">策略回测</h1>
+      <h1 class="page-title">策略中心</h1>
+      <button class="btn-primary" @click="showNewStrategy = true">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+        新建策略
+      </button>
     </div>
 
-    <div class="strategy-layout">
-      <div class="left-col">
-        <div class="config-panel">
-          <div class="form-group">
-            <label>股票代码</label>
-            <input v-model="config.symbol" type="text" placeholder="如 000001" class="form-input" />
-          </div>
-
-          <div class="form-group">
-            <label>策略选择</label>
-            <div class="strategy-groups">
-              <div v-for="group in strategyGroups" :key="group.label" class="strategy-group">
-                <div class="group-label">{{ group.label }}</div>
-                <div class="group-items">
-                  <button
-                    v-for="s in group.items"
-                    :key="s.value"
-                    class="strategy-chip"
-                    :class="{ active: config.strategy === s.value }"
-                    @click="config.strategy = s.value"
-                  >{{ s.label }}</button>
-                </div>
+    <div v-if="showNewStrategy" class="modal-overlay" @click.self="showNewStrategy = false">
+      <div class="modal-card">
+        <h2 class="modal-title">新建策略</h2>
+        <div class="form-row">
+          <label>策略名称</label>
+          <input v-model="newStrategy.name" placeholder="输入策略名称" class="form-input" />
+        </div>
+        <div class="form-row">
+          <label>策略类型</label>
+          <select v-model="newStrategy.type" class="form-input">
+            <optgroup label="趋势跟踪">
+              <option value="dual_ma">双均线</option>
+              <option value="supertrend">SuperTrend</option>
+              <option value="adaptive_trend">自适应趋势</option>
+              <option value="turtle_trading">海龟交易</option>
+              <option value="donchian_channel">唐奇安通道</option>
+            </optgroup>
+            <optgroup label="动量/突破">
+              <option value="macd">MACD</option>
+              <option value="momentum">动量</option>
+              <option value="dual_thrust">Dual Thrust</option>
+              <option value="atr_channel_breakout">ATR通道突破</option>
+              <option value="bollinger_breakout">布林突破</option>
+              <option value="volatility_squeeze">波动率收缩突破</option>
+            </optgroup>
+            <optgroup label="均值回归">
+              <option value="mean_reversion_pro">均值回归增强</option>
+              <option value="rsi_mean_reversion">RSI均值回归</option>
+              <option value="kdj">KDJ</option>
+              <option value="vwap_deviation">VWAP偏离</option>
+            </optgroup>
+            <optgroup label="高级策略">
+              <option value="multi_factor">多因子共振</option>
+              <option value="ichimoku">一目均衡</option>
+              <option value="fractal_breakout">分形突破</option>
+              <option value="wyckoff">威科夫积累</option>
+              <option value="elliott_wave">艾略特波浪</option>
+              <option value="regime_switching">机制转换</option>
+              <option value="chande_kroll">Chande-Kroll止损</option>
+              <option value="vw_macd">量价MACD</option>
+              <option value="order_flow_imbalance">订单流失衡</option>
+              <option value="market_microstructure">市场微观结构</option>
+              <option value="copula_correlation">Copula相关性</option>
+              <option value="quantile_regression">分位数回归</option>
+            </optgroup>
+            <optgroup label="综合引擎">
+              <option value="adaptive">自适应量化引擎</option>
+            </optgroup>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>股票代码</label>
+          <div class="search-row">
+            <input v-model="newStrategy.symbol" placeholder="如 600519 或 贵州茅台" class="form-input" @input="onSymbolSearch" />
+            <div v-if="searchResults.length" class="search-dropdown">
+              <div v-for="r in searchResults" :key="r.code" class="search-item" @click="selectSymbol(r)">
+                <span class="search-code mono">{{ r.code }}</span>
+                <span class="search-name">{{ r.name }}</span>
+                <span class="search-market">{{ r.market }}</span>
               </div>
             </div>
           </div>
-
-          <div class="form-group">
-            <label>时间范围</label>
-            <div class="quick-range-btns">
-              <button v-for="q in quickRanges" :key="q.value" class="range-btn" :class="{ active: config.period === q.value }" @click="config.period = q.value">{{ q.label }}</button>
-            </div>
-            <div class="date-row">
-              <input v-model="config.startDate" type="date" class="form-input date-input" />
-              <span class="date-sep">至</span>
-              <input v-model="config.endDate" type="date" class="form-input date-input" />
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label>初始资金</label>
-            <input v-model.number="config.capital" type="number" class="form-input" />
-          </div>
-
-          <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
-            <span>高级参数</span>
-            <span>{{ showAdvanced ? '▲' : '▼' }}</span>
-          </div>
-          <div v-if="showAdvanced" class="advanced-params">
-            <div class="form-group">
-              <label class="checkbox-label"><input v-model="config.monteCarlo" type="checkbox" /> 蒙特卡洛模拟</label>
-            </div>
-            <div v-if="config.monteCarlo" class="form-group">
-              <label>模拟次数</label>
-              <input v-model.number="config.nSimulations" type="number" min="100" max="2000" class="form-input" />
-            </div>
-            <div class="form-group">
-              <label class="checkbox-label"><input v-model="config.sensitivity" type="checkbox" /> 敏感性分析</label>
-            </div>
-            <div class="form-group">
-              <label class="checkbox-label"><input v-model="config.walkForward" type="checkbox" /> 滚动前进分析</label>
-            </div>
-          </div>
-
-          <button class="btn-run" @click="runBacktest" :disabled="running">
-            {{ running ? '运行中...' : '开始回测' }}
-          </button>
-          <button class="btn-optimize" @click="runOptimize" :disabled="optimizing" v-if="config.strategy !== 'adaptive'">
-            {{ optimizing ? '优化中...' : '参数优化' }}
-          </button>
         </div>
-      </div>
-
-      <div class="center-col">
-        <div v-if="result" class="result-panel">
-          <div class="result-tabs">
-            <button class="rtab" :class="{ active: resultTab === 'overview' }" @click="resultTab = 'overview'">概览</button>
-            <button class="rtab" :class="{ active: resultTab === 'risk' }" @click="resultTab = 'risk'">风险分析</button>
-            <button class="rtab" :class="{ active: resultTab === 'montecarlo' }" @click="resultTab = 'montecarlo'" v-if="result.monte_carlo">蒙特卡洛</button>
-            <button class="rtab" :class="{ active: resultTab === 'optimization' }" @click="resultTab = 'optimization'" v-if="optimizationResult">参数优化</button>
-            <button class="rtab" :class="{ active: resultTab === 'heatmap' }" @click="resultTab = 'heatmap'">收益热力图</button>
-            <button class="rtab" :class="{ active: resultTab === 'trades' }" @click="resultTab = 'trades'">交易记录</button>
-          </div>
-
-          <div v-if="resultTab === 'overview'" class="tab-body">
-            <div class="metrics-grid">
-              <MetricCard label="总收益" :value="fmtPct(result.total_return)" :positive="result.total_return >= 0 ? 'up' : 'down'" />
-              <MetricCard label="年化收益" :value="fmtPct(result.annual_return)" :positive="result.annual_return >= 0 ? 'up' : 'down'" />
-              <MetricCard label="最大回撤" :value="fmtPct(result.max_drawdown)" positive="down" />
-              <MetricCard label="夏普比率" :value="(result.sharpe_ratio || 0).toFixed(2)" positive="neutral" />
-              <MetricCard label="胜率" :value="fmtPct(result.win_rate)" positive="neutral" />
-              <MetricCard label="盈亏比" :value="(result.profit_factor || 0).toFixed(2)" positive="neutral" />
-              <MetricCard label="Omega" :value="(result.omega_ratio || 0).toFixed(2)" positive="neutral" />
-              <MetricCard label="Calmar" :value="(result.calmar_ratio || 0).toFixed(2)" positive="neutral" />
-            </div>
-            <div class="chart-section">
-              <h3 class="section-title">权益曲线</h3>
-              <BaseChart :option="equityOption" height="280px" />
-            </div>
-            <div class="chart-section">
-              <h3 class="section-title">回撤曲线</h3>
-              <BaseChart :option="drawdownOption" height="160px" />
-            </div>
-          </div>
-
-          <div v-if="resultTab === 'risk'" class="tab-body">
-            <div class="metrics-grid">
-              <MetricCard label="波动率(年)" :value="fmtPct(result.volatility || result.annual_volatility)" positive="neutral" />
-              <MetricCard label="下行偏差" :value="fmtPct(result.downside_deviation)" positive="down" />
-              <MetricCard label="CVaR(95%)" :value="fmtPct(result.cvar_95)" positive="down" />
-              <MetricCard label="Tail Ratio" :value="(result.tail_ratio || 0).toFixed(2)" positive="neutral" />
-              <MetricCard label="信息比率" :value="(result.information_ratio || 0).toFixed(2)" positive="neutral" />
-              <MetricCard label="恢复天数" :value="String(result.recovery_days || '-')" positive="neutral" />
-            </div>
-            <div class="chart-section">
-              <h3 class="section-title">月度收益分布</h3>
-              <BaseChart :option="monthlyReturnOption" height="200px" />
-            </div>
-          </div>
-
-          <div v-if="resultTab === 'montecarlo' && result.monte_carlo" class="tab-body">
-            <div class="metrics-grid">
-              <MetricCard label="鲁棒性评分" :value="(result.monte_carlo.robustness_score || 0).toFixed(2)" positive="neutral" />
-              <MetricCard label="P5最终资金" :value="fmtMoney(result.monte_carlo.final_p5)" positive="down" />
-              <MetricCard label="P50最终资金" :value="fmtMoney(result.monte_carlo.final_p50)" positive="neutral" />
-              <MetricCard label="P95最终资金" :value="fmtMoney(result.monte_carlo.final_p95)" positive="up" />
-            </div>
-            <div class="chart-section">
-              <h3 class="section-title">蒙特卡洛资金分布</h3>
-              <BaseChart :option="monteCarloOption" height="300px" />
-            </div>
-          </div>
-
-          <div v-if="resultTab === 'optimization' && optimizationResult" class="tab-body">
-            <div class="metrics-grid">
-              <MetricCard label="最优夏普" :value="(optimizationResult.top?.[0]?.sharpe_ratio || 0).toFixed(2)" positive="neutral" />
-              <MetricCard label="最优收益" :value="fmtPct(optimizationResult.top?.[0]?.total_return)" :positive="(optimizationResult.top?.[0]?.total_return || 0) >= 0 ? 'up' : 'down'" />
-              <MetricCard label="最优回撤" :value="fmtPct(optimizationResult.top?.[0]?.max_drawdown)" positive="down" />
-              <MetricCard label="优化指标" :value="optimizationResult.metric || 'sharpe_ratio'" positive="neutral" />
-            </div>
-            <div class="opt-table-wrap">
-              <DataTable :columns="optColumns" :data="optimizationResult.top || []" :striped="true" row-key="params" />
-            </div>
-          </div>
-
-          <div v-if="resultTab === 'heatmap'" class="tab-body">
-            <div ref="yearlyHeatmapRef" class="heatmap-chart"></div>
-          </div>
-
-          <div v-if="resultTab === 'trades'" class="tab-body">
-            <DataTable :columns="tradeColumns" :data="result.trades || []" :striped="true" row-key="date" />
+        <div class="form-row">
+          <label>初始资金</label>
+          <input v-model.number="newStrategy.capital" type="number" placeholder="1000000" class="form-input" />
+        </div>
+        <div class="form-row">
+          <label>回测区间</label>
+          <div class="date-row">
+            <input v-model="newStrategy.start_date" type="date" class="form-input" />
+            <span class="date-sep">至</span>
+            <input v-model="newStrategy.end_date" type="date" class="form-input" />
           </div>
         </div>
-        <div v-else class="empty-state">
-          <div class="empty-icon">📊</div>
-          <p>选择策略和参数后开始回测</p>
-        </div>
-      </div>
-
-      <div class="right-col">
-        <div class="history-panel">
-          <h3 class="section-title">回测历史</h3>
-          <div v-if="historyList.length" class="history-list">
-            <div v-for="(h, idx) in historyList" :key="idx" class="history-item" @click="loadHistory(idx)">
-              <div class="hist-top">
-                <span class="hist-symbol">{{ h.symbol }}</span>
-                <span class="hist-strategy">{{ h.strategy }}</span>
-              </div>
-              <div class="hist-bottom">
-                <span class="hist-return" :class="h.total_return >= 0 ? 'up' : 'down'">{{ fmtPct(h.total_return) }}</span>
-                <span class="hist-date">{{ h.run_time }}</span>
-              </div>
-            </div>
-          </div>
-          <div v-else class="empty-state-small">暂无历史</div>
+        <div class="modal-btns">
+          <button class="btn-save" @click="createStrategy" :disabled="creating">{{ creating ? '创建中...' : '创建并回测' }}</button>
+          <button class="btn-cancel" @click="showNewStrategy = false">取消</button>
         </div>
       </div>
     </div>
-    </template>
+
+    <div v-if="strategies.length" class="strategy-list">
+      <div v-for="s in strategies" :key="s.id" class="strategy-card card" @click="selectStrategy(s)">
+        <div class="card-header">
+          <div class="card-title-row">
+            <span class="strategy-name">{{ s.name }}</span>
+            <span class="strategy-type badge">{{ typeLabel(s.type) }}</span>
+          </div>
+          <div class="card-meta">
+            <span class="meta-item mono">{{ s.symbol }}</span>
+            <span class="meta-item">{{ s.start_date }} ~ {{ s.end_date }}</span>
+          </div>
+        </div>
+        <div v-if="s.result && !s.result.error" class="card-metrics">
+          <div class="metric">
+            <span class="metric-label">总收益</span>
+            <span class="metric-value mono" :class="s.result.total_return >= 0 ? 'up' : 'down'">{{ pct(s.result.total_return) }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">最大回撤</span>
+            <span class="metric-value mono down">{{ pct(s.result.max_drawdown) }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">夏普比率</span>
+            <span class="metric-value mono">{{ (s.result.sharpe_ratio || 0).toFixed(2) }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">胜率</span>
+            <span class="metric-value mono">{{ pct(s.result.win_rate) }}</span>
+          </div>
+        </div>
+        <div v-else-if="s.result && s.result.error" class="card-metrics">
+          <span class="metric-error">{{ s.result.error }}</span>
+        </div>
+        <div v-else class="card-metrics">
+          <span class="metric-pending">回测中...</span>
+        </div>
+        <div class="card-actions">
+          <button class="action-btn" @click.stop="rerunBacktest(s)">重新回测</button>
+          <button class="action-btn danger" @click.stop="deleteStrategy(s.id)">删除</button>
+        </div>
+      </div>
+    </div>
+    <div v-else class="empty-state">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      <span>暂无策略</span>
+      <button class="btn-primary" @click="showNewStrategy = true">创建第一个策略</button>
+    </div>
+
+    <div v-if="selectedStrategy" class="detail-panel card">
+      <div class="detail-header">
+        <h2 class="detail-title">{{ selectedStrategy.name }}</h2>
+        <button class="close-btn" @click="selectedStrategy = null">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div v-if="selectedStrategy.result && !selectedStrategy.result.error" class="detail-content">
+        <div class="detail-metrics">
+          <MetricCard label="总收益" :value="pct(selectedStrategy.result.total_return)" :positive="selectedStrategy.result.total_return >= 0 ? 'up' : 'down'" />
+          <MetricCard label="年化收益" :value="pct(selectedStrategy.result.annual_return)" :positive="selectedStrategy.result.annual_return >= 0 ? 'up' : 'down'" />
+          <MetricCard label="最大回撤" :value="pct(selectedStrategy.result.max_drawdown)" positive="down" />
+          <MetricCard label="夏普比率" :value="(selectedStrategy.result.sharpe_ratio || 0).toFixed(2)" positive="neutral" />
+          <MetricCard label="胜率" :value="pct(selectedStrategy.result.win_rate)" positive="neutral" />
+          <MetricCard label="盈亏比" :value="(selectedStrategy.result.profit_factor || 0).toFixed(2)" positive="neutral" />
+        </div>
+
+        <div v-if="selectedStrategy.result.strategy_allocation && selectedStrategy.result.strategy_allocation.length" class="regime-section">
+          <h3 class="section-title">市场状态与策略分配</h3>
+          <div class="regime-list">
+            <div v-for="ra in selectedStrategy.result.strategy_allocation" :key="ra.regime" class="regime-item">
+              <div class="regime-name">{{ ra.name }}</div>
+              <div class="regime-strats">
+                <span v-for="s in ra.strategies" :key="s.name" class="strat-chip">
+                  {{ s.name }} <span class="strat-w">{{ (s.weight * 100).toFixed(0) }}%</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="selectedStrategy.result.equity_curve && selectedStrategy.result.equity_curve.length" class="detail-chart">
+          <BaseChart :option="equityOption" height="260px" />
+        </div>
+
+        <div v-if="selectedStrategy.result.trades && selectedStrategy.result.trades.length" class="detail-trades">
+          <h3 class="section-title">交易记录 ({{ selectedStrategy.result.total_trades }}笔)</h3>
+          <div class="trades-table">
+            <div class="trade-row trade-header">
+              <span>日期</span><span>方向</span><span>价格</span><span>数量</span><span>盈亏</span><span>原因</span>
+            </div>
+            <div v-for="(t, idx) in selectedStrategy.result.trades.filter((x: any) => x.action === 'sell').slice(0, 30)" :key="idx" class="trade-row" :class="{ 'trade-buy': t.action === 'buy', 'trade-sell': t.action === 'sell' }">
+              <span class="mono">{{ (t.date || '').slice(0, 10) }}</span>
+              <span :class="t.action === 'buy' ? 'up' : 'down'">{{ t.action === 'buy' ? '买入' : '卖出' }}</span>
+              <span class="mono">{{ (t.price || 0).toFixed(2) }}</span>
+              <span class="mono">{{ t.shares || 0 }}</span>
+              <span class="mono" :class="t.pnl >= 0 ? 'up' : 'down'">{{ t.pnl >= 0 ? '+' : '' }}{{ (t.pnl || 0).toFixed(0) }}</span>
+              <span class="trade-reason">{{ (t.reason || '').slice(0, 20) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="selectedStrategy.result && selectedStrategy.result.error" class="detail-content">
+        <div class="error-box">{{ selectedStrategy.result.error }}</div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { api } from '../api'
-import echarts from '../lib/echarts'
-import { MetricCard, BaseChart, DataTable } from '../components'
+import { useToast } from '../composables/useToast'
+import { MetricCard, BaseChart } from '../components'
 
-const config = ref({
-  symbol: '000001',
-  strategy: 'adaptive',
-  period: '1y',
-  startDate: '2024-04-29',
-  endDate: '2025-04-29',
+const toast = useToast()
+const strategies = ref<any[]>([])
+const selectedStrategy = ref<any>(null)
+const showNewStrategy = ref(false)
+const creating = ref(false)
+const searchResults = ref<any[]>([])
+let searchTimer: any = null
+
+const newStrategy = ref({
+  name: '',
+  type: 'adaptive',
+  symbol: '',
   capital: 1000000,
-  monteCarlo: false,
-  nSimulations: 500,
-  sensitivity: false,
-  walkForward: false,
+  start_date: new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10),
+  end_date: new Date().toISOString().slice(0, 10),
 })
-const loading = ref(true)
-const running = ref(false)
-const optimizing = ref(false)
-const optimizationResult = ref<any>(null)
-const result = ref<any>(null)
-const resultTab = ref('overview')
-const showAdvanced = ref(false)
-const historyList = ref<any[]>([])
 
-const yearlyHeatmapRef = ref<HTMLElement | null>(null)
-let yearlyHeatmapChart: any = null
+const TYPE_LABELS: Record<string, string> = {
+  dual_ma: '双均线', macd: 'MACD', bollinger_breakout: '布林突破',
+  ichimoku: '一目均衡', adaptive: '自适应引擎', supertrend: 'SuperTrend',
+  adaptive_trend: '自适应趋势', turtle_trading: '海龟交易',
+  donchian_channel: '唐奇安通道', momentum: '动量', dual_thrust: 'Dual Thrust',
+  atr_channel_breakout: 'ATR通道突破', volatility_squeeze: '波动率收缩突破',
+  mean_reversion_pro: '均值回归增强', rsi_mean_reversion: 'RSI均值回归',
+  kdj: 'KDJ', vwap_deviation: 'VWAP偏离', multi_factor: '多因子共振',
+  fractal_breakout: '分形突破', wyckoff: '威科夫积累',
+  elliott_wave: '艾略特波浪', regime_switching: '机制转换',
+  chande_kroll: 'Chande-Kroll', vw_macd: '量价MACD',
+  order_flow_imbalance: '订单流失衡', market_microstructure: '市场微观结构',
+  copula_correlation: 'Copula相关性', quantile_regression: '分位数回归',
+}
 
-const strategyGroups = [
-  {
-    label: '趋势跟踪',
-    items: [
-      { value: 'dual_ma', label: '双均线' },
-      { value: 'macd', label: 'MACD' },
-      { value: 'supertrend', label: 'SuperTrend' },
-      { value: 'ichimoku', label: '一目均衡' },
-      { value: 'donchian', label: '唐奇安通道' },
-    ],
-  },
-  {
-    label: '均值回归',
-    items: [
-      { value: 'bollinger_breakout', label: '布林突破' },
-      { value: 'rsi_reversal', label: 'RSI反转' },
-      { value: 'mean_reversion', label: '均值回归' },
-    ],
-  },
-  {
-    label: '多因子',
-    items: [
-      { value: 'composite', label: '复合策略' },
-      { value: 'factor_model', label: '因子模型' },
-    ],
-  },
-  {
-    label: '自适应',
-    items: [
-      { value: 'adaptive', label: '自适应引擎' },
-      { value: 'regime_switching', label: '状态切换' },
-    ],
-  },
-]
+function typeLabel(type: string): string {
+  return TYPE_LABELS[type] || type
+}
 
-const quickRanges = [
-  { value: '3m', label: '3月' },
-  { value: '6m', label: '6月' },
-  { value: '1y', label: '1年' },
-  { value: '3y', label: '3年' },
-  { value: '5y', label: '5年' },
-]
-
-const tradeColumns = [
-  { key: 'date', label: '日期', width: '90px' },
-  { key: 'type', label: '方向', width: '50px', cellClass: 'center' },
-  { key: 'price', label: '价格', width: '70px', align: 'right' as const, format: (v: number) => v?.toFixed(2) },
-  { key: 'shares', label: '数量', width: '60px', align: 'right' as const },
-  { key: 'pnl', label: '盈亏', width: '70px', align: 'right' as const, format: (v: number) => v ? (v >= 0 ? '+' : '') + v.toFixed(0) : '-' },
-  { key: 'strategy', label: '策略', width: '80px' },
-]
-
-const optColumns = [
-  { key: 'params', label: '参数', format: (v: any) => JSON.stringify(v) },
-  { key: 'total_return', label: '总收益', align: 'right' as const, format: (v: number) => fmtPct(v) },
-  { key: 'sharpe_ratio', label: '夏普', align: 'right' as const, format: (v: number) => v?.toFixed(2) },
-  { key: 'max_drawdown', label: '最大回撤', align: 'right' as const, format: (v: number) => fmtPct(v) },
-]
-
-function fmtPct(v: number): string {
-  if (v === undefined || v === null) return '-'
+function pct(v: number): string {
+  if (v === undefined || v === null) return '0.00%'
   return (v >= 0 ? '+' : '') + (v * 100).toFixed(2) + '%'
 }
 
-function fmtMoney(v: number): string {
-  if (!v) return '-'
-  return '¥' + v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+function onSymbolSearch() {
+  if (searchTimer) clearTimeout(searchTimer)
+  const q = newStrategy.value.symbol.trim()
+  if (!q) { searchResults.value = []; return }
+  searchTimer = setTimeout(async () => {
+    try {
+      const data = await api.search(q, 6)
+      searchResults.value = Array.isArray(data) ? data : []
+    } catch { searchResults.value = [] }
+  }, 300)
 }
 
-async function runBacktest() {
-  running.value = true
+function selectSymbol(r: any) {
+  newStrategy.value.symbol = r.code || r.symbol
+  searchResults.value = []
+}
+
+async function loadStrategies() {
+  try {
+    const data = await api.getStrategies()
+    strategies.value = Array.isArray(data) ? data : []
+  } catch {
+    strategies.value = []
+  }
+}
+
+async function createStrategy() {
+  if (!newStrategy.value.name || !newStrategy.value.symbol) {
+    toast.warning('请填写策略名称和股票代码')
+    return
+  }
+  creating.value = true
   try {
     const data = await api.runBacktest(
-      config.value.symbol,
-      config.value.strategy,
-      config.value.startDate,
-      config.value.endDate,
-      config.value.capital,
-      {
-        monte_carlo: config.value.monteCarlo,
-        n_simulations: config.value.nSimulations,
-        sensitivity: config.value.sensitivity,
-        walk_forward: config.value.walkForward,
-      }
+      newStrategy.value.symbol, newStrategy.value.type,
+      newStrategy.value.start_date, newStrategy.value.end_date,
+      newStrategy.value.capital,
     )
     if (data) {
-      result.value = data
-      resultTab.value = 'overview'
-      historyList.value.unshift({
-        symbol: config.value.symbol,
-        strategy: config.value.strategy,
-        total_return: data.total_return,
-        run_time: new Date().toLocaleTimeString('zh-CN'),
-        data,
+      strategies.value.unshift({
+        id: Date.now().toString(),
+        name: newStrategy.value.name,
+        type: newStrategy.value.type,
+        symbol: newStrategy.value.symbol,
+        start_date: newStrategy.value.start_date,
+        end_date: newStrategy.value.end_date,
+        result: data,
       })
-      if (historyList.value.length > 20) historyList.value = historyList.value.slice(0, 20)
+      showNewStrategy.value = false
+      newStrategy.value = { name: '', type: 'adaptive', symbol: '', capital: 1000000, start_date: newStrategy.value.start_date, end_date: newStrategy.value.end_date }
     }
   } catch (e) {
-    console.error('Backtest error:', e)
+    toast.error(e instanceof Error ? e.message : '创建策略失败')
   } finally {
-    running.value = false
+    creating.value = false
   }
 }
 
-async function runOptimize() {
-  optimizing.value = true
+function selectStrategy(s: any) {
+  selectedStrategy.value = s
+}
+
+async function rerunBacktest(s: any) {
   try {
-    const data = await api.optimizeStrategy(
-      config.value.symbol,
-      config.value.strategy,
-      config.value.startDate,
-      config.value.endDate,
-      'sharpe_ratio',
-      100
-    )
+    const data = await api.runBacktest(s.symbol, s.type, s.start_date, s.end_date, 1000000)
     if (data) {
-      optimizationResult.value = data
-      resultTab.value = 'optimization'
+      s.result = data
+      if (selectedStrategy.value?.id === s.id) selectedStrategy.value = { ...s }
     }
   } catch (e) {
-    console.error('Optimize error:', e)
-  } finally {
-    optimizing.value = false
+    toast.error(e instanceof Error ? e.message : '回测失败')
   }
 }
 
-async function loadServerHistory() {
-  try {
-    const data = await api.getBacktestHistory()
-    if (data && Array.isArray(data) && data.length) {
-      const serverHistory = data.slice(0, 10).map((h: any) => ({
-        symbol: h.symbol || '',
-        strategy: h.strategy_name || h.strategy || '',
-        total_return: h.total_return || 0,
-        run_time: h.created_at || h.run_time || '',
-        data: h,
-      }))
-      const existingKeys = new Set(historyList.value.map(h => `${h.symbol}_${h.strategy}_${h.run_time}`))
-      for (const sh of serverHistory) {
-        const key = `${sh.symbol}_${sh.strategy}_${sh.run_time}`
-        if (!existingKeys.has(key)) {
-          historyList.value.push(sh)
-        }
-      }
-    }
-  } catch (e) {}
-}
-
-function loadHistory(idx: number) {
-  const h = historyList.value[idx]
-  if (h?.data) {
-    result.value = h.data
-    resultTab.value = 'overview'
-  }
+async function deleteStrategy(id: string) {
+  strategies.value = strategies.value.filter(s => s.id !== id)
+  if (selectedStrategy.value?.id === id) selectedStrategy.value = null
 }
 
 const equityOption = computed(() => {
-  if (!result.value?.equity_curve) return {}
-  const eq = result.value.equity_curve
+  if (!selectedStrategy.value?.result?.equity_curve) return {}
+  const eq = selectedStrategy.value.result.equity_curve
   const dates = eq.map((d: any) => (d.date || '').slice(0, 10))
-  const values = eq.map((d: any) => d.value || d.equity)
-  const benchmark = eq.map((d: any) => d.benchmark || d.bm_value)
-  const hasBm = benchmark.some((v: any) => v !== undefined && v !== null)
-  const series: any[] = [
-    { name: '策略', type: 'line', data: values, showSymbol: false, lineStyle: { width: 1.5, color: '#4d9fff' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(77,159,255,0.12)' }, { offset: 1, color: 'rgba(77,159,255,0)' }] } } },
-  ]
-  if (hasBm) {
-    series.push({ name: '基准', type: 'line', data: benchmark, showSymbol: false, lineStyle: { width: 1, color: '#666', type: 'dashed' } })
+  const values = eq.map((d: any) => d.value)
+  const bc = selectedStrategy.value.result.benchmark_curve || []
+  const benchValues = bc.map((d: any) => d.value)
+
+  const series: any[] = [{
+    type: 'line', name: '策略权益', data: values, showSymbol: false,
+    lineStyle: { width: 1.5, color: '#38bdf8' },
+    areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(56,189,248,0.12)' }, { offset: 1, color: 'rgba(56,189,248,0)' }] } },
+  }]
+  if (benchValues.length) {
+    series.push({
+      type: 'line', name: '基准', data: benchValues, showSymbol: false,
+      lineStyle: { width: 1, color: '#6b7280', type: 'dashed' },
+    })
   }
+
   return {
     backgroundColor: 'transparent', animation: false,
     tooltip: { trigger: 'axis' },
-    legend: { data: hasBm ? ['策略', '基准'] : ['策略'], top: 0, textStyle: { color: '#888', fontSize: 10 } },
-    grid: { left: 60, right: 20, top: 30, bottom: 30 },
-    xAxis: { type: 'category', data: dates, axisLabel: { color: '#888', fontSize: 9 } },
-    yAxis: { type: 'value', scale: true, axisLabel: { color: '#888', fontSize: 9 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } } },
+    legend: { show: benchValues.length > 0, top: 0, textStyle: { color: '#9ca3af', fontSize: 10 } },
+    grid: { left: 55, right: 12, top: 24, bottom: 28 },
+    xAxis: { type: 'category', data: dates, axisLabel: { color: '#4a5068', fontSize: 9 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { color: '#4a5068', fontSize: 9 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)' } } },
     series,
   }
 })
 
-const drawdownOption = computed(() => {
-  if (!result.value?.drawdown_curve && !result.value?.equity_curve) return {}
-  const eq = result.value.equity_curve
-  const dates = eq.map((d: any) => (d.date || '').slice(0, 10))
-  let dd: number[]
-  if (result.value.drawdown_curve) {
-    dd = result.value.drawdown_curve.map((v: any) => typeof v === 'number' ? v * 100 : v)
-  } else {
-    const values = eq.map((d: any) => d.value || d.equity)
-    let peak = values[0]
-    dd = values.map((v: number) => {
-      peak = Math.max(peak, v)
-      return ((v - peak) / peak) * 100
-    })
-  }
-  return {
-    backgroundColor: 'transparent', animation: false,
-    tooltip: { trigger: 'axis', formatter: (p: any) => p[0] ? `${p[0].axisValue}<br/>回撤: ${p[0].value.toFixed(2)}%` : '' },
-    grid: { left: 60, right: 20, top: 10, bottom: 30 },
-    xAxis: { type: 'category', data: dates, axisLabel: { color: '#888', fontSize: 9 } },
-    yAxis: { type: 'value', axisLabel: { color: '#888', fontSize: 9, formatter: (v: number) => v.toFixed(0) + '%' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } } },
-    series: [{ type: 'line', data: dd, showSymbol: false, lineStyle: { width: 1, color: '#f43f5e' }, areaStyle: { color: 'rgba(244,63,94,0.15)' } }],
-  }
-})
-
-const monthlyReturnOption = computed(() => {
-  if (!result.value?.monthly_returns) return {}
-  const mr = result.value.monthly_returns
-  const months = mr.map((d: any) => d.month || d.date)
-  const values = mr.map((d: any) => ((d.return || d.value) * 100))
-  return {
-    backgroundColor: 'transparent', animation: false,
-    tooltip: { trigger: 'axis', formatter: (p: any) => p[0] ? `${p[0].axisValue}<br/>${p[0].value.toFixed(2)}%` : '' },
-    grid: { left: 50, right: 20, top: 10, bottom: 30 },
-    xAxis: { type: 'category', data: months, axisLabel: { color: '#888', fontSize: 9, rotate: 45 } },
-    yAxis: { type: 'value', axisLabel: { color: '#888', fontSize: 9, formatter: (v: number) => v.toFixed(0) + '%' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } } },
-    series: [{ type: 'bar', data: values.map((v: number) => ({ value: v, itemStyle: { color: v >= 0 ? '#f43f5e' : '#34d399' } })) }],
-  }
-})
-
-const monteCarloOption = computed(() => {
-  if (!result.value?.monte_carlo?.paths) return {}
-  const mc = result.value.monte_carlo
-  const paths = mc.paths.slice(0, 30)
-  const series = paths.map((path: number[], idx: number) => ({
-    type: 'line', data: path, showSymbol: false, smooth: true,
-    lineStyle: { width: 0.5, color: idx === 0 ? '#4d9fff' : 'rgba(77,159,255,0.2)' },
-  }))
-  return {
-    backgroundColor: 'transparent', animation: false,
-    tooltip: { trigger: 'axis' },
-    grid: { left: 60, right: 20, top: 10, bottom: 30 },
-    xAxis: { type: 'category', axisLabel: { show: false } },
-    yAxis: { type: 'value', scale: true, axisLabel: { color: '#888', fontSize: 9 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } } },
-    series,
-  }
-})
-
-watch(resultTab, (tab) => {
-  if (tab === 'heatmap') {
-    nextTick(() => renderYearlyHeatmap())
-  }
-})
-
-function renderYearlyHeatmap() {
-  if (!yearlyHeatmapRef.value || !result.value) return
-  if (!yearlyHeatmapChart) {
-    yearlyHeatmapChart = echarts.init(yearlyHeatmapRef.value, undefined, { renderer: 'canvas' })
-  }
-  const trades = result.value.trades || []
-  const yearMonthMap: Record<string, number> = {}
-  trades.forEach((t: any) => {
-    const date = t.date || t.exit_date || ''
-    if (!date) return
-    const ym = date.slice(0, 7)
-    if (!yearMonthMap[ym]) yearMonthMap[ym] = 0
-    yearMonthMap[ym] += (t.pnl || 0)
-  })
-  const years = [...new Set(Object.keys(yearMonthMap).map(k => k.slice(0, 4)))].sort()
-  const months = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
-  const data: any[] = []
-  years.forEach((year, yi) => {
-    months.forEach((month, mi) => {
-      const key = year + '-' + month
-      const val = yearMonthMap[key]
-      if (val !== undefined) {
-        data.push([mi, yi, val])
-      }
-    })
-  })
-  yearlyHeatmapChart.setOption({
-    animation: false,
-    tooltip: {
-      formatter: (info: any) => {
-        const d = info.data
-        return `${years[d[1]]}-${months[d[0]]}<br/>收益: ${d[2] >= 0 ? '+' : ''}${(d[2] / config.value.capital * 100).toFixed(2)}%`
-      },
-    },
-    grid: { left: 50, right: 20, top: 10, bottom: 40 },
-    xAxis: { type: 'category', data: months.map(m => m + '月'), axisLabel: { color: '#888', fontSize: 10 }, splitLine: { show: false } },
-    yAxis: { type: 'category', data: years, axisLabel: { color: '#888', fontSize: 10 }, splitLine: { show: false } },
-    visualMap: { min: -50000, max: 50000, calculable: true, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#34d399', '#1a1a2e', '#f43f5e'] }, textStyle: { color: '#888', fontSize: 9 }, show: false },
-    series: [{
-      type: 'heatmap', data,
-      label: { show: true, formatter: (p: any) => p.data[2] >= 0 ? '+' : '', fontSize: 9, color: '#e8eaed' },
-      itemStyle: { borderColor: 'var(--bg-primary)', borderWidth: 2 },
-    }],
-  }, true)
-}
-
-onMounted(() => {
-  const saved = localStorage.getItem('backtest_history')
-  if (saved) {
-    try { historyList.value = JSON.parse(saved) } catch (e) {}
-  }
-  loadServerHistory()
-  loading.value = false
-})
-
-watch(historyList, (v) => {
-  localStorage.setItem('backtest_history', JSON.stringify(v.slice(0, 20)))
-}, { deep: true })
+onMounted(loadStrategies)
 </script>
 
 <style scoped>
-.skeleton-strategy { padding: 20px; }
-.skeleton-row { display: flex; gap: 12px; }
-.skeleton { border-radius: 8px; background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-tertiary, #1a1a24) 50%, var(--bg-secondary) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
-@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-.strategy-page { padding: 20px; max-width: 1440px; margin: 0 auto; }
-.page-header { margin-bottom: 16px; }
-.page-title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
+.strategy-page { padding: 14px 16px; max-width: 1200px; margin: 0 auto; }
+.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.page-title { font-size: 18px; font-weight: 700; color: var(--text-primary); }
 
-.strategy-layout { display: grid; grid-template-columns: 260px 1fr 220px; gap: 16px; }
-
-.config-panel { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 16px; }
-.form-group { margin-bottom: 12px; }
-.form-group > label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; font-weight: 500; }
-.form-input { width: 100%; padding: 7px 10px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; font-family: var(--font-mono); }
-.form-input:focus { outline: none; border-color: var(--accent-cyan); }
-
-.strategy-groups { display: flex; flex-direction: column; gap: 8px; }
-.strategy-group { }
-.group-label { font-size: 10px; color: var(--text-tertiary); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
-.group-items { display: flex; flex-wrap: wrap; gap: 3px; }
-.strategy-chip { padding: 3px 8px; border: 1px solid var(--border-color); border-radius: 3px; background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; transition: all 0.15s; }
-.strategy-chip:hover { border-color: rgba(77,159,255,0.3); color: var(--text-primary); }
-.strategy-chip.active { background: rgba(77,159,255,0.15); color: var(--accent-cyan); border-color: rgba(77,159,255,0.4); }
-
-.quick-range-btns { display: flex; gap: 3px; margin-bottom: 6px; }
-.range-btn { flex: 1; padding: 4px 0; border: 1px solid var(--border-color); border-radius: 3px; background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer; }
-.range-btn.active { background: rgba(77,159,255,0.15); color: var(--accent-cyan); border-color: rgba(77,159,255,0.3); }
-.date-row { display: flex; align-items: center; gap: 6px; }
-.date-input { flex: 1; }
-.date-sep { font-size: 11px; color: var(--text-tertiary); }
-
-.advanced-toggle { display: flex; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--border-color); margin-top: 8px; cursor: pointer; font-size: 11px; color: var(--text-secondary); }
-.advanced-params { margin-top: 8px; }
-.checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); cursor: pointer; }
-.checkbox-label input { accent-color: var(--accent-cyan); }
-
-.btn-run { width: 100%; padding: 10px; margin-top: 12px; border: none; border-radius: var(--radius-sm); background: linear-gradient(135deg, #4d9fff, #a78bfa); color: white; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
-.btn-run:hover { opacity: 0.9; }
-.btn-run:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-optimize { width: 100%; padding: 10px; margin-top: 6px; border: 1px solid rgba(77,159,255,0.4); border-radius: var(--radius-sm); background: transparent; color: var(--accent-cyan); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
-.btn-optimize:hover { background: rgba(77,159,255,0.1); }
-.btn-optimize:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.result-panel { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 16px; min-height: 400px; }
-.result-tabs { display: flex; gap: 2px; margin-bottom: 14px; overflow-x: auto; }
-.rtab { padding: 6px 12px; border: none; background: transparent; color: var(--text-secondary); font-size: 12px; border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; transition: all 0.15s; }
-.rtab.active { background: rgba(77,159,255,0.15); color: var(--accent-cyan); }
-
-.tab-body { }
-.metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
-.chart-section { margin-bottom: 14px; }
-.section-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
-
-.opt-table-wrap { max-height: 400px; overflow-y: auto; }
-
-.heatmap-chart { width: 100%; height: 300px; }
-
-.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px 20px; color: var(--text-tertiary); }
-.empty-icon { font-size: 40px; margin-bottom: 12px; }
-
-.right-col { }
-.history-panel { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 14px; }
-.history-list { display: flex; flex-direction: column; gap: 4px; max-height: 500px; overflow-y: auto; }
-.history-item { padding: 8px 10px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); cursor: pointer; transition: background 0.15s; }
-.history-item:hover { background: rgba(255,255,255,0.05); }
-.hist-top { display: flex; justify-content: space-between; margin-bottom: 2px; }
-.hist-symbol { font-family: var(--font-mono); font-size: 11px; color: var(--accent-cyan); }
-.hist-strategy { font-size: 10px; color: var(--text-secondary); }
-.hist-bottom { display: flex; justify-content: space-between; }
-.hist-return { font-family: var(--font-mono); font-size: 11px; font-weight: 600; }
-.hist-return.up { color: var(--accent-red); }
-.hist-return.down { color: var(--accent-green); }
-.hist-date { font-size: 10px; color: var(--text-tertiary); }
-.empty-state-small { text-align: center; padding: 20px; color: var(--text-tertiary); font-size: 12px; }
-
-@media (max-width: 1024px) {
-  .strategy-layout { grid-template-columns: 1fr; }
-  .right-col { display: none; }
-  .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+.btn-primary {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 14px; background: linear-gradient(135deg, var(--accent-blue), var(--accent-violet));
+  color: white; border: none; border-radius: var(--radius-sm);
+  font-size: 11px; font-weight: 600; cursor: pointer;
 }
+
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-card {
+  width: 480px; max-width: 90vw; max-height: 85vh; overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color); border-radius: var(--radius-lg);
+  padding: 20px; box-shadow: var(--shadow-lg);
+}
+.modal-title { font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 14px; }
+.form-row { margin-bottom: 10px; position: relative; }
+.form-row label { display: block; font-size: 10px; color: var(--text-secondary); margin-bottom: 3px; }
+.form-input {
+  width: 100%; padding: 6px 10px; background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  color: var(--text-primary); font-size: 12px;
+}
+.form-input:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 2px var(--accent-cyan-dim); }
+select.form-input { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236b7280'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; padding-right: 24px; }
+.date-row { display: flex; gap: 6px; align-items: center; }
+.date-sep { font-size: 10px; color: var(--text-tertiary); }
+.modal-btns { display: flex; gap: 8px; margin-top: 14px; }
+.btn-save {
+  flex: 1; padding: 7px; background: linear-gradient(135deg, var(--accent-blue), var(--accent-violet));
+  color: white; border: none; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.btn-save:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-cancel {
+  flex: 1; padding: 7px; background: transparent; border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 12px; cursor: pointer;
+}
+
+.search-row { position: relative; }
+.search-dropdown {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
+  background: var(--bg-elevated); border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm); max-height: 200px; overflow-y: auto;
+  box-shadow: var(--shadow-lg);
+}
+.search-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  cursor: pointer; font-size: 11px; transition: background 0.15s;
+}
+.search-item:hover { background: var(--bg-hover); }
+.search-code { color: var(--accent-cyan); font-size: 11px; width: 60px; }
+.search-name { color: var(--text-primary); flex: 1; }
+.search-market { color: var(--text-tertiary); font-size: 9px; }
+
+.strategy-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.strategy-card { padding: 12px; cursor: pointer; transition: border-color var(--transition-fast); }
+.strategy-card:hover { border-color: rgba(56,189,248,0.2); }
+.card-header { margin-bottom: 8px; }
+.card-title-row { display: flex; justify-content: space-between; align-items: center; }
+.strategy-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.badge {
+  font-size: 9px; padding: 1px 6px; border-radius: 3px;
+  background: var(--accent-cyan-dim); color: var(--accent-cyan); font-weight: 500;
+}
+.card-meta { display: flex; gap: 8px; margin-top: 3px; }
+.meta-item { font-size: 10px; color: var(--text-tertiary); }
+.card-metrics { display: flex; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+.metric { display: flex; flex-direction: column; gap: 1px; }
+.metric-label { font-size: 9px; color: var(--text-tertiary); }
+.metric-value { font-size: 12px; font-weight: 600; }
+.metric-value.up { color: var(--accent-red); }
+.metric-value.down { color: var(--accent-green); }
+.metric-pending { font-size: 10px; color: var(--accent-amber); }
+.metric-error { font-size: 10px; color: var(--accent-red); }
+.card-actions { display: flex; gap: 6px; }
+.action-btn {
+  padding: 3px 8px; background: transparent; border: 1px solid var(--border-subtle);
+  border-radius: 3px; color: var(--text-secondary); font-size: 9px; cursor: pointer;
+}
+.action-btn:hover { color: var(--accent-cyan); border-color: rgba(56,189,248,0.3); }
+.action-btn.danger:hover { color: var(--accent-red); border-color: rgba(239,68,68,0.3); }
+
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 50px 20px; color: var(--text-tertiary); font-size: 12px;
+}
+
+.detail-panel { padding: 14px; }
+.detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.detail-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.close-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: var(--radius-sm);
+  background: transparent; border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary); cursor: pointer;
+}
+.close-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.detail-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
+.detail-chart { margin-bottom: 12px; }
+.section-title { font-size: 12px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 6px; }
+
+.regime-section { margin-bottom: 12px; }
+.regime-list { display: flex; flex-direction: column; gap: 6px; }
+.regime-item { padding: 8px 10px; background: var(--bg-hover); border-radius: var(--radius-sm); }
+.regime-name { font-size: 11px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+.regime-strats { display: flex; flex-wrap: wrap; gap: 4px; }
+.strat-chip {
+  font-size: 9px; padding: 2px 6px; border-radius: 3px;
+  background: var(--accent-cyan-dim); color: var(--accent-cyan);
+}
+.strat-w { color: var(--text-secondary); }
+
+.trades-table { display: flex; flex-direction: column; gap: 1px; }
+.trade-row {
+  display: grid; grid-template-columns: 80px 40px 60px 50px 60px 1fr; gap: 4px;
+  padding: 4px 6px; font-size: 10px; border-radius: 2px;
+}
+.trade-header { color: var(--text-tertiary); font-weight: 600; background: var(--bg-hover); }
+.trade-buy { border-left: 2px solid var(--accent-red); }
+.trade-sell { border-left: 2px solid var(--accent-green); }
+.trade-reason { color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up { color: var(--accent-red); }
+.down { color: var(--accent-green); }
+
+.error-box {
+  padding: 12px 16px; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2);
+  border-radius: var(--radius-sm); color: var(--accent-red); font-size: 12px;
+}
+
 @media (max-width: 768px) {
   .strategy-page { padding: 10px; }
-  .metrics-grid { grid-template-columns: 1fr 1fr; }
+  .strategy-list { grid-template-columns: 1fr; }
+  .detail-metrics { grid-template-columns: repeat(2, 1fr); }
 }
 </style>

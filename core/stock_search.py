@@ -1,33 +1,19 @@
+"""
+QuantCore 股票搜索模块
+使用东方财富API构建全量A股索引，支持代码/名称/拼音模糊搜索
+"""
+import asyncio
 import logging
 import threading
-from pathlib import Path
+from difflib import SequenceMatcher
 from typing import Optional
 
-from core.database import get_db
-from core.market_data import get_stock_list
+from core.market_data import fetch_all_a_stocks_async
 
 logger = logging.getLogger(__name__)
 
 _PINYIN_MAP: dict[str, str] | None = None
 _PINYIN_MAP_LOCK = threading.Lock()
-
-
-def _get_pinyin_map() -> dict[str, str]:
-    global _PINYIN_MAP
-    if _PINYIN_MAP is not None:
-        return _PINYIN_MAP
-    with _PINYIN_MAP_LOCK:
-        if _PINYIN_MAP is not None:
-            return _PINYIN_MAP
-        json_path = Path(__file__).parent / "data" / "pinyin_map.json"
-        try:
-            import json
-            with open(json_path, "r", encoding="utf-8") as f:
-                _PINYIN_MAP = json.load(f)
-        except Exception as e:
-            logger.debug(f"Failed to load pinyin map from {json_path}: {e}")
-            _PINYIN_MAP = {}
-        return _PINYIN_MAP
 
 _code_index: dict[str, list[tuple[str, dict]]] = {}
 _name_index: dict[str, list[tuple[str, dict]]] = {}
@@ -76,6 +62,25 @@ _STOCK_INDEX = {
 }
 
 
+def _get_pinyin_map() -> dict[str, str]:
+    global _PINYIN_MAP
+    if _PINYIN_MAP is not None:
+        return _PINYIN_MAP
+    with _PINYIN_MAP_LOCK:
+        if _PINYIN_MAP is not None:
+            return _PINYIN_MAP
+        from pathlib import Path
+        json_path = Path(__file__).parent / "data" / "pinyin_map.json"
+        try:
+            import json
+            with open(json_path, "r", encoding="utf-8") as f:
+                _PINYIN_MAP = json.load(f)
+        except Exception as e:
+            logger.debug(f"Failed to load pinyin map from {json_path}: {e}")
+            _PINYIN_MAP = {}
+        return _PINYIN_MAP
+
+
 def _get_pinyin_initial(name: str) -> str:
     pinyin_map = _get_pinyin_map()
     result = []
@@ -98,15 +103,23 @@ def _build_inverted_index() -> None:
             return
 
         all_stocks: dict[str, dict] = {}
-        for market in ("A", "HK", "US"):
-            try:
-                stocks = get_stock_list(market)
-                for s in stocks:
-                    code = s.get("code", "")
+
+        try:
+            from core.market_data import _all_a_stocks_cache
+            if _all_a_stocks_cache:
+                for s in _all_a_stocks_cache:
+                    code = s.get("symbol", s.get("code", ""))
                     if code:
-                        all_stocks[f"{market}:{code}"] = s
-            except Exception:
-                pass
+                        mk = f"A:{code}"
+                        all_stocks[mk] = {
+                            "code": code,
+                            "name": s.get("name", ""),
+                            "market": "A",
+                            "sector": s.get("industry", s.get("sector", "")),
+                        }
+                logger.info(f"Loaded {len(_all_a_stocks_cache)} stocks from EastMoney cache into search index")
+        except Exception as e:
+            logger.debug(f"Load from EastMoney cache error: {e}")
 
         for key, info in _STOCK_INDEX.items():
             mk = f"{info.get('market', 'A')}:{key}"
@@ -115,6 +128,29 @@ def _build_inverted_index() -> None:
 
         if len(all_stocks) < 100:
             try:
+                from core.market_data import get_stock_list
+                for market in ("A", "HK", "US"):
+                    try:
+                        stocks = get_stock_list(market)
+                        for s in stocks:
+                            code = s.get("code", s.get("symbol", ""))
+                            if code:
+                                mk = f"{market}:{code}"
+                                if mk not in all_stocks:
+                                    all_stocks[mk] = {
+                                        "code": code,
+                                        "name": s.get("name", ""),
+                                        "market": market,
+                                        "sector": s.get("industry", s.get("sector", "")),
+                                    }
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        if len(all_stocks) < 100:
+            try:
+                from core.database import get_db
                 db = get_db()
                 rows = db.fetchall("SELECT symbol AS code, name, market, industry AS sector FROM stock_info")
                 for r in rows:
@@ -142,7 +178,7 @@ def _build_inverted_index() -> None:
                 local_name.setdefault(ch, []).append((mk, s))
 
             py = _get_pinyin_initial(name)
-            for prefix_len in range(1, min(len(py) + 1, 5)):
+            for prefix_len in range(1, min(len(py) + 1, 7)):
                 prefix = py[:prefix_len].upper()
                 local_pinyin.setdefault(prefix, []).append((mk, s))
 
@@ -155,6 +191,16 @@ def _build_inverted_index() -> None:
 
 def build_search_index():
     _build_inverted_index()
+
+
+async def build_search_index_async() -> int:
+    try:
+        from core.market_data import fetch_all_a_stocks_async
+        await fetch_all_a_stocks_async()
+    except Exception as e:
+        logger.debug(f"Pre-fetch stocks for index error: {e}")
+    _build_inverted_index()
+    return len(_all_stocks)
 
 
 def _ensure_index():
@@ -172,14 +218,16 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
     q = raw_q.upper()
     is_pinyin_input = raw_q.isalpha() and raw_q == raw_q.lower() and raw_q.isascii()
 
-    results: dict[str, tuple[int, int, dict]] = {}
+    results: dict[str, tuple[int, float, dict]] = {}
     counter = 0
 
     if q in _code_index:
         for mk, s in _code_index[q]:
             if mk not in results:
                 counter += 1
-                results[mk] = (1, counter, s)
+                code = s.get("code", "")
+                score = 1.0 if code == q else 0.9
+                results[mk] = (1, score, s)
 
     for mk, s in _all_stocks.items():
         name = s.get("name", "")
@@ -187,11 +235,12 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
         if name == raw_q or name == q:
             if mk not in results:
                 counter += 1
-                results[mk] = (1, counter, s)
+                results[mk] = (1, 1.0, s)
         elif raw_q in name or q in name:
             if mk not in results:
                 counter += 1
-                results[mk] = (2, counter, s)
+                score = 0.8 if len(raw_q) == 1 else 0.85
+                results[mk] = (2, score, s)
 
     if is_pinyin_input:
         py_key = q.upper()
@@ -199,15 +248,15 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
             for mk, s in _pinyin_index[py_key]:
                 if mk not in results:
                     counter += 1
-                    results[mk] = (2, counter, s)
+                    results[mk] = (2, 0.85, s)
 
-        for prefix_len in range(1, len(q) + 1):
+        for prefix_len in range(max(1, len(q) - 1), len(q) + 1):
             prefix = q[:prefix_len].upper()
             if prefix in _pinyin_index:
                 for mk, s in _pinyin_index[prefix]:
                     if mk not in results:
                         counter += 1
-                        results[mk] = (3, counter, s)
+                        results[mk] = (3, 0.75, s)
 
         for prefix_len in range(1, len(q) + 1):
             prefix = q[:prefix_len]
@@ -215,14 +264,23 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
                 for mk, s in _code_index[prefix]:
                     if mk not in results:
                         counter += 1
-                        results[mk] = (5, counter, s)
+                        results[mk] = (5, 0.6, s)
 
         for ch in q:
             if ch in _name_index:
                 for mk, s in _name_index[ch]:
                     if mk not in results:
                         counter += 1
-                        results[mk] = (6, counter, s)
+                        results[mk] = (6, 0.5, s)
+
+        for mk, s in _all_stocks.items():
+            if mk in results:
+                continue
+            name = s.get("name", "")
+            py = _get_pinyin_initial(name)
+            if py and SequenceMatcher(None, q.lower(), py).ratio() > 0.5:
+                counter += 1
+                results[mk] = (7, 0.4, s)
     else:
         for prefix_len in range(1, len(q) + 1):
             prefix = q[:prefix_len]
@@ -230,14 +288,14 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
                 for mk, s in _code_index[prefix]:
                     if mk not in results:
                         counter += 1
-                        results[mk] = (2, counter, s)
+                        results[mk] = (2, 0.8, s)
 
         for ch in q:
             if ch in _name_index:
                 for mk, s in _name_index[ch]:
                     if mk not in results:
                         counter += 1
-                        results[mk] = (3, counter, s)
+                        results[mk] = (3, 0.7, s)
 
         py = _get_pinyin_initial(q)
         if py:
@@ -247,15 +305,16 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
                     for mk, s in _pinyin_index[prefix]:
                         if mk not in results:
                             counter += 1
-                            results[mk] = (4, counter, s)
+                            results[mk] = (4, 0.65, s)
 
-    sorted_results = sorted(results.items(), key=lambda x: (x[1][0], x[1][1]))
+    sorted_results = sorted(results.items(), key=lambda x: (x[1][0], -x[1][1]))
 
     output = []
-    for mk, (priority, _counter, s) in sorted_results:
+    for mk, (priority, _score, s) in sorted_results:
         if market and s.get("market", "A") != market:
             continue
         output.append({
+            "symbol": s.get("code", ""),
             "code": s.get("code", ""),
             "name": s.get("name", ""),
             "market": s.get("market", "A"),
@@ -270,8 +329,9 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
 
 def get_stock_info(symbol: str) -> Optional[dict]:
     _ensure_index()
+    symbol_upper = symbol.upper()
     for mk, s in _all_stocks.items():
-        if s.get("code", "").upper() == symbol.upper():
+        if s.get("code", "").upper() == symbol_upper:
             return {
                 "code": s.get("code", ""),
                 "name": s.get("name", ""),

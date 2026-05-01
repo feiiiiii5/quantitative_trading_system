@@ -59,7 +59,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import api from '../api'
+import { api } from '../api'
 
 interface Alert {
   id: string
@@ -87,25 +87,17 @@ onUnmounted(() => {
 
 async function loadAlerts() {
   try {
-    const res = await api.get('/watchlist/alert/list')
-    if (res.data?.success) {
-      alerts.value = res.data.data || []
-    }
+    const data = await api.getAlerts()
+    alerts.value = Array.isArray(data) ? data : []
   } catch (e) { /* ignore */ }
 }
 
 async function addAlert() {
-  if (!newAlert.value.symbol || !newAlert.value.value) return
+  if (!newAlert.value.symbol || newAlert.value.value == null) return
   try {
-    const res = await api.post('/watchlist/alert/add', null, {
-      params: {
-        symbol: newAlert.value.symbol,
-        alert_type: newAlert.value.alert_type,
-        value: newAlert.value.value,
-      },
-    })
-    if (res.data?.success) {
-      alerts.value.push(res.data.data)
+    const data = await api.addAlert(newAlert.value.symbol, newAlert.value.alert_type, newAlert.value.value)
+    if (data) {
+      alerts.value.push(data)
       showAddForm.value = false
       newAlert.value = { symbol: '', alert_type: 'price_above', value: 0 }
     }
@@ -114,7 +106,7 @@ async function addAlert() {
 
 async function removeAlert(id: string) {
   try {
-    await api.post('/watchlist/alert/remove', null, { params: { alert_id: id } })
+    await api.removeAlert(id)
     alerts.value = alerts.value.filter(a => a.id !== id)
   } catch (e) { /* ignore */ }
 }
@@ -123,9 +115,8 @@ async function checkAlerts() {
   for (const alert of alerts.value) {
     if (alert.triggered) continue
     try {
-      const res = await api.get(`/stock/realtime/${alert.symbol}`)
-      if (!res.data?.success) continue
-      const rt = res.data.data
+      const rt = await api.getRealtime(alert.symbol)
+      if (!rt) continue
       const price = rt.price || 0
       const pct = rt.change_pct || 0
       let triggered = false

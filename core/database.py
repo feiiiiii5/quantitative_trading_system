@@ -274,8 +274,8 @@ class SQLiteStore:
         with self._buffer_lock:
             if not self._write_buffer:
                 return
-            buffer = self._write_buffer[:]
-            self._write_buffer.clear()
+            buffer = self._write_buffer
+            self._write_buffer = []
             self._last_flush = time.time()
 
         if not buffer:

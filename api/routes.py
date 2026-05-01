@@ -72,8 +72,24 @@ def _is_trading_hours() -> bool:
     return False
 
 
+def _sanitize(obj):
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    return obj
+
+
 def _json_response(success: bool, data=None, error: str = ""):
-    return {"success": success, "data": data, "error": error}
+    return {"success": success, "data": _sanitize(data), "error": error}
 
 
 def cache_response(ttl_seconds: int):
@@ -404,7 +420,7 @@ async def get_stock_signals(
                         bar_signals.append({
                             "strategy": type(s).__name__,
                             "signal": sig.signal_type.value,
-                            "confidence": round(sig.confidence, 2),
+                            "confidence": round(sig.strength, 2),
                             "reason": sig.reason,
                         })
                 except Exception:
@@ -609,6 +625,98 @@ async def get_weekly_report(request: Request):
         return _json_response(False, error=str(e))
 
 
+@router.get("/market/stocks")
+@cache_response(30)
+async def get_market_stocks(request: Request, market: str = Query("A"), limit: int = Query(5000)):
+    try:
+        from core.market_data import fetch_all_a_stocks_async
+        stocks = await fetch_all_a_stocks_async()
+        if stocks:
+            df_data = stocks
+            if market == "sh":
+                df_data = [s for s in df_data if s.get("symbol", "").startswith("6") and not s.get("symbol", "").startswith("688")]
+            elif market == "sz":
+                df_data = [s for s in df_data if s.get("symbol", "").startswith("0")]
+            elif market == "cy":
+                df_data = [s for s in df_data if s.get("symbol", "").startswith("3")]
+            elif market == "kc":
+                df_data = [s for s in df_data if s.get("symbol", "").startswith("688")]
+            result = df_data[:limit]
+            return _json_response(True, data=result)
+    except Exception as e:
+        logger.debug(f"Market stocks EastMoney error: {e}")
+    try:
+        import akshare as ak
+        df = await asyncio.to_thread(ak.stock_zh_a_spot_em)
+        if df is None or df.empty:
+            return _json_response(True, data=[])
+        col_map = {
+            "代码": "symbol", "名称": "name", "最新价": "price",
+            "涨跌幅": "change_pct", "成交量": "volume", "成交额": "amount",
+            "换手率": "turnover_rate",
+        }
+        rename = {k: v for k, v in col_map.items() if k in df.columns}
+        df = df.rename(columns=rename)
+        if market == "sh":
+            df = df[df["symbol"].str.startswith("6")]
+        elif market == "sz":
+            df = df[df["symbol"].str.startswith("0")]
+        elif market == "cy":
+            df = df[df["symbol"].str.startswith("3")]
+        elif market == "kc":
+            df = df[df["symbol"].str.startswith("688")]
+        if "amount" in df.columns:
+            df = df.sort_values("amount", ascending=False)
+        df = df.head(limit)
+        keep_cols = [c for c in ["symbol", "name", "price", "change_pct", "volume", "amount", "turnover_rate"] if c in df.columns]
+        result = df[keep_cols].fillna(0).to_dict("records")
+        return _json_response(True, data=result)
+    except Exception as e:
+        logger.debug(f"Market stocks fallback: {e}")
+        return _json_response(True, data=[])
+
+
+@router.get("/market/anomaly")
+@cache_response(30)
+async def get_market_anomaly(request: Request):
+    try:
+        from core.market_data import fetch_all_a_stocks_async
+        stocks = await fetch_all_a_stocks_async()
+        if not stocks:
+            return _json_response(True, data=[])
+        anomalies = []
+        for s in stocks:
+            change_pct = float(s.get("change_pct", 0) or 0)
+            volume_ratio = float(s.get("volume_ratio", 0) or 0)
+            reason = ""
+            if change_pct > 9.8:
+                reason = "涨停"
+            elif change_pct < -9.8:
+                reason = "跌停"
+            elif change_pct > 8 and volume_ratio > 3:
+                reason = "大涨放量"
+            elif change_pct < -8 and volume_ratio > 3:
+                reason = "大跌放量"
+            elif change_pct > 5 and volume_ratio > 5:
+                reason = "放量拉升"
+            elif change_pct < -5 and volume_ratio > 5:
+                reason = "放量下跌"
+            if reason:
+                anomalies.append({
+                    "symbol": s.get("symbol", ""),
+                    "name": s.get("name", ""),
+                    "price": round(float(s.get("price", 0) or 0), 2),
+                    "change_pct": round(change_pct, 2),
+                    "volume_ratio": round(volume_ratio, 2),
+                    "reason": reason,
+                })
+        anomalies.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
+        return _json_response(True, data=anomalies[:80])
+    except Exception as e:
+        logger.debug(f"Market anomaly error: {e}")
+        return _json_response(True, data=[])
+
+
 @router.get("/market/heatmap")
 @cache_response(30)
 async def get_market_heatmap(request: Request, market: str = Query("A")):
@@ -646,7 +754,18 @@ async def get_market_heatmap(request: Request, market: str = Query("A")):
 async def get_northbound_detail(request: Request):
     try:
         fetcher: SmartDataFetcher = request.app.state.fetcher
-        return _json_response(True, data=await fetcher.fetch_north_bound_flow())
+        data = await fetcher.fetch_north_bound_flow()
+        if data:
+            sh_buy = data.get("sh_buy", 0)
+            sh_sell = data.get("sh_sell", 0)
+            sz_buy = data.get("sz_buy", 0)
+            sz_sell = data.get("sz_sell", 0)
+            sh_inflow = sh_buy - sh_sell
+            sz_inflow = sz_buy - sz_sell
+            data["sh_inflow"] = sh_inflow
+            data["sz_inflow"] = sz_inflow
+            data["net_inflow"] = data.get("total_net", sh_inflow + sz_inflow)
+        return _json_response(True, data=data)
     except Exception as e:
         return _json_response(False, error=str(e))
 
@@ -724,9 +843,13 @@ async def run_advanced_backtest(
     leverage: float = Query(1.0),
     monte_carlo: bool = Query(False),
     n_simulations: int = Query(500),
+    sensitivity: bool = Query(False),
+    walk_forward: bool = Query(False),
 ):
     try:
         from core.backtest import BacktestEngine, BacktestResult, run_backtest as run_bt
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         result = await asyncio.to_thread(
             run_bt,
             symbol,
@@ -735,7 +858,7 @@ async def run_advanced_backtest(
             end_date,
             initial_capital * max(leverage, 0.1),
             None,
-            None,
+            df,
         )
         if "error" in result:
             return _json_response(False, error=result["error"])
@@ -749,6 +872,25 @@ async def run_advanced_backtest(
                 sharpe_ratio=result.get("sharpe_ratio", 0),
             )
             result["monte_carlo"] = engine.monte_carlo_analysis(bt_result, n_simulations=n_simulations)
+        if sensitivity and strategy_name != "adaptive":
+            from core.strategies import STRATEGY_REGISTRY
+            strategy_cls = STRATEGY_REGISTRY.get(strategy_name)
+            if strategy_cls:
+                fetcher: SmartDataFetcher = request.app.state.fetcher
+                df = await fetcher.get_history(symbol, "all", "daily", "qfq")
+                if df is not None and not df.empty:
+                    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                    df = df.dropna(subset=["date"])
+                    df = df[(df["date"] >= start_date) & (df["date"] <= end_date)].reset_index(drop=True)
+                    result["sensitivity"] = engine.sensitivity_analysis(strategy_cls, df, {})
+        if walk_forward:
+            from core.backtest import run_walk_forward
+            wf_result = await asyncio.to_thread(
+                run_walk_forward, symbol, strategy_name, start_date, end_date,
+                252, 63, initial_capital, None,
+            )
+            if "error" not in wf_result:
+                result["walk_forward"] = wf_result
         db = getattr(request.app.state, "db", None)
         if db and hasattr(db, "save_backtest_result"):
             result["id"] = db.save_backtest_result(strategy_name, symbol, start_date, end_date, {}, result)
@@ -1025,7 +1167,6 @@ async def remove_price_alert(request: Request, alert_id: str = Query(...)):
 
 
 @router.get("/search")
-@cache_response(300)
 async def search_stocks(request: Request, q: str = Query(...), limit: int = Query(10)):
     try:
         from core.stock_search import search_stocks as do_search
@@ -1125,7 +1266,7 @@ async def get_system_metrics(request: Request):
             "threads": process.num_threads(),
             "api_requests_total": req_count,
             "avg_response_time": round(avg_rt, 1),
-            "ws_connections": len(manager.active_connections),
+            "ws_connections": len(_manager.connections),
             "cache_size": len(getattr(request.app.state, "_cache", {})),
         }
         return _json_response(True, data=metrics)
@@ -1137,7 +1278,7 @@ async def get_system_metrics(request: Request):
             "uptime_seconds": time.time() - getattr(request.app.state, "_start_time", time.time()),
             "api_requests_total": req_count,
             "avg_response_time": round(avg_rt, 1),
-            "ws_connections": len(manager.active_connections),
+            "ws_connections": len(_manager.connections),
         }
         return _json_response(True, data=metrics)
     except Exception as e:
@@ -1171,8 +1312,8 @@ async def set_config(request: Request, key: str, value: str = Query(...)):
 async def get_stock_ai_summary(request: Request, symbol: str, period: str = Query("1y")):
     """AI分析摘要 - 基于规则引擎生成综合分析"""
     try:
-        fetcher = _get_fetcher(request)
-        df = await fetcher.fetch_kline(symbol, period=period, kline_type="day")
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         if df is None or df.empty:
             return _json_response(False, error="无数据")
 
@@ -1202,9 +1343,10 @@ async def get_stock_ai_summary(request: Request, symbol: str, period: str = Quer
         elif pct_20d < -15:
             summary_points.append("月线级别下跌趋势明显")
 
-        ma5 = TechnicalIndicators.SMA(close, 5)
-        ma20 = TechnicalIndicators.SMA(close, 20)
-        ma60 = TechnicalIndicators.SMA(close, 60)
+        close_series = pd.Series(close)
+        ma5 = close_series.rolling(5).mean().values
+        ma20 = close_series.rolling(20).mean().values
+        ma60 = close_series.rolling(60).mean().values
         if not np.isnan(ma5[-1]) and not np.isnan(ma20[-1]):
             if ma5[-1] > ma20[-1] > (ma60[-1] if not np.isnan(ma60[-1]) else 0):
                 summary_points.append("均线多头排列，趋势向好")
@@ -1222,7 +1364,7 @@ async def get_stock_ai_summary(request: Request, symbol: str, period: str = Quer
         try:
             composite = CompositeStrategy()
             signal = composite.generate_signal(df)
-            signal_map = {1: "强烈买入", 2: "买入", 0: "中性", -1: "卖出", -2: "强烈卖出"}
+            signal_map = {"buy": "买入", "sell": "卖出", "hold": "中性"}
             summary_points.append(f"综合策略信号：{signal_map.get(signal.signal_type.value, '中性')}（强度{signal.strength:.2f}）")
         except Exception:
             pass
@@ -1264,12 +1406,14 @@ async def websocket_realtime(ws: WebSocket):
             data = await ws.receive_text()
             try:
                 msg = json.loads(data)
-                action = msg.get("action", "")
+                msg_type = msg.get("type", msg.get("action", ""))
                 symbols = msg.get("symbols", [])
-                if action == "subscribe" and symbols:
+                if msg_type == "subscribe" and symbols:
                     _manager.subscribe(ws, symbols)
-                elif action == "unsubscribe" and symbols:
+                elif msg_type == "unsubscribe" and symbols:
                     _manager.unsubscribe(ws, symbols)
+                elif msg_type == "ping":
+                    await ws.send_json({"type": "pong", "ts": time.time()})
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:

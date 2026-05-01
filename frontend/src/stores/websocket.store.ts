@@ -9,6 +9,7 @@ export const useWebSocketStore = defineStore('websocket', {
     _reconnectAttempts: 0,
     _maxReconnectDelay: 30000,
     _heartbeatTimer: null as any,
+    _reconnectTimer: null as any,
     _messageQueue: [] as any[],
     seq: 0,
   }),
@@ -26,6 +27,9 @@ export const useWebSocketStore = defineStore('websocket', {
         this._reconnectAttempts = 0
         this._startHeartbeat()
         this._flushMessageQueue()
+        if (this.subscriptions.size > 0) {
+          this._send({ type: 'subscribe', symbols: Array.from(this.subscriptions) })
+        }
       }
 
       ws.onmessage = (event) => {
@@ -54,6 +58,7 @@ export const useWebSocketStore = defineStore('websocket', {
 
     disconnect() {
       this._stopHeartbeat()
+      this._cancelReconnect()
       if (this._ws) {
         this._ws.close()
         this._ws = null
@@ -106,10 +111,26 @@ export const useWebSocketStore = defineStore('websocket', {
       if (this._reconnectAttempts >= 20) return
       const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), this._maxReconnectDelay)
       this._reconnectAttempts++
-      setTimeout(() => this.connect(), delay)
+      this._reconnectTimer = setTimeout(() => {
+        this._reconnectTimer = null
+        this.connect()
+      }, delay)
+    },
+
+    _cancelReconnect() {
+      if (this._reconnectTimer) {
+        clearTimeout(this._reconnectTimer)
+        this._reconnectTimer = null
+      }
+      this._reconnectAttempts = 0
     },
 
     _handleMessage(data: any) {
+      if (data.type === 'quote_update') {
+        // 实时行情更新 - 通过 lastMessage 传递给各组件消费
+        // Dashboard.vue 等组件已通过 watch(lastMessage) 处理此消息
+      }
+
       if (data.type === 'signal') {
         const { symbol, strategy, signal_type, score, price } = data.data || data
         const direction = signal_type === 'buy' ? '买入' : signal_type === 'sell' ? '卖出' : '信号'
@@ -135,6 +156,10 @@ export const useWebSocketStore = defineStore('websocket', {
         if ('Notification' in window && Notification.permission === 'granted') {
           new Notification('QuantCore 价格预警', { body: msg })
         }
+      }
+
+      if (data.type === 'market_event') {
+        // 市场事件通知 - 通过 lastMessage 传递给各组件消费
       }
     },
   },

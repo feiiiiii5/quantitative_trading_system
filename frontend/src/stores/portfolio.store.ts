@@ -54,7 +54,7 @@ export const usePortfolioStore = defineStore('portfolio', {
           this.account.positions = this.account.positions.map((p: any) => ({
             ...p,
             current_price: quotes[p.symbol]?.price || p.current_price,
-            change_pct: quotes[p.symbol]?.pct || p.change_pct,
+            change_pct: quotes[p.symbol]?.change_pct || p.change_pct,
           }))
         }
       } catch (e) {

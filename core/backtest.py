@@ -225,6 +225,7 @@ class BacktestEngine:
         finals = []
         max_dds = []
         sharpes = []
+        all_curves = []
         for _ in range(max(1, int(n_simulations))):
             sampled = rng.choice(pnl, size=len(pnl), replace=True)
             curve = self._initial_capital + np.cumsum(sampled)
@@ -235,6 +236,15 @@ class BacktestEngine:
             trade_ret = sampled / max(self._initial_capital, 1)
             std = np.std(trade_ret)
             sharpes.append(float(np.mean(trade_ret) / std * np.sqrt(252)) if std > 0 else 0.0)
+            all_curves.append(curve)
+
+        n_sample_paths = min(30, n_simulations)
+        sample_indices = rng.choice(len(all_curves), size=min(n_sample_paths, len(all_curves)), replace=False)
+        paths = []
+        for idx in sample_indices:
+            raw = all_curves[idx]
+            normalized = (raw / self._initial_capital).tolist()
+            paths.append(normalized)
 
         final_arr = np.array(finals)
         dd_arr = np.array(max_dds)
@@ -242,6 +252,7 @@ class BacktestEngine:
         sim_sharpe_median = float(np.median(sharpe_arr)) if len(sharpe_arr) else 0.0
         robustness = result.sharpe_ratio / sim_sharpe_median if abs(sim_sharpe_median) > 1e-9 else 0.0
         return {
+            "paths": paths,
             "final_equity_p5": round(float(np.percentile(final_arr, 5)), 2),
             "final_equity_p50": round(float(np.percentile(final_arr, 50)), 2),
             "final_equity_p95": round(float(np.percentile(final_arr, 95)), 2),
@@ -807,25 +818,28 @@ class BacktestEngine:
 
 def _get_strategy_min_bars(strategy_name: str, params: dict = None) -> int:
     _min_bars = {
-        "ma_cross": 30,
-        "macd": 45,
-        "rsi": 30,
-        "supertrend": 25,
-        "kdj": 25,
-        "bollinger": 35,
-        "momentum": 35,
-        "volume_breakout": 35,
-        "multi_factor": 65,
-        "adaptive_trend": 70,
-        "mean_reversion_pro": 55,
-        "vol_squeeze": 45,
-        "ichimoku": 90,
-        "ichimoku_cloud": 90,
-        "vwap_deviation": 40,
-        "order_flow": 30,
-        "order_flow_imbalance": 30,
-        "regime_switching": 90,
-        "fractal_breakout": 35,
+        "ma_cross": 30, "dual_ma": 30, "macd": 45, "rsi": 30,
+        "supertrend": 25, "kdj": 25, "bollinger": 35, "bollinger_breakout": 35,
+        "momentum": 35, "volume_breakout": 35, "multi_factor": 65,
+        "adaptive_trend": 70, "mean_reversion_pro": 55, "mean_reversion": 55,
+        "vol_squeeze": 45, "volatility_squeeze": 45,
+        "ichimoku": 90, "ichimoku_cloud": 90,
+        "vwap_deviation": 40, "vwap": 40,
+        "order_flow": 30, "order_flow_imbalance": 30,
+        "regime_switching": 90, "regime": 90,
+        "fractal_breakout": 35, "fractal": 35,
+        "wyckoff": 70, "wyckoff_accumulation": 70,
+        "elliott_wave": 140, "elliott": 140,
+        "market_microstructure": 35, "microstructure": 35,
+        "copula": 80, "copula_correlation": 80,
+        "quantile": 80, "quantile_regression": 80,
+        "rsi_mean_reversion": 30,
+        "turtle": 35, "turtle_trading": 35,
+        "dual_thrust": 30,
+        "atr_channel": 30, "atr_channel_breakout": 30,
+        "donchian": 30, "donchian_channel": 30,
+        "chande_kroll": 40, "chande_kroll_stop": 40,
+        "vw_macd": 50, "volume_weighted_macd": 50,
     }
     return _min_bars.get(strategy_name, 30)
 
@@ -843,7 +857,7 @@ def run_backtest(
     from core.strategies import STRATEGY_REGISTRY
 
     if strategy_name == "adaptive":
-        return _run_adaptive_backtest(symbol, start_date, end_date, initial_capital, params)
+        return _run_adaptive_backtest(symbol, start_date, end_date, initial_capital, params, _df)
 
     if strategy_name not in STRATEGY_REGISTRY:
         return {"error": f"未知策略: {strategy_name}"}
@@ -891,18 +905,23 @@ def run_backtest(
     if df is None or df.empty:
         return {"error": f"无法获取 {symbol} 的历史数据，请检查股票代码是否正确"}
 
+    min_bars = _get_strategy_min_bars(strategy_name, params)
+
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.dropna(subset=["date"])
+        df_full = df.copy()
         if start_date:
             df = df[df["date"] >= start_date]
         if end_date:
             df = df[df["date"] <= end_date]
         df = df.sort_values("date").reset_index(drop=True)
+        if len(df) < min_bars and len(df_full) >= min_bars:
+            logger.warning(f"Date range {start_date}~{end_date} only has {len(df)} bars, using available data")
+            df = df_full.sort_values("date").reset_index(drop=True)
 
-    min_bars = _get_strategy_min_bars(strategy_name, params)
     if len(df) < min_bars:
-        return {"error": f"数据不足：指定时间段内仅有 {len(df)} 个交易日，{strategy_cls.__name__}策略至少需要{min_bars}个交易日"}
+        return {"error": f"数据不足：仅有 {len(df)} 个交易日，{strategy_cls.__name__}策略至少需要{min_bars}个交易日，请选择更长的时间段"}
 
     try:
         engine = BacktestEngine(initial_capital=initial_capital, slippage_pct=0.001, market_impact_pct=0.0005)
@@ -987,34 +1006,38 @@ def _run_adaptive_backtest(
     end_date: str = "2025-12-31",
     initial_capital: float = 1000000,
     params: dict = None,
+    _df=None,
 ) -> dict:
-    from core.data_fetcher import SmartDataFetcher
     from core.adaptive_strategy import AdaptiveStrategyEngine
 
-    fetcher = SmartDataFetcher()
+    if _df is not None:
+        df = _df.copy()
+    else:
+        from core.data_fetcher import SmartDataFetcher
+        fetcher = SmartDataFetcher()
 
-    try:
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        days_from_now = (datetime.now() - start_dt).days
-    except (ValueError, TypeError):
-        days_from_now = 370
-
-    hist_period = "all" if days_from_now > 365 else "1y"
-
-    import asyncio
-
-    async def _fetch():
-        return await fetcher.get_history(symbol, period=hist_period, kline_type="daily", adjust="qfq")
-
-    try:
         try:
-            loop = asyncio.get_running_loop()
-            df = asyncio.run_coroutine_threadsafe(_fetch(), loop).result(timeout=30)
-        except RuntimeError:
-            df = asyncio.run(_fetch())
-    except Exception as e:
-        logger.error(f"Data fetch failed for {symbol}: {e}")
-        return {"error": f"获取 {symbol} 数据失败: {e}"}
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            days_from_now = (datetime.now() - start_dt).days
+        except (ValueError, TypeError):
+            days_from_now = 370
+
+        hist_period = "all" if days_from_now > 365 else "1y"
+
+        import asyncio
+
+        async def _fetch():
+            return await fetcher.get_history(symbol, period=hist_period, kline_type="daily", adjust="qfq")
+
+        try:
+            try:
+                loop = asyncio.get_running_loop()
+                df = asyncio.run_coroutine_threadsafe(_fetch(), loop).result(timeout=30)
+            except RuntimeError:
+                df = asyncio.run(_fetch())
+        except Exception as e:
+            logger.error(f"Data fetch failed for {symbol}: {e}")
+            return {"error": f"获取 {symbol} 数据失败: {e}"}
 
     if df is None or df.empty:
         return {"error": f"无法获取 {symbol} 的历史数据"}
@@ -1022,11 +1045,15 @@ def _run_adaptive_backtest(
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.dropna(subset=["date"])
+        df_full = df.copy()
         if start_date:
             df = df[df["date"] >= start_date]
         if end_date:
             df = df[df["date"] <= end_date]
         df = df.sort_values("date").reset_index(drop=True)
+        if len(df) < 40 and len(df_full) >= 40:
+            logger.warning(f"Adaptive: Date range {start_date}~{end_date} only has {len(df)} bars, using available data")
+            df = df_full.sort_values("date").reset_index(drop=True)
 
     if len(df) < 40:
         return {"error": f"数据不足：自适应策略至少需要40个交易日，当前仅{len(df)}个"}
@@ -1045,17 +1072,29 @@ def _run_adaptive_backtest(
     benchmark_curve = result.get("benchmark_curve", [])
 
     if equity_curve and isinstance(equity_curve[0], dict):
-        pass
+        equity_curve = [
+            {"date": str(e.get("date", "")), "value": float(e.get("value", 0))}
+            for e in equity_curve if isinstance(e, dict)
+        ]
     else:
         dates_list = result.get("dates", [])
         ec_raw = equity_curve
         bc_raw = benchmark_curve
         equity_curve = []
         for i in range(min(len(dates_list), len(ec_raw))):
-            equity_curve.append({"date": dates_list[i], "value": ec_raw[i]})
+            equity_curve.append({"date": str(dates_list[i]), "value": float(ec_raw[i])})
+
+    if benchmark_curve and isinstance(benchmark_curve[0], dict):
+        benchmark_curve = [
+            {"date": str(b.get("date", "")), "value": float(b.get("value", 0))}
+            for b in benchmark_curve if isinstance(b, dict)
+        ]
+    else:
+        dates_list = result.get("dates", [])
+        bc_raw = result.get("benchmark_curve", [])
         benchmark_curve = []
         for i in range(min(len(dates_list), len(bc_raw))):
-            benchmark_curve.append({"date": dates_list[i], "value": bc_raw[i]})
+            benchmark_curve.append({"date": str(dates_list[i]), "value": float(bc_raw[i])})
 
     return {
         "strategy_name": result.get("strategy_name", "自适应量化策略引擎"),

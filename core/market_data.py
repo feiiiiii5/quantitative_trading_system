@@ -1,21 +1,209 @@
 """
 QuantCore 市场数据辅助模块
-提供股票列表获取和后台刷新
+使用新浪财经API获取全量A股列表（快速稳定，替代akshare）
 """
 import asyncio
+import json
 import logging
 import threading
 import time
 from typing import Optional
+
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
 _refresh_thread: Optional[threading.Thread] = None
 _refresh_stop = threading.Event()
 
+_all_a_stocks_cache: list[dict] = []
+_all_a_stocks_ts: float = 0.0
+_A_STOCKS_TTL = 120
+
+_SINA_LIST_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
+_SINA_HQ_URL = "https://hq.sinajs.cn/list="
+
+
+async def _fetch_sina_stock_list(page: int = 1, num: int = 80, sort: str = "amount", asc: int = 0) -> list[dict]:
+    try:
+        from core.data_fetcher import get_aiohttp_session
+        session = await get_aiohttp_session()
+        params = {
+            "page": str(page),
+            "num": str(num),
+            "sort": sort,
+            "asc": str(asc),
+            "node": "hs_a",
+            "symbol": "",
+            "_s_r_a": "auto",
+        }
+        async with session.get(_SINA_LIST_URL, params=params, headers={"Referer": "https://finance.sina.com.cn"}) as resp:
+            if resp.status != 200:
+                return []
+            text = await resp.text()
+            data = json.loads(text)
+            if not isinstance(data, list):
+                return []
+            result = []
+            for item in data:
+                code = item.get("code", "")
+                symbol_raw = item.get("symbol", "")
+                name = item.get("name", "")
+                if not code or not name:
+                    continue
+                result.append({
+                    "symbol": code,
+                    "name": name,
+                    "price": _num(item.get("trade")),
+                    "change_pct": _num(item.get("changepercent")),
+                    "change": _num(item.get("pricechange")),
+                    "volume": _num(item.get("volume")),
+                    "amount": _num(item.get("amount")),
+                    "open": _num(item.get("open")),
+                    "high": _num(item.get("high")),
+                    "low": _num(item.get("low")),
+                    "last_close": _num(item.get("settlement")),
+                    "pe": _num(item.get("per")),
+                    "pb": _num(item.get("pb")),
+                    "total_market_cap": _num(item.get("mktcap"), default=None),
+                    "float_market_cap": _num(item.get("nmc"), default=None),
+                    "turnover_rate": _num(item.get("turnoverratio")),
+                    "market": "A",
+                    "industry": "",
+                })
+            return result
+    except Exception as e:
+        logger.debug(f"Sina stock list fetch error (page={page}): {e}")
+    return []
+
+
+async def _fetch_all_sina_stocks() -> list[dict]:
+    try:
+        all_stocks: list[dict] = []
+        page = 1
+        while True:
+            batch = await _fetch_sina_stock_list(page=page, num=80, sort="amount", asc=0)
+            if not batch:
+                break
+            all_stocks.extend(batch)
+            if len(batch) < 80:
+                break
+            page += 1
+            if page > 80:
+                break
+        return all_stocks
+    except Exception as e:
+        logger.debug(f"Fetch all Sina stocks error: {e}")
+    return []
+
+
+async def _fetch_sina_stocks_fast() -> list[dict]:
+    try:
+        from core.data_fetcher import get_aiohttp_session
+        session = await get_aiohttp_session()
+        tasks = []
+        for page in range(1, 70):
+            params = {
+                "page": str(page),
+                "num": "80",
+                "sort": "amount",
+                "asc": "0",
+                "node": "hs_a",
+                "symbol": "",
+                "_s_r_a": "auto",
+            }
+            tasks.append((page, params))
+
+        all_stocks: list[dict] = []
+        batch_size = 5
+        for i in range(0, len(tasks), batch_size):
+            batch_tasks = tasks[i:i + batch_size]
+            coros = []
+            for page, params in batch_tasks:
+                coros.append(_fetch_sina_stock_list(page=page, num=80))
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            for result in results:
+                if isinstance(result, list):
+                    all_stocks.extend(result)
+            if len(all_stocks) > 0 and i > 0 and len(all_stocks) == sum(len(r) for r in results if isinstance(r, list) and len(r) > 0) and all(len(r) < 80 for r in results if isinstance(r, list)):
+                break
+
+        return all_stocks
+    except Exception as e:
+        logger.debug(f"Sina fast fetch error: {e}")
+    return []
+
+
+async def fetch_all_a_stocks_async() -> list[dict]:
+    global _all_a_stocks_cache, _all_a_stocks_ts
+    now = time.time()
+    if _all_a_stocks_cache and (now - _all_a_stocks_ts) < _A_STOCKS_TTL:
+        return _all_a_stocks_cache
+
+    data = await _fetch_sina_stocks_fast()
+    if data:
+        _all_a_stocks_cache = data
+        _all_a_stocks_ts = now
+        logger.info(f"Fetched {len(data)} A-share stocks from Sina")
+        return data
+
+    if _all_a_stocks_cache:
+        return _all_a_stocks_cache
+
+    try:
+        import akshare as ak
+        df = await asyncio.to_thread(ak.stock_zh_a_spot_em)
+        if df is not None and not df.empty:
+            col_map = {
+                "代码": "symbol", "名称": "name", "最新价": "price",
+                "涨跌幅": "change_pct", "涨跌额": "change", "成交量": "volume",
+                "成交额": "amount", "振幅": "amplitude", "换手率": "turnover_rate",
+                "市盈率-动态": "pe", "市净率": "pb",
+            }
+            rename = {k: v for k, v in col_map.items() if k in df.columns}
+            df = df.rename(columns=rename)
+            result = []
+            for _, row in df.iterrows():
+                result.append({
+                    "symbol": str(row.get("symbol", "")),
+                    "name": str(row.get("name", "")),
+                    "price": float(row.get("price", 0) or 0),
+                    "change_pct": float(row.get("change_pct", 0) or 0),
+                    "change": float(row.get("change", 0) or 0),
+                    "volume": float(row.get("volume", 0) or 0),
+                    "amount": float(row.get("amount", 0) or 0),
+                    "turnover_rate": float(row.get("turnover_rate", 0) or 0),
+                    "pe": float(row.get("pe", 0) or 0),
+                    "pb": float(row.get("pb", 0) or 0),
+                    "market": "A",
+                    "industry": str(row.get("行业", "")),
+                })
+            _all_a_stocks_cache = result
+            _all_a_stocks_ts = time.time()
+            return result
+    except Exception as e:
+        logger.debug(f"akshare fallback error: {e}")
+
+    return _all_a_stocks_cache
+
+
+def get_all_a_stocks_sync() -> list[dict]:
+    if _all_a_stocks_cache:
+        return _all_a_stocks_cache
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            return _all_a_stocks_cache
+        return loop.run_until_complete(fetch_all_a_stocks_async())
+    except Exception:
+        return _all_a_stocks_cache
+
 
 def get_stock_list(market: str) -> list[dict]:
-    """获取指定市场的股票列表"""
+    if market == "A":
+        stocks = get_all_a_stocks_sync()
+        if stocks:
+            return stocks
     try:
         import akshare as ak
         if market == "A":
@@ -53,16 +241,35 @@ def get_stock_list(market: str) -> list[dict]:
                     })
                 return result
     except Exception as e:
-        logger.debug(f"Get stock list error for {market}: {e}")
+        logger.debug(f"Get stock list fallback error for {market}: {e}")
     return []
+
+
+def _num(value, default=0.0):
+    try:
+        if value is None or value == "-" or value == "":
+            return default if default is not None else 0.0
+        val = float(value)
+        import numpy as np
+        if np.isnan(val):
+            return default if default is not None else 0.0
+        return val
+    except (TypeError, ValueError):
+        return default if default is not None else 0.0
 
 
 def _refresh_loop() -> None:
     while not _refresh_stop.is_set():
         try:
-            _refresh_stop.wait(timeout=3600)
+            _refresh_stop.wait(timeout=120)
             if _refresh_stop.is_set():
                 break
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(fetch_all_a_stocks_async())
+                loop.close()
+            except Exception as e:
+                logger.debug(f"Background refresh error: {e}")
         except Exception:
             break
 

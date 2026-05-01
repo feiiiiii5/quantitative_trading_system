@@ -2,25 +2,25 @@
   <div class="stock-detail">
     <div class="page-header">
       <button class="back-btn" @click="$router.back()">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7"/></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 19l-7-7 7-7"/></svg>
       </button>
       <div class="header-info">
-        <h1 class="page-title">{{ stockInfo.symbol }}</h1>
+        <h1 class="page-title mono">{{ stockInfo.symbol }}</h1>
         <span class="stock-name">{{ stockInfo.name }}</span>
         <span class="stock-market" v-if="stockInfo.market">{{ stockInfo.market }}</span>
       </div>
       <div class="header-actions">
-        <button class="action-btn" @click="toggleWatchlist" :class="{ active: isInWatchlist }">
-          <svg width="16" height="16" viewBox="0 0 24 24" :fill="isInWatchlist ? 'var(--accent-yellow)' : 'none'" :stroke="isInWatchlist ? 'var(--accent-yellow)' : 'currentColor'" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        <button class="star-btn" @click="toggleWatchlist" :class="{ active: isInWatchlist }">
+          <svg width="15" height="15" viewBox="0 0 24 24" :fill="isInWatchlist ? 'var(--accent-amber)' : 'none'" :stroke="isInWatchlist ? 'var(--accent-amber)' : 'currentColor'" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
         </button>
       </div>
     </div>
 
     <div class="price-bar" :class="{ up: stockInfo.change_pct >= 0, down: stockInfo.change_pct < 0 }">
       <div class="price-main">
-        <span class="price">{{ (stockInfo.price || 0).toFixed(2) }}</span>
-        <span class="price-pct">{{ stockInfo.change_pct >= 0 ? '+' : '' }}{{ (stockInfo.change_pct || 0).toFixed(2) }}%</span>
-        <span class="price-change">{{ stockInfo.change >= 0 ? '+' : '' }}{{ (stockInfo.change || 0).toFixed(2) }}</span>
+        <span class="price mono">{{ (stockInfo.price || 0).toFixed(2) }}</span>
+        <span class="price-pct mono">{{ stockInfo.change_pct >= 0 ? '+' : '' }}{{ (stockInfo.change_pct || 0).toFixed(2) }}%</span>
+        <span class="price-change mono">{{ stockInfo.change >= 0 ? '+' : '' }}{{ (stockInfo.change || 0).toFixed(2) }}</span>
       </div>
       <div class="price-meta">
         <span>开 {{ (stockInfo.open || 0).toFixed(2) }}</span>
@@ -30,7 +30,6 @@
         <span>量 {{ fmtVol(stockInfo.volume) }}</span>
         <span>额 {{ fmtVol(stockInfo.amount || 0) }}</span>
         <span>换手 {{ (stockInfo.turnover_rate || 0).toFixed(2) }}%</span>
-        <span>振幅 {{ (stockInfo.amplitude || 0).toFixed(2) }}%</span>
       </div>
     </div>
 
@@ -59,54 +58,6 @@
         <div ref="klineChartRef" class="kline-chart"></div>
       </div>
 
-      <div v-show="activeTab === 'indicators'" class="indicators-section">
-        <div v-if="indicatorsData" class="indicator-panels">
-          <div class="ind-panel" v-if="indicatorsData.trend">
-            <h3 class="ind-title">趋势类</h3>
-            <div class="ind-grid">
-              <div class="ind-item"><span class="ind-label">MA5</span><span class="ind-value">{{ fmtInd(indicatorsData.trend.ma5) }}</span></div>
-              <div class="ind-item"><span class="ind-label">MA10</span><span class="ind-value">{{ fmtInd(indicatorsData.trend.ma10) }}</span></div>
-              <div class="ind-item"><span class="ind-label">MA20</span><span class="ind-value">{{ fmtInd(indicatorsData.trend.ma20) }}</span></div>
-              <div class="ind-item"><span class="ind-label">MA60</span><span class="ind-value">{{ fmtInd(indicatorsData.trend.ma60) }}</span></div>
-              <div class="ind-item"><span class="ind-label">MACD信号</span><span class="ind-value" :class="indicatorsData.trend.macd_signal">{{ indicatorsData.trend.macd_signal || '-' }}</span></div>
-              <div class="ind-item"><span class="ind-label">SuperTrend</span><span class="ind-value" :class="indicatorsData.trend.supertrend_dir">{{ indicatorsData.trend.supertrend_dir || '-' }}</span></div>
-            </div>
-          </div>
-          <div class="ind-panel" v-if="indicatorsData.oscillator">
-            <h3 class="ind-title">震荡类</h3>
-            <div class="ind-grid">
-              <div class="ind-item"><span class="ind-label">RSI(6)</span><span class="ind-value">{{ fmtInd(indicatorsData.oscillator.rsi6) }}</span></div>
-              <div class="ind-item"><span class="ind-label">RSI(12)</span><span class="ind-value">{{ fmtInd(indicatorsData.oscillator.rsi12) }}</span></div>
-              <div class="ind-item"><span class="ind-label">RSI(24)</span><span class="ind-value">{{ fmtInd(indicatorsData.oscillator.rsi24) }}</span></div>
-              <div class="ind-item"><span class="ind-label">K</span><span class="ind-value">{{ fmtInd(indicatorsData.oscillator.k) }}</span></div>
-              <div class="ind-item"><span class="ind-label">D</span><span class="ind-value">{{ fmtInd(indicatorsData.oscillator.d) }}</span></div>
-              <div class="ind-item"><span class="ind-label">J</span><span class="ind-value">{{ fmtInd(indicatorsData.oscillator.j) }}</span></div>
-            </div>
-          </div>
-          <div class="ind-panel" v-if="indicatorsData.volume_ind">
-            <h3 class="ind-title">成交量</h3>
-            <div class="ind-grid">
-              <div class="ind-item"><span class="ind-label">OBV趋势</span><span class="ind-value">{{ indicatorsData.volume_ind.obv_trend || '-' }}</span></div>
-              <div class="ind-item"><span class="ind-label">CMF</span><span class="ind-value">{{ fmtInd(indicatorsData.volume_ind.cmf) }}</span></div>
-              <div class="ind-item"><span class="ind-label">量比</span><span class="ind-value">{{ fmtInd(indicatorsData.volume_ind.volume_ratio) }}</span></div>
-            </div>
-          </div>
-          <div class="ind-panel" v-if="indicatorsData.volatility">
-            <h3 class="ind-title">波动率</h3>
-            <div class="ind-grid">
-              <div class="ind-item"><span class="ind-label">ATR</span><span class="ind-value">{{ fmtInd(indicatorsData.volatility.atr) }}</span></div>
-              <div class="ind-item"><span class="ind-label">BOLL宽度</span><span class="ind-value">{{ fmtInd(indicatorsData.volatility.boll_width) }}</span></div>
-              <div class="ind-item"><span class="ind-label">历史波动率</span><span class="ind-value">{{ fmtInd(indicatorsData.volatility.hist_vol) }}</span></div>
-            </div>
-          </div>
-          <div class="ind-panel composite-panel" v-if="analysis">
-            <h3 class="ind-title">综合评分</h3>
-            <div ref="radarChartRef" class="radar-chart"></div>
-          </div>
-        </div>
-        <div v-else class="empty-state-small">加载中...</div>
-      </div>
-
       <div v-show="activeTab === 'analysis'" class="analysis-section">
         <div v-if="analysis" class="analysis-grid">
           <div class="analysis-card">
@@ -131,33 +82,87 @@
           <div class="analysis-card composite-card">
             <h3>综合评分</h3>
             <div class="composite-score">
-              <span class="score-value" :class="analysis.signal === 'bullish' ? 'up' : analysis.signal === 'bearish' ? 'down' : ''">{{ (analysis.composite_score || 0).toFixed(1) }}</span>
+              <span class="score-value mono" :class="analysis.signal === 'bullish' ? 'up' : analysis.signal === 'bearish' ? 'down' : ''">{{ (analysis.composite_score || 0).toFixed(1) }}</span>
               <span class="score-signal">{{ analysis.signal || 'neutral' }}</span>
               <span class="score-conf">置信度 {{ (analysis.signal_confidence || 0).toFixed(0) }}%</span>
             </div>
           </div>
         </div>
-        <div v-else class="empty-state-small">加载中...</div>
+        <div v-else class="empty-hint">加载中...</div>
       </div>
 
-      <div v-show="activeTab === 'prediction'" class="prediction-section">
-        <div v-if="prediction" class="pred-grid">
-          <div v-for="(pred, key) in prediction.predictions || {}" :key="key" class="pred-card" :class="pred.direction">
-            <span class="pred-label">{{ key.toUpperCase() }}</span>
-            <span class="pred-price">{{ pred.price }}</span>
-            <span class="pred-range">{{ pred.lower }} - {{ pred.upper }}</span>
-            <span class="pred-conf">置信度 {{ (pred.confidence * 100).toFixed(0) }}%</span>
+      <div v-show="activeTab === 'indicators'" class="indicators-section">
+        <div v-if="indicatorsData" class="indicator-panels">
+          <div class="ind-panel" v-if="indicatorsData.trend">
+            <h3 class="ind-title">趋势类</h3>
+            <div class="ind-grid">
+              <div class="ind-item"><span class="ind-label">MA5</span><span class="ind-value mono">{{ fmtInd(indicatorsData.trend.ma5) }}</span></div>
+              <div class="ind-item"><span class="ind-label">MA10</span><span class="ind-value mono">{{ fmtInd(indicatorsData.trend.ma10) }}</span></div>
+              <div class="ind-item"><span class="ind-label">MA20</span><span class="ind-value mono">{{ fmtInd(indicatorsData.trend.ma20) }}</span></div>
+              <div class="ind-item"><span class="ind-label">MA60</span><span class="ind-value mono">{{ fmtInd(indicatorsData.trend.ma60) }}</span></div>
+              <div class="ind-item"><span class="ind-label">MACD信号</span><span class="ind-value" :class="indicatorsData.trend.macd_signal">{{ indicatorsData.trend.macd_signal || '-' }}</span></div>
+              <div class="ind-item"><span class="ind-label">SuperTrend</span><span class="ind-value" :class="indicatorsData.trend.supertrend_dir">{{ indicatorsData.trend.supertrend_dir || '-' }}</span></div>
+            </div>
           </div>
-          <div class="pred-summary">
-            <span class="pred-signal" :class="prediction.composite_signal">{{ prediction.composite_signal }}</span>
-            <span class="pred-vol">年化波动率: {{ ((prediction.volatility_annual || 0) * 100).toFixed(1) }}%</span>
+          <div class="ind-panel" v-if="indicatorsData.oscillator">
+            <h3 class="ind-title">震荡类</h3>
+            <div class="ind-grid">
+              <div class="ind-item"><span class="ind-label">RSI(6)</span><span class="ind-value mono">{{ fmtInd(indicatorsData.oscillator.rsi6) }}</span></div>
+              <div class="ind-item"><span class="ind-label">RSI(12)</span><span class="ind-value mono">{{ fmtInd(indicatorsData.oscillator.rsi12) }}</span></div>
+              <div class="ind-item"><span class="ind-label">RSI(24)</span><span class="ind-value mono">{{ fmtInd(indicatorsData.oscillator.rsi24) }}</span></div>
+              <div class="ind-item"><span class="ind-label">K</span><span class="ind-value mono">{{ fmtInd(indicatorsData.oscillator.k) }}</span></div>
+              <div class="ind-item"><span class="ind-label">D</span><span class="ind-value mono">{{ fmtInd(indicatorsData.oscillator.d) }}</span></div>
+              <div class="ind-item"><span class="ind-label">J</span><span class="ind-value mono">{{ fmtInd(indicatorsData.oscillator.j) }}</span></div>
+            </div>
+          </div>
+          <div class="ind-panel" v-if="indicatorsData.volume_ind">
+            <h3 class="ind-title">成交量</h3>
+            <div class="ind-grid">
+              <div class="ind-item"><span class="ind-label">OBV趋势</span><span class="ind-value">{{ indicatorsData.volume_ind.obv_trend || '-' }}</span></div>
+              <div class="ind-item"><span class="ind-label">CMF</span><span class="ind-value mono">{{ fmtInd(indicatorsData.volume_ind.cmf) }}</span></div>
+              <div class="ind-item"><span class="ind-label">量比</span><span class="ind-value mono">{{ fmtInd(indicatorsData.volume_ind.volume_ratio) }}</span></div>
+            </div>
+          </div>
+          <div class="ind-panel" v-if="indicatorsData.volatility">
+            <h3 class="ind-title">波动率</h3>
+            <div class="ind-grid">
+              <div class="ind-item"><span class="ind-label">ATR</span><span class="ind-value mono">{{ fmtInd(indicatorsData.volatility.atr) }}</span></div>
+              <div class="ind-item"><span class="ind-label">BOLL宽度</span><span class="ind-value mono">{{ fmtInd(indicatorsData.volatility.boll_width) }}</span></div>
+              <div class="ind-item"><span class="ind-label">历史波动率</span><span class="ind-value mono">{{ fmtInd(indicatorsData.volatility.hist_vol) }}</span></div>
+            </div>
           </div>
         </div>
-        <div v-else class="empty-state-small">加载中...</div>
+        <div v-else class="empty-hint">加载中...</div>
+      </div>
+
+      <div v-show="activeTab === 'fundamentals'" class="fundamentals-section">
+        <div v-if="fundamentalsData" class="fund-grid">
+          <div class="fund-card">
+            <h3>估值指标</h3>
+            <div class="fund-item" v-if="fundamentalsData.pe_ttm"><span class="label">PE(TTM)</span><span class="value mono">{{ fundamentalsData.pe_ttm?.toFixed(2) || '-' }}</span></div>
+            <div class="fund-item" v-if="fundamentalsData.pb"><span class="label">PB</span><span class="value mono">{{ fundamentalsData.pb?.toFixed(2) || '-' }}</span></div>
+            <div class="fund-item" v-if="fundamentalsData.ps_ttm"><span class="label">PS(TTM)</span><span class="value mono">{{ fundamentalsData.ps_ttm?.toFixed(2) || '-' }}</span></div>
+            <div class="fund-item" v-if="fundamentalsData.dv_ratio"><span class="label">股息率</span><span class="value mono">{{ (fundamentalsData.dv_ratio || 0).toFixed(2) }}%</span></div>
+          </div>
+          <div class="fund-card">
+            <h3>财务指标</h3>
+            <div class="fund-item" v-if="fundamentalsData.total_market_cap"><span class="label">总市值</span><span class="value mono">{{ fmtVol(fundamentalsData.total_market_cap) }}</span></div>
+            <div class="fund-item" v-if="fundamentalsData.circulating_market_cap"><span class="label">流通市值</span><span class="value mono">{{ fmtVol(fundamentalsData.circulating_market_cap) }}</span></div>
+            <div class="fund-item" v-if="fundamentalsData.roe"><span class="label">ROE</span><span class="value mono">{{ (fundamentalsData.roe || 0).toFixed(2) }}%</span></div>
+            <div class="fund-item" v-if="fundamentalsData.gross_profit_margin"><span class="label">毛利率</span><span class="value mono">{{ (fundamentalsData.gross_profit_margin || 0).toFixed(2) }}%</span></div>
+            <div class="fund-item" v-if="fundamentalsData.net_profit_margin"><span class="label">净利率</span><span class="value mono">{{ (fundamentalsData.net_profit_margin || 0).toFixed(2) }}%</span></div>
+          </div>
+          <div class="fund-card" v-if="fundamentalsData.revenue_growth || fundamentalsData.profit_growth">
+            <h3>成长性</h3>
+            <div class="fund-item" v-if="fundamentalsData.revenue_growth"><span class="label">营收增速</span><span class="value mono" :class="fundamentalsData.revenue_growth >= 0 ? 'up' : 'down'">{{ (fundamentalsData.revenue_growth || 0).toFixed(2) }}%</span></div>
+            <div class="fund-item" v-if="fundamentalsData.profit_growth"><span class="label">利润增速</span><span class="value mono" :class="fundamentalsData.profit_growth >= 0 ? 'up' : 'down'">{{ (fundamentalsData.profit_growth || 0).toFixed(2) }}%</span></div>
+          </div>
+        </div>
+        <div v-else class="empty-hint">加载中...</div>
       </div>
 
       <div v-show="activeTab === 'ai_summary'" class="ai-summary-section">
-        <div v-if="aiSummaryLoading" class="skeleton" style="height:200px;border-radius:12px"></div>
+        <div v-if="aiSummaryLoading" class="skeleton" style="height:200px;border-radius:var(--radius-lg)"></div>
         <div v-else-if="aiSummary" class="ai-summary-card">
           <div class="ai-overall" :class="aiSummary.overall === '偏多' ? 'bullish' : aiSummary.overall === '偏空' ? 'bearish' : 'neutral'">
             <span class="overall-label">综合判断</span>
@@ -170,78 +175,12 @@
             </div>
           </div>
           <div v-if="aiSummary.price_change" class="ai-changes">
-            <div class="change-item"><span class="change-label">5日</span><span class="change-value" :class="aiSummary.price_change['5d'] >= 0 ? 'up' : 'down'">{{ aiSummary.price_change['5d'] >= 0 ? '+' : '' }}{{ aiSummary.price_change['5d'] }}%</span></div>
-            <div class="change-item"><span class="change-label">20日</span><span class="change-value" :class="aiSummary.price_change['20d'] >= 0 ? 'up' : 'down'">{{ aiSummary.price_change['20d'] >= 0 ? '+' : '' }}{{ aiSummary.price_change['20d'] }}%</span></div>
-            <div class="change-item"><span class="change-label">60日</span><span class="change-value" :class="aiSummary.price_change['60d'] >= 0 ? 'up' : 'down'">{{ aiSummary.price_change['60d'] >= 0 ? '+' : '' }}{{ aiSummary.price_change['60d'] }}%</span></div>
+            <div class="change-item"><span class="change-label">5日</span><span class="change-value mono" :class="aiSummary.price_change['5d'] >= 0 ? 'up' : 'down'">{{ aiSummary.price_change['5d'] >= 0 ? '+' : '' }}{{ aiSummary.price_change['5d'] }}%</span></div>
+            <div class="change-item"><span class="change-label">20日</span><span class="change-value mono" :class="aiSummary.price_change['20d'] >= 0 ? 'up' : 'down'">{{ aiSummary.price_change['20d'] >= 0 ? '+' : '' }}{{ aiSummary.price_change['20d'] }}%</span></div>
+            <div class="change-item"><span class="change-label">60日</span><span class="change-value mono" :class="aiSummary.price_change['60d'] >= 0 ? 'up' : 'down'">{{ aiSummary.price_change['60d'] >= 0 ? '+' : '' }}{{ aiSummary.price_change['60d'] }}%</span></div>
           </div>
         </div>
-        <div v-else class="empty-state"><p>暂无AI分析数据</p></div>
-      </div>
-
-      <div v-show="activeTab === 'fundamentals'" class="fundamentals-section">
-        <div v-if="fundamentalsData" class="fund-grid">
-          <div class="fund-card">
-            <h3>估值指标</h3>
-            <div class="fund-item" v-if="fundamentalsData.pe_ttm"><span class="label">PE(TTM)</span><span class="value">{{ fundamentalsData.pe_ttm?.toFixed(2) || '-' }}</span></div>
-            <div class="fund-item" v-if="fundamentalsData.pb"><span class="label">PB</span><span class="value">{{ fundamentalsData.pb?.toFixed(2) || '-' }}</span></div>
-            <div class="fund-item" v-if="fundamentalsData.ps_ttm"><span class="label">PS(TTM)</span><span class="value">{{ fundamentalsData.ps_ttm?.toFixed(2) || '-' }}</span></div>
-            <div class="fund-item" v-if="fundamentalsData.dv_ratio"><span class="label">股息率</span><span class="value">{{ (fundamentalsData.dv_ratio || 0).toFixed(2) }}%</span></div>
-          </div>
-          <div class="fund-card">
-            <h3>财务指标</h3>
-            <div class="fund-item" v-if="fundamentalsData.total_market_cap"><span class="label">总市值</span><span class="value">{{ fmtVol(fundamentalsData.total_market_cap) }}</span></div>
-            <div class="fund-item" v-if="fundamentalsData.circulating_market_cap"><span class="label">流通市值</span><span class="value">{{ fmtVol(fundamentalsData.circulating_market_cap) }}</span></div>
-            <div class="fund-item" v-if="fundamentalsData.roe"><span class="label">ROE</span><span class="value">{{ (fundamentalsData.roe || 0).toFixed(2) }}%</span></div>
-            <div class="fund-item" v-if="fundamentalsData.gross_profit_margin"><span class="label">毛利率</span><span class="value">{{ (fundamentalsData.gross_profit_margin || 0).toFixed(2) }}%</span></div>
-            <div class="fund-item" v-if="fundamentalsData.net_profit_margin"><span class="label">净利率</span><span class="value">{{ (fundamentalsData.net_profit_margin || 0).toFixed(2) }}%</span></div>
-          </div>
-          <div class="fund-card" v-if="fundamentalsData.revenue_growth || fundamentalsData.profit_growth">
-            <h3>成长性</h3>
-            <div class="fund-item" v-if="fundamentalsData.revenue_growth"><span class="label">营收增速</span><span class="value" :class="fundamentalsData.revenue_growth >= 0 ? 'up' : 'down'">{{ (fundamentalsData.revenue_growth || 0).toFixed(2) }}%</span></div>
-            <div class="fund-item" v-if="fundamentalsData.profit_growth"><span class="label">利润增速</span><span class="value" :class="fundamentalsData.profit_growth >= 0 ? 'up' : 'down'">{{ (fundamentalsData.profit_growth || 0).toFixed(2) }}%</span></div>
-          </div>
-        </div>
-        <div v-else class="empty-state-small">加载中...</div>
-      </div>
-
-      <div v-show="activeTab === 'correlation'" class="correlation-section">
-        <div v-if="correlationData" class="corr-grid">
-          <div class="corr-card">
-            <h3>与基准相关性</h3>
-            <div class="corr-item"><span class="label">Beta</span><span class="value">{{ (correlationData.beta || 0).toFixed(4) }}</span></div>
-            <div class="corr-item"><span class="label">Alpha</span><span class="value" :class="correlationData.alpha >= 0 ? 'up' : 'down'">{{ (correlationData.alpha || 0).toFixed(4) }}</span></div>
-            <div class="corr-item"><span class="label">相对强度</span><span class="value" :class="correlationData.relative_strength >= 0 ? 'up' : 'down'">{{ ((correlationData.relative_strength || 0) * 100).toFixed(2) }}%</span></div>
-            <div class="corr-item"><span class="label">稳定性评分</span><span class="value">{{ (correlationData.stability_score || 0).toFixed(2) }}</span></div>
-          </div>
-          <div class="corr-chart-card" v-if="correlationData.rolling_correlation?.length">
-            <h3>滚动相关性(60日)</h3>
-            <BaseChart :option="correlationChartOption" height="220px" />
-          </div>
-        </div>
-        <div v-else class="empty-state-small">加载中...</div>
-      </div>
-
-      <div v-show="activeTab === 'factors'" class="factors-section">
-        <div v-if="factorData" class="factor-grid">
-          <div class="factor-score-card">
-            <h3>综合因子评分</h3>
-            <div class="factor-composite">
-              <span class="composite-value" :class="factorData.composite_score > 0 ? 'up' : factorData.composite_score < 0 ? 'down' : ''">{{ (factorData.composite_score || 0).toFixed(4) }}</span>
-            </div>
-          </div>
-          <div v-for="(f, name) in factorData.factors || {}" :key="name" class="factor-card" :class="f.direction">
-            <div class="factor-name">{{ factorLabel(name) }}</div>
-            <div class="factor-value">{{ (f.value || 0).toFixed(4) }}</div>
-            <div class="factor-bar-wrap">
-              <div class="factor-bar" :style="{ width: (f.percentile * 100).toFixed(1) + '%', background: f.direction === 'bullish' ? 'var(--accent-red)' : f.direction === 'bearish' ? 'var(--accent-green)' : 'var(--text-tertiary)' }"></div>
-            </div>
-            <div class="factor-meta">
-              <span class="factor-pct">百分位 {{ (f.percentile * 100).toFixed(1) }}%</span>
-              <span class="factor-dir" :class="f.direction">{{ f.direction === 'bullish' ? '看多' : f.direction === 'bearish' ? '看空' : '中性' }}</span>
-            </div>
-          </div>
-        </div>
-        <div v-else class="empty-state-small">加载中...</div>
+        <div v-else class="empty-hint">暂无AI分析数据</div>
       </div>
 
       <div v-show="activeTab === 'backtest'" class="quick-backtest-section">
@@ -323,10 +262,12 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api'
+import { useToast } from '../composables/useToast'
 import echarts from '../lib/echarts'
 import { MetricCard, BaseChart } from '../components'
 
 const route = useRoute()
+const toast = useToast()
 const stockInfo = ref<any>({})
 const analysis = ref<any>(null)
 const prediction = ref<any>(null)
@@ -348,32 +289,6 @@ function pointClass(point: string): string {
   return 'neutral'
 }
 
-function factorLabel(name: string): string {
-  const map: Record<string, string> = {
-    momentum_quality: '动量质量',
-    efficiency_ratio: '效率比率',
-    relative_volume: '相对成交量',
-    money_flow_index: '资金流量指数',
-    volume_price_trend: '量价趋势',
-  }
-  return map[name] || name
-}
-
-const correlationChartOption = computed(() => {
-  if (!correlationData.value?.rolling_correlation?.length) return {}
-  const rc = correlationData.value.rolling_correlation
-  const dates = rc.map((d: any) => (d.date || '').slice(5))
-  const values = rc.map((d: any) => d.value)
-  return {
-    backgroundColor: 'transparent', animation: false,
-    tooltip: { trigger: 'axis', formatter: (p: any) => p[0] ? `${p[0].axisValue}<br/>相关性: ${p[0].value.toFixed(4)}` : '' },
-    grid: { left: 50, right: 20, top: 10, bottom: 30 },
-    xAxis: { type: 'category', data: dates, axisLabel: { color: '#888', fontSize: 9 } },
-    yAxis: { type: 'value', min: -1, max: 1, axisLabel: { color: '#888', fontSize: 9 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } } },
-    series: [{ type: 'line', data: values, showSymbol: false, lineStyle: { width: 1.5, color: '#4d9fff' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(77,159,255,0.15)' }, { offset: 1, color: 'rgba(77,159,255,0)' }] } } }],
-  }
-})
-
 const orderPrice = ref(0)
 const orderShares = ref(100)
 const activeTab = ref('kline')
@@ -381,23 +296,18 @@ const klinePeriod = ref('1y')
 const klineAdjust = ref('qfq')
 const subIndicator = ref('macd')
 const klineChartRef = ref<HTMLElement | null>(null)
-const radarChartRef = ref<HTMLElement | null>(null)
 let chartInstance: any = null
-let radarChart: any = null
 let klineData: any[] = []
 
 const overlays = ref({ ma: true, boll: false, vwap: false })
 
 const tabs = [
-  { key: 'kline', label: 'K线图' },
-  { key: 'indicators', label: '技术指标' },
-  { key: 'analysis', label: '深度分析' },
+  { key: 'kline', label: 'K线' },
+  { key: 'analysis', label: '分析' },
+  { key: 'indicators', label: '指标' },
   { key: 'fundamentals', label: '基本面' },
-  { key: 'correlation', label: '相关性' },
-  { key: 'factors', label: '因子分析' },
-  { key: 'prediction', label: 'AI预测' },
-  { key: 'ai_summary', label: 'AI摘要' },
-  { key: 'backtest', label: '快速回测' },
+  { key: 'ai_summary', label: 'AI' },
+  { key: 'backtest', label: '回测' },
   { key: 'trade', label: '交易' },
 ]
 
@@ -490,8 +400,7 @@ async function loadStockData() {
 
 async function loadKline() {
   const symbol = route.params.code as string
-  const ktype = klinePeriod.value === '3m' || klinePeriod.value === '6m' || klinePeriod.value === '1y' ? 'daily' : 'daily'
-  const data = await api.getHistory(symbol, klinePeriod.value, ktype, klineAdjust.value)
+  const data = await api.getHistory(symbol, klinePeriod.value, 'daily', klineAdjust.value)
   if (!data || !data.length) return
   klineData = data
   renderKline()
@@ -627,12 +536,12 @@ function renderKline() {
   const series: any[] = [
     {
       name: 'K线', type: 'candlestick', data: ohlc, xAxisIndex: 0, yAxisIndex: 0,
-      itemStyle: { color: '#f43f5e', color0: '#34d399', borderColor: '#f43f5e', borderColor0: '#34d399' },
+      itemStyle: { color: '#ef4444', color0: '#22c55e', borderColor: '#ef4444', borderColor0: '#22c55e' },
     },
     {
       name: '成交量', type: 'bar', data: volumes.map((v: number, i: number) => ({
         value: v,
-        itemStyle: { color: changes[i] > 0 ? 'rgba(244,63,94,0.5)' : 'rgba(52,211,153,0.5)' },
+        itemStyle: { color: changes[i] > 0 ? 'rgba(239,68,68,0.4)' : 'rgba(34,197,94,0.4)' },
       })), xAxisIndex: 1, yAxisIndex: 1,
     },
   ]
@@ -644,7 +553,7 @@ function renderKline() {
     const ma60 = calcMA(data, 60)
     series.push(
       { name: 'MA5', type: 'line', data: ma5, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#fbbf24' } },
-      { name: 'MA10', type: 'line', data: ma10, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#4d9fff' } },
+      { name: 'MA10', type: 'line', data: ma10, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#38bdf8' } },
       { name: 'MA20', type: 'line', data: ma20, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#a78bfa' } },
       { name: 'MA60', type: 'line', data: ma60, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: '#fb923c' } },
     )
@@ -653,9 +562,9 @@ function renderKline() {
   if (overlays.value.boll) {
     const boll = calcBOLL(data)
     series.push(
-      { name: 'BOLL上', type: 'line', data: boll.upper, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: 'rgba(167,139,250,0.6)', type: 'dashed' } },
-      { name: 'BOLL中', type: 'line', data: boll.mid, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: 'rgba(167,139,250,0.8)' } },
-      { name: 'BOLL下', type: 'line', data: boll.lower, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: 'rgba(167,139,250,0.6)', type: 'dashed' } },
+      { name: 'BOLL上', type: 'line', data: boll.upper, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: 'rgba(167,139,250,0.5)', type: 'dashed' } },
+      { name: 'BOLL中', type: 'line', data: boll.mid, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: 'rgba(167,139,250,0.7)' } },
+      { name: 'BOLL下', type: 'line', data: boll.lower, xAxisIndex: 0, yAxisIndex: 0, smooth: true, showSymbol: false, lineStyle: { width: 1, color: 'rgba(167,139,250,0.5)', type: 'dashed' } },
     )
   }
 
@@ -665,47 +574,47 @@ function renderKline() {
   }
 
   const gridConfig = [
-    { left: 60, right: 20, top: 30, height: '50%' },
-    { left: 60, right: 20, top: '68%', height: '10%' },
+    { left: 55, right: 16, top: 28, height: '50%' },
+    { left: 55, right: 16, top: '68%', height: '10%' },
   ]
   const xAxisConfig: any[] = [
-    { type: 'category', data: dates, gridIndex: 0, axisLine: { lineStyle: { color: '#333' } }, axisLabel: { color: '#888', fontSize: 10 }, splitLine: { show: false }, boundaryGap: true },
+    { type: 'category', data: dates, gridIndex: 0, axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } }, axisLabel: { color: '#4a5068', fontSize: 9 }, splitLine: { show: false }, boundaryGap: true },
     { type: 'category', data: dates, gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false }, boundaryGap: true },
   ]
   const yAxisConfig: any[] = [
-    { type: 'value', gridIndex: 0, scale: true, axisLine: { lineStyle: { color: '#333' } }, axisLabel: { color: '#888', fontSize: 10, formatter: (v: number) => v.toFixed(2) }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } } },
+    { type: 'value', gridIndex: 0, scale: true, axisLine: { show: false }, axisLabel: { color: '#4a5068', fontSize: 9, formatter: (v: number) => v.toFixed(2) }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)' } } },
     { type: 'value', gridIndex: 1, scale: true, axisLabel: { show: false }, splitLine: { show: false } },
   ]
 
   if (subIndicator.value === 'macd') {
     const macd = calcMACD(data)
-    gridConfig.push({ left: 60, right: 20, top: '82%', height: '12%' })
+    gridConfig.push({ left: 55, right: 16, top: '82%', height: '12%' })
     xAxisConfig.push({ type: 'category', data: dates, gridIndex: 2, axisLabel: { show: false }, splitLine: { show: false } })
     yAxisConfig.push({ type: 'value', gridIndex: 2, scale: true, axisLabel: { show: false }, splitLine: { show: false } })
     series.push(
       { name: 'DIF', type: 'line', data: macd.dif, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#fbbf24' } },
-      { name: 'DEA', type: 'line', data: macd.dea, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#4d9fff' } },
-      { name: 'MACD柱', type: 'bar', data: macd.hist.map((v: number) => ({ value: v, itemStyle: { color: v >= 0 ? 'rgba(244,63,94,0.6)' : 'rgba(52,211,153,0.6)' } })), xAxisIndex: 2, yAxisIndex: 2 },
+      { name: 'DEA', type: 'line', data: macd.dea, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#38bdf8' } },
+      { name: 'MACD柱', type: 'bar', data: macd.hist.map((v: number) => ({ value: v, itemStyle: { color: v >= 0 ? 'rgba(239,68,68,0.5)' : 'rgba(34,197,94,0.5)' } })), xAxisIndex: 2, yAxisIndex: 2 },
     )
   } else if (subIndicator.value === 'kdj') {
     const kdj = calcKDJ(data)
-    gridConfig.push({ left: 60, right: 20, top: '82%', height: '12%' })
+    gridConfig.push({ left: 55, right: 16, top: '82%', height: '12%' })
     xAxisConfig.push({ type: 'category', data: dates, gridIndex: 2, axisLabel: { show: false }, splitLine: { show: false } })
     yAxisConfig.push({ type: 'value', gridIndex: 2, min: 0, max: 100, axisLabel: { show: false }, splitLine: { show: false } })
     series.push(
       { name: 'K', type: 'line', data: kdj.k, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#fbbf24' } },
-      { name: 'D', type: 'line', data: kdj.d, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#4d9fff' } },
-      { name: 'J', type: 'line', data: kdj.j, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#f43f5e' } },
+      { name: 'D', type: 'line', data: kdj.d, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#38bdf8' } },
+      { name: 'J', type: 'line', data: kdj.j, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#ef4444' } },
     )
   } else if (subIndicator.value === 'rsi') {
     const rsi = calcRSI(data)
-    gridConfig.push({ left: 60, right: 20, top: '82%', height: '12%' })
+    gridConfig.push({ left: 55, right: 16, top: '82%', height: '12%' })
     xAxisConfig.push({ type: 'category', data: dates, gridIndex: 2, axisLabel: { show: false }, splitLine: { show: false } })
     yAxisConfig.push({ type: 'value', gridIndex: 2, min: 0, max: 100, axisLabel: { show: false }, splitLine: { show: false } })
     series.push(
-      { name: 'RSI6', type: 'line', data: rsi.rsi6, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#f43f5e' } },
+      { name: 'RSI6', type: 'line', data: rsi.rsi6, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#ef4444' } },
       { name: 'RSI12', type: 'line', data: rsi.rsi12, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#fbbf24' } },
-      { name: 'RSI24', type: 'line', data: rsi.rsi24, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#4d9fff' } },
+      { name: 'RSI24', type: 'line', data: rsi.rsi24, xAxisIndex: 2, yAxisIndex: 2, showSymbol: false, lineStyle: { width: 1, color: '#38bdf8' } },
     )
   }
 
@@ -714,7 +623,7 @@ function renderKline() {
     animation: false,
     tooltip: {
       trigger: 'axis',
-      axisPointer: { type: 'cross' },
+      axisPointer: { type: 'cross', crossStyle: { color: '#4a5068' } },
       formatter: (params: any) => {
         if (!params || !params.length) return ''
         const idx = params[0].dataIndex
@@ -723,18 +632,17 @@ function renderKline() {
         let html = `<b>${dates[idx]}</b><br/>`
         html += `开 ${d.open?.toFixed(2)} 收 ${d.close?.toFixed(2)}<br/>`
         html += `高 ${d.high?.toFixed(2)} 低 ${d.low?.toFixed(2)}<br/>`
-        html += `量 ${fmtVol(d.volume)} 额 ${fmtVol(d.amount || 0)}<br/>`
-        if (d.change_pct !== undefined) html += `涨跌幅 ${d.change_pct?.toFixed(2)}%`
+        html += `量 ${fmtVol(d.volume)} 额 ${fmtVol(d.amount || 0)}`
         return html
       },
     },
-    legend: { data: series.filter(s => s.type === 'line').map(s => s.name), top: 0, textStyle: { color: '#888', fontSize: 10 }, itemWidth: 14, itemHeight: 8 },
+    legend: { data: series.filter(s => s.type === 'line').map(s => s.name), top: 0, textStyle: { color: '#4a5068', fontSize: 9 }, itemWidth: 12, itemHeight: 6 },
     grid: gridConfig,
     xAxis: xAxisConfig,
     yAxis: yAxisConfig,
     dataZoom: [
       { type: 'inside', xAxisIndex: xAxisConfig.map((_, i) => i), start: 70, end: 100 },
-      { show: true, xAxisIndex: xAxisConfig.map((_, i) => i), type: 'slider', height: 16, bottom: 0, borderColor: 'transparent', backgroundColor: 'rgba(255,255,255,0.02)', fillerColor: 'rgba(77,159,255,0.15)', handleStyle: { color: '#4d9fff' }, textStyle: { color: '#888', fontSize: 10 } },
+      { show: true, xAxisIndex: xAxisConfig.map((_, i) => i), type: 'slider', height: 14, bottom: 0, borderColor: 'transparent', backgroundColor: 'rgba(255,255,255,0.02)', fillerColor: 'rgba(56,189,248,0.12)', handleStyle: { color: '#38bdf8' }, textStyle: { color: '#4a5068', fontSize: 9 } },
     ],
     series,
   }
@@ -765,12 +673,6 @@ async function loadAnalysis() {
   }
 }
 
-async function loadPrediction() {
-  const symbol = route.params.code as string
-  const data = await api.getPrediction(symbol, '1y')
-  if (data) prediction.value = data
-}
-
 async function loadAiSummary() {
   const symbol = route.params.code as string
   aiSummaryLoading.value = true
@@ -778,7 +680,7 @@ async function loadAiSummary() {
     const data = await api.getAiSummary(symbol, '1y')
     if (data) aiSummary.value = data
   } catch (e) {
-    console.error('Load AI summary error:', e)
+    toast.error(e instanceof Error ? e.message : 'AI摘要加载失败')
   } finally {
     aiSummaryLoading.value = false
   }
@@ -789,80 +691,28 @@ async function loadFundamentals() {
   try {
     const data = await api.getFundamentals(symbol)
     if (data) fundamentalsData.value = data
-  } catch (e) {}
-}
-
-async function loadCorrelation() {
-  const symbol = route.params.code as string
-  try {
-    const data = await api.getCorrelation(symbol)
-    if (data) correlationData.value = data
-  } catch (e) {}
-}
-
-async function loadFactorAnalysis() {
-  const symbol = route.params.code as string
-  try {
-    const data = await api.getFactorAnalysis(symbol)
-    if (data) factorData.value = data
-  } catch (e) {}
-}
-
-function renderRadarChart() {
-  if (!radarChartRef.value || !analysis.value) return
-  if (!radarChart) {
-    radarChart = echarts.init(radarChartRef.value, undefined, { renderer: 'canvas' })
+  } catch (e) {
+    toast.warning(e instanceof Error ? e.message : '基本面数据加载失败')
   }
-  const a = analysis.value
-  radarChart.setOption({
-    animation: false,
-    radar: {
-      indicator: [
-        { name: '趋势', max: 100 }, { name: '动量', max: 100 },
-        { name: '成交量', max: 100 }, { name: '波动', max: 100 },
-        { name: '支撑阻力', max: 100 }, { name: '形态', max: 100 },
-      ],
-      shape: 'polygon',
-      splitNumber: 4,
-      axisName: { color: '#888', fontSize: 10 },
-      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-      splitArea: { areaStyle: { color: ['rgba(255,255,255,0.02)', 'rgba(255,255,255,0.04)'] } },
-    },
-    series: [{
-      type: 'radar',
-      data: [{
-        value: [
-          a.trend?.strength || 50,
-          Math.abs((a.momentum?.composite_momentum || 0)) * 100,
-          a.volume?.volume_ratio_5d ? Math.min(a.volume.volume_ratio_5d * 30, 100) : 50,
-          50,
-          50,
-          50,
-        ],
-        areaStyle: { color: 'rgba(77,159,255,0.2)' },
-        lineStyle: { color: '#4d9fff', width: 2 },
-        itemStyle: { color: '#4d9fff' },
-      }],
-    }],
-  }, true)
 }
 
 async function runQuickBacktest() {
   const symbol = route.params.code as string
   qbRunning.value = true
   try {
+    const today = new Date().toISOString().slice(0, 10)
     const rangeMap: Record<string, { start: string, end: string }> = {
-      '1m': { start: '2024-12-01', end: '2025-04-29' },
-      '3m': { start: '2025-01-01', end: '2025-04-29' },
-      '6m': { start: '2024-10-01', end: '2025-04-29' },
-      '1y': { start: '2024-04-29', end: '2025-04-29' },
-      '3y': { start: '2022-04-29', end: '2025-04-29' },
+      '1m': { start: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10), end: today },
+      '3m': { start: new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10), end: today },
+      '6m': { start: new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10), end: today },
+      '1y': { start: new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10), end: today },
+      '3y': { start: new Date(Date.now() - 3 * 365 * 86400000).toISOString().slice(0, 10), end: today },
     }
     const r = rangeMap[qbRange.value] || rangeMap['1y']
     const data = await api.runBacktest(symbol, qbStrategy.value, r.start, r.end, 1000000)
     if (data) qbResult.value = data
   } catch (e) {
-    console.error('Quick backtest error:', e)
+    toast.error(e instanceof Error ? e.message : '快速回测失败')
   } finally {
     qbRunning.value = false
   }
@@ -877,9 +727,9 @@ const qbEquityOption = computed(() => {
     backgroundColor: 'transparent', animation: false,
     tooltip: { trigger: 'axis' },
     grid: { left: 50, right: 10, top: 10, bottom: 24 },
-    xAxis: { type: 'category', data: dates, axisLabel: { color: '#888', fontSize: 9 } },
-    yAxis: { type: 'value', scale: true, axisLabel: { color: '#888', fontSize: 9 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } } },
-    series: [{ type: 'line', data: values, showSymbol: false, lineStyle: { width: 1.5, color: '#4d9fff' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(77,159,255,0.15)' }, { offset: 1, color: 'rgba(77,159,255,0)' }] } } }],
+    xAxis: { type: 'category', data: dates, axisLabel: { color: '#4a5068', fontSize: 9 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { color: '#4a5068', fontSize: 9 }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.03)' } } },
+    series: [{ type: 'line', data: values, showSymbol: false, lineStyle: { width: 1.5, color: '#38bdf8' }, areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(56,189,248,0.12)' }, { offset: 1, color: 'rgba(56,189,248,0)' }] } } }],
   }
 })
 
@@ -898,227 +748,206 @@ function submitOrder(type: string) {
 
 let updateTimer: any = null
 
+function handleResize() {
+  chartInstance?.resize()
+}
+
 onMounted(async () => {
   await loadStockData()
   await nextTick()
   loadKline()
   loadAnalysis()
-  loadPrediction()
   loadAiSummary()
   loadFundamentals()
-  loadCorrelation()
-  loadFactorAnalysis()
   updateTimer = setInterval(loadStockData, 10000)
+  window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
   if (updateTimer) clearInterval(updateTimer)
+  window.removeEventListener('resize', handleResize)
   if (chartInstance) { chartInstance.dispose(); chartInstance = null }
-  if (radarChart) { radarChart.dispose(); radarChart = null }
 })
 
 watch(activeTab, (tab) => {
   if (tab === 'kline') {
     nextTick(() => { if (chartInstance) chartInstance!.resize() })
   }
-  if (tab === 'indicators') {
-    nextTick(() => renderRadarChart())
-  }
-})
-
-window.addEventListener('resize', () => {
-  chartInstance?.resize()
-  radarChart?.resize()
 })
 </script>
 
 <style scoped>
-.stock-detail { padding: 20px; max-width: 1200px; margin: 0 auto; }
-.page-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-.back-btn { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 6px 8px; cursor: pointer; color: var(--text-secondary); }
-.page-title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
-.stock-name { font-size: 14px; color: var(--text-secondary); margin-left: 8px; }
-.stock-market { font-size: 11px; color: var(--accent-cyan); background: rgba(77,159,255,0.1); padding: 2px 8px; border-radius: 10px; margin-left: 8px; }
-.header-actions { margin-left: auto; }
-.action-btn { background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 6px 8px; cursor: pointer; color: var(--text-secondary); transition: all 0.15s; }
-.action-btn:hover { background: rgba(255,255,255,0.05); }
-.action-btn.active { border-color: var(--accent-yellow); }
+.stock-detail { padding: 12px 16px; max-width: 1200px; margin: 0 auto; }
 
-.price-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); margin-bottom: 12px; }
-.price-bar.up { border-left: 3px solid var(--accent-red); }
-.price-bar.down { border-left: 3px solid var(--accent-green); }
+.page-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.back-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--radius-sm);
+  background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+  color: var(--text-secondary); transition: all var(--transition-fast);
+}
+.back-btn:hover { color: var(--text-primary); border-color: var(--border-color); }
+.page-title { font-size: 17px; font-weight: 700; color: var(--text-primary); }
+.stock-name { font-size: 12px; color: var(--text-secondary); margin-left: 6px; }
+.stock-market {
+  font-size: 9px; color: var(--accent-cyan); background: var(--accent-cyan-dim);
+  padding: 1px 5px; border-radius: 3px; margin-left: 6px; font-family: var(--font-mono);
+}
+.header-actions { margin-left: auto; }
+.star-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: var(--radius-sm);
+  background: transparent; border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary); transition: all var(--transition-fast);
+}
+.star-btn:hover { background: var(--bg-hover); }
+.star-btn.active { border-color: var(--accent-amber); color: var(--accent-amber); }
+
+.price-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  margin-bottom: 8px;
+}
+.price-bar.up { border-left: 2px solid var(--accent-red); }
+.price-bar.down { border-left: 2px solid var(--accent-green); }
 .price-main { display: flex; align-items: baseline; gap: 10px; }
-.price { font-size: 28px; font-weight: 700; font-family: var(--font-mono); }
+.price { font-size: 24px; font-weight: 700; }
 .price-bar.up .price, .price-bar.up .price-pct, .price-bar.up .price-change { color: var(--accent-red); }
 .price-bar.down .price, .price-bar.down .price-pct, .price-bar.down .price-change { color: var(--accent-green); }
-.price-pct { font-size: 16px; font-weight: 600; font-family: var(--font-mono); }
-.price-change { font-size: 13px; font-family: var(--font-mono); }
-.price-meta { display: flex; gap: 14px; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); flex-wrap: wrap; }
+.price-pct { font-size: 14px; font-weight: 600; }
+.price-change { font-size: 11px; }
+.price-meta { display: flex; gap: 10px; font-size: 10px; color: var(--text-tertiary); font-family: var(--font-data); flex-wrap: wrap; }
 
-.tab-bar { display: flex; gap: 2px; margin-bottom: 12px; background: var(--bg-secondary); border-radius: var(--radius-md); padding: 3px; overflow-x: auto; }
-.tab-btn { padding: 7px 12px; border: none; background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 500; border-radius: var(--radius-sm); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-.tab-btn.active { background: rgba(77,159,255,0.15); color: var(--accent-cyan); }
+.kline-section { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 10px; }
+.kline-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 4px; }
+.toolbar-left, .toolbar-right { display: flex; gap: 2px; align-items: center; }
+.tool-btn {
+  padding: 2px 6px; border: 1px solid transparent; border-radius: 3px;
+  background: transparent; color: var(--text-tertiary); font-size: 10px;
+  cursor: pointer; transition: all var(--transition-fast);
+}
+.tool-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.tool-btn.active { background: var(--accent-cyan-dim); color: var(--accent-cyan); border-color: rgba(56,189,248,0.15); }
+.tool-divider { width: 1px; height: 10px; background: var(--border-color); margin: 0 2px; }
+.tool-select {
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+  color: var(--text-primary); padding: 2px 4px; border-radius: 3px; font-size: 10px;
+}
+.kline-chart { width: 100%; height: 460px; }
 
-.kline-section { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 12px; }
-.kline-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px; }
-.toolbar-left, .toolbar-right { display: flex; gap: 4px; align-items: center; }
-.tool-btn { padding: 3px 8px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; transition: all 0.15s; }
-.tool-btn:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
-.tool-btn.active { background: rgba(77,159,255,0.15); color: var(--accent-cyan); border-color: rgba(77,159,255,0.3); }
-.tool-divider { width: 1px; height: 14px; background: var(--border-color); margin: 0 4px; }
-.tool-select { background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 3px 6px; border-radius: 3px; font-size: 11px; }
-.kline-chart { width: 100%; height: 500px; }
-
-.indicators-section { padding: 0; }
-.indicator-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.ind-panel { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px; }
-.composite-panel { grid-column: span 2; }
-.ind-title { font-size: 12px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 10px; }
-.ind-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
-.ind-item { display: flex; justify-content: space-between; padding: 4px 6px; background: rgba(255,255,255,0.02); border-radius: 3px; }
-.ind-label { font-size: 11px; color: var(--text-secondary); }
-.ind-value { font-size: 11px; font-family: var(--font-mono); color: var(--text-primary); }
-.radar-chart { width: 100%; height: 220px; }
-
-.analysis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.analysis-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px; }
-.analysis-card h3 { font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 10px; }
-.analysis-item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
-.analysis-item .label { font-size: 12px; color: var(--text-secondary); }
-.analysis-item .value { font-size: 12px; font-family: var(--font-mono); color: var(--text-primary); }
+.analysis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.analysis-card {
+  background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md); padding: 12px;
+}
+.analysis-card h3 { font-size: 11px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 8px; }
+.analysis-item { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border-subtle); }
+.analysis-item .label { font-size: 11px; color: var(--text-secondary); }
+.analysis-item .value { font-size: 11px; font-family: var(--font-data); color: var(--text-primary); }
 .analysis-item .value.up { color: var(--accent-red); }
 .analysis-item .value.down { color: var(--accent-green); }
 .composite-card { grid-column: span 2; }
-.composite-score { display: flex; align-items: center; gap: 16px; }
-.score-value { font-size: 32px; font-weight: 700; font-family: var(--font-mono); }
+.composite-score { display: flex; align-items: center; gap: 14px; }
+.score-value { font-size: 26px; font-weight: 700; }
 .score-value.up { color: var(--accent-red); }
 .score-value.down { color: var(--accent-green); }
-.score-signal { font-size: 14px; color: var(--text-secondary); text-transform: uppercase; }
-.score-conf { font-size: 12px; color: var(--text-tertiary); }
+.score-signal { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; }
+.score-conf { font-size: 10px; color: var(--text-tertiary); }
 
-.pred-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.pred-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px; display: flex; flex-direction: column; gap: 4px; }
-.pred-card.up { border-top: 3px solid var(--accent-red); }
-.pred-card.down { border-top: 3px solid var(--accent-green); }
-.pred-label { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
-.pred-price { font-size: 20px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); }
-.pred-range { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); }
-.pred-conf { font-size: 11px; color: var(--accent-cyan); }
-.pred-summary { grid-column: span 3; display: flex; justify-content: center; gap: 24px; padding: 12px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); }
-.pred-signal { font-size: 14px; font-weight: 600; text-transform: uppercase; }
-.pred-signal.bullish { color: var(--accent-red); }
-.pred-signal.bearish { color: var(--accent-green); }
-.pred-signal.neutral { color: var(--text-secondary); }
-.pred-vol { font-size: 12px; color: var(--text-tertiary); }
+.indicator-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ind-panel { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px; }
+.ind-title { font-size: 11px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 8px; }
+.ind-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; }
+.ind-item { display: flex; justify-content: space-between; padding: 3px 5px; background: var(--bg-hover); border-radius: 3px; }
+.ind-label { font-size: 10px; color: var(--text-secondary); }
+.ind-value { font-size: 10px; color: var(--text-primary); }
 
-.ai-summary-section { padding: 16px 0; }
-.ai-summary-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 20px; }
-.ai-overall { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: var(--radius-md); margin-bottom: 16px; }
-.ai-overall.bullish { background: rgba(244,63,94,0.1); border-left: 3px solid var(--accent-red); }
-.ai-overall.bearish { background: rgba(52,211,153,0.1); border-left: 3px solid var(--accent-green); }
-.ai-overall.neutral { background: rgba(255,255,255,0.04); border-left: 3px solid var(--text-tertiary); }
-.overall-label { font-size: 12px; color: var(--text-secondary); }
-.overall-value { font-size: 18px; font-weight: 700; }
+.fund-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.fund-card { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 12px; }
+.fund-card h3 { font-size: 11px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 8px; }
+.fund-item { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border-subtle); }
+.fund-item .label { font-size: 11px; color: var(--text-secondary); }
+.fund-item .value { font-size: 11px; color: var(--text-primary); font-weight: 600; }
+.fund-item .value.up { color: var(--accent-red); }
+.fund-item .value.down { color: var(--accent-green); }
+
+.ai-summary-card { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 14px; }
+.ai-overall { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--radius-md); margin-bottom: 12px; }
+.ai-overall.bullish { background: var(--accent-red-dim); border-left: 2px solid var(--accent-red); }
+.ai-overall.bearish { background: var(--accent-green-dim); border-left: 2px solid var(--accent-green); }
+.ai-overall.neutral { background: var(--bg-hover); border-left: 2px solid var(--text-tertiary); }
+.overall-label { font-size: 10px; color: var(--text-secondary); }
+.overall-value { font-size: 15px; font-weight: 700; }
 .ai-overall.bullish .overall-value { color: var(--accent-red); }
 .ai-overall.bearish .overall-value { color: var(--accent-green); }
 .ai-overall.neutral .overall-value { color: var(--text-primary); }
-.ai-points { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
-.ai-point { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; }
-.point-dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; }
+.ai-points { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.ai-point { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; }
+.point-dot { width: 4px; height: 4px; border-radius: 50%; margin-top: 7px; flex-shrink: 0; }
 .ai-point.bullish .point-dot { background: var(--accent-red); }
 .ai-point.bearish .point-dot { background: var(--accent-green); }
 .ai-point.neutral .point-dot { background: var(--text-tertiary); }
 .point-text { color: var(--text-primary); line-height: 1.5; }
-.ai-changes { display: flex; gap: 16px; padding-top: 12px; border-top: 1px solid var(--border-color); }
+.ai-changes { display: flex; gap: 14px; padding-top: 8px; border-top: 1px solid var(--border-subtle); }
 .change-item { display: flex; flex-direction: column; gap: 2px; }
-.change-label { font-size: 11px; color: var(--text-tertiary); }
-.change-value { font-size: 14px; font-family: var(--font-mono); font-weight: 600; }
+.change-label { font-size: 9px; color: var(--text-tertiary); }
+.change-value { font-size: 12px; font-weight: 600; }
 .change-value.up { color: var(--accent-red); }
 .change-value.down { color: var(--accent-green); }
-.empty-state { text-align: center; padding: 40px; color: var(--text-tertiary); }
 
-.quick-backtest-section { display: flex; flex-direction: column; gap: 16px; }
-.qb-config { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 16px; }
-.qb-row { margin-bottom: 10px; }
-.qb-row label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
-.qb-quick-btns { display: flex; gap: 4px; }
-.qb-btn { padding: 4px 10px; border: 1px solid var(--border-color); border-radius: 3px; background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
-.qb-btn.active { background: rgba(77,159,255,0.15); color: var(--accent-cyan); border-color: rgba(77,159,255,0.3); }
-.btn-run-qb { padding: 8px; border: none; border-radius: var(--radius-sm); background: linear-gradient(135deg, #4d9fff, #a78bfa); color: white; font-size: 13px; font-weight: 600; cursor: pointer; }
+.quick-backtest-section { display: flex; flex-direction: column; gap: 10px; }
+.qb-config { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 12px; }
+.qb-row { margin-bottom: 8px; }
+.qb-row label { display: block; font-size: 10px; color: var(--text-secondary); margin-bottom: 3px; }
+.qb-quick-btns { display: flex; gap: 2px; }
+.qb-btn {
+  padding: 3px 7px; border: 1px solid var(--border-subtle); border-radius: 3px;
+  background: transparent; color: var(--text-secondary); font-size: 10px; cursor: pointer;
+}
+.qb-btn.active { background: var(--accent-cyan-dim); color: var(--accent-cyan); border-color: rgba(56,189,248,0.15); }
+.btn-run-qb {
+  padding: 7px; border: none; border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-violet));
+  color: white; font-size: 12px; font-weight: 600; cursor: pointer;
+}
 .btn-run-qb:disabled { opacity: 0.5; cursor: not-allowed; }
-.qb-metrics { display: flex; gap: 8px; flex-wrap: wrap; }
-.qb-chart { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 12px; }
+.qb-metrics { display: flex; gap: 6px; flex-wrap: wrap; }
+.qb-chart { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 10px; }
 
-.trade-section { max-width: 400px; }
-.trade-form { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 16px; }
-.form-row { margin-bottom: 12px; }
-.form-row label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
-.form-input { width: 100%; padding: 8px 12px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font-mono); font-size: 13px; }
-.form-input:focus { outline: none; border-color: var(--accent-cyan); }
-.trade-estimate { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-tertiary); margin-bottom: 10px; padding: 6px 8px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); }
-.t1-warning { background: rgba(251,146,60,0.1); color: var(--accent-orange); font-size: 11px; padding: 6px 10px; border-radius: var(--radius-sm); }
-.collapse-toggle { background: none; border: none; color: var(--text-secondary); font-size: 11px; cursor: pointer; padding: 4px 0; }
-.collapse-content { margin-top: 8px; }
-.trade-btns { display: flex; gap: 12px; margin-top: 12px; }
-.btn-buy, .btn-sell { flex: 1; padding: 10px; border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 600; cursor: pointer; }
+.trade-section { max-width: 360px; }
+.trade-form { background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 12px; }
+.form-row { margin-bottom: 8px; }
+.form-row label { display: block; font-size: 10px; color: var(--text-secondary); margin-bottom: 3px; }
+.form-input {
+  width: 100%; padding: 6px 10px; background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  color: var(--text-primary); font-family: var(--font-data); font-size: 12px;
+}
+.form-input:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 2px var(--accent-cyan-dim); }
+.trade-estimate {
+  display: flex; justify-content: space-between; font-size: 10px; color: var(--text-tertiary);
+  margin-bottom: 8px; padding: 5px 7px; background: var(--bg-hover); border-radius: var(--radius-sm);
+}
+.t1-warning { background: var(--accent-amber-dim); color: var(--accent-amber); font-size: 10px; padding: 5px 8px; border-radius: var(--radius-sm); }
+.collapse-toggle { background: none; border: none; color: var(--text-secondary); font-size: 10px; cursor: pointer; padding: 3px 0; }
+.collapse-content { margin-top: 6px; }
+.trade-btns { display: flex; gap: 8px; margin-top: 10px; }
+.btn-buy, .btn-sell { flex: 1; padding: 8px; border: none; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; cursor: pointer; }
 .btn-buy { background: var(--accent-red); color: white; }
 .btn-sell { background: var(--accent-green); color: white; }
 .btn-sell:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.empty-state-small { text-align: center; padding: 40px; color: var(--text-tertiary); font-size: 13px; }
-.skeleton { background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
-@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-
-.fund-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-.fund-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px; }
-.fund-card h3 { font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 10px; }
-.fund-item { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
-.fund-item .label { font-size: 12px; color: var(--text-secondary); }
-.fund-item .value { font-size: 12px; font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; }
-.fund-item .value.up { color: var(--accent-red); }
-.fund-item .value.down { color: var(--accent-green); }
-
-.corr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.corr-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px; }
-.corr-card h3 { font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 10px; }
-.corr-item { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
-.corr-item .label { font-size: 12px; color: var(--text-secondary); }
-.corr-item .value { font-size: 12px; font-family: var(--font-mono); color: var(--text-primary); font-weight: 600; }
-.corr-item .value.up { color: var(--accent-red); }
-.corr-item .value.down { color: var(--accent-green); }
-.corr-chart-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px; }
-.corr-chart-card h3 { font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 10px; }
-
-.factor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.factor-score-card { grid-column: span 2; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px; text-align: center; }
-.factor-score-card h3 { font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 10px; }
-.factor-composite { padding: 10px 0; }
-.composite-value { font-size: 36px; font-weight: 700; font-family: var(--font-mono); }
-.composite-value.up { color: var(--accent-red); }
-.composite-value.down { color: var(--accent-green); }
-.factor-card { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px; }
-.factor-card.bullish { border-left: 3px solid var(--accent-red); }
-.factor-card.bearish { border-left: 3px solid var(--accent-green); }
-.factor-name { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
-.factor-value { font-size: 18px; font-weight: 700; font-family: var(--font-mono); color: var(--text-primary); margin-bottom: 8px; }
-.factor-bar-wrap { height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; margin-bottom: 6px; }
-.factor-bar { height: 100%; border-radius: 3px; transition: width 0.3s; }
-.factor-meta { display: flex; justify-content: space-between; }
-.factor-pct { font-size: 10px; color: var(--text-tertiary); }
-.factor-dir { font-size: 10px; font-weight: 600; }
-.factor-dir.bullish { color: var(--accent-red); }
-.factor-dir.bearish { color: var(--accent-green); }
+.empty-hint { text-align: center; padding: 30px; color: var(--text-tertiary); font-size: 12px; }
 
 @media (max-width: 768px) {
   .stock-detail { padding: 10px; }
   .analysis-grid { grid-template-columns: 1fr; }
   .composite-card { grid-column: span 1; }
-  .pred-grid { grid-template-columns: 1fr; }
-  .pred-summary { grid-column: span 1; }
   .indicator-panels { grid-template-columns: 1fr; }
-  .composite-panel { grid-column: span 1; }
-  .kline-chart { height: 350px; }
-  .price-bar { flex-direction: column; gap: 8px; align-items: flex-start; }
-  .price-meta { gap: 8px; }
+  .fund-grid { grid-template-columns: 1fr; }
+  .kline-chart { height: 300px; }
+  .price-bar { flex-direction: column; gap: 6px; align-items: flex-start; }
+  .price-meta { gap: 6px; }
 }
 </style>

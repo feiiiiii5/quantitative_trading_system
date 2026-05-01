@@ -480,8 +480,8 @@ class IndicatorAnalysis:
         ma60 = closes.rolling(60).mean().iloc[-1]
         values = {"ma5": round(float(ma5), 4), "ma10": round(float(ma10), 4), "ma20": round(float(ma20), 4), "ma60": round(float(ma60), 4)}
         return {
-            "bullish": ma5 > ma10 > ma20 > ma60,
-            "bearish": ma5 < ma10 < ma20 < ma60,
+            "bullish": bool(ma5 > ma10 > ma20 > ma60),
+            "bearish": bool(ma5 < ma10 < ma20 < ma60),
             "values": values,
         }
 
@@ -616,7 +616,7 @@ class IndicatorAnalysis:
         merged["relative"] = merged["asset_norm"] - merged["benchmark_norm"]
         return {
             "series": merged[["date", "asset_norm", "benchmark_norm", "relative"]].assign(date=lambda x: x["date"].astype(str)).to_dict("records"),
-            "stronger_than_benchmark": float(merged["relative"].iloc[-1]) > 0,
+            "stronger_than_benchmark": bool(float(merged["relative"].iloc[-1]) > 0),
         }
 
     @staticmethod
@@ -641,6 +641,22 @@ class IndicatorAnalysis:
             if closes[i] <= np.min(price_window) and rsi.iloc[i] > np.min(rsi_window[:-1]):
                 bottom_divergence.append({"index": i, "date": str(df.iloc[i]["date"]), "price": round(float(closes[i]), 4), "rsi": round(float(rsi.iloc[i]), 4)})
         return {"top_divergence": top_divergence, "bottom_divergence": bottom_divergence}
+
+
+def _sanitize_for_json(obj):
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
 
 
 def calc_all_indicators(kline_data: list) -> dict:
@@ -691,7 +707,7 @@ def calc_all_indicators(kline_data: list) -> dict:
     except Exception:
         pass
 
-    return result
+    return _sanitize_for_json(result)
 
 
 def calc_factor_ic(factor_values, forward_returns, periods: list = None) -> dict:

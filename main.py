@@ -18,8 +18,9 @@ from pathlib import Path
 try:
     import uvloop
     uvloop.install()
+    _has_uvloop = True
 except ImportError:
-    pass
+    _has_uvloop = False
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -30,8 +31,12 @@ from fastapi.staticfiles import StaticFiles
 from api.routes import router, push_realtime_data
 from core.logger import setup_logger
 
+import sys
 try:
-    multiprocessing.set_start_method("fork")
+    if sys.platform == "darwin":
+        multiprocessing.set_start_method("spawn")
+    else:
+        multiprocessing.set_start_method("fork")
 except RuntimeError:
     pass
 
@@ -78,11 +83,11 @@ async def lifespan(app: FastAPI):
         pass
 
     try:
-        from core.stock_search import build_search_index
-        await asyncio.to_thread(build_search_index)
-        logger.info("搜索倒排索引构建完成")
-    except Exception:
-        pass
+        from core.stock_search import build_search_index_async
+        count = await build_search_index_async()
+        logger.info(f"搜索倒排索引构建完成: {count} 只股票")
+    except Exception as e:
+        logger.debug(f"搜索索引构建失败: {e}")
 
     try:
         asyncio.create_task(_preload_data(app.state.fetcher))
@@ -187,21 +192,21 @@ async def _scheduler_loop(app):
                                 pass
                     last_ws_rt = now
                 except Exception as e:
-                    logger.debug(f"WS realtime refresh error: {e}")
+                    logger.warning("WS realtime refresh error: %s", e, exc_info=True)
 
             if now - last_hot >= hot_refresh_interval:
                 try:
                     await fetcher.refresh_hot_symbols_cache()
                     last_hot = now
                 except Exception as e:
-                    logger.debug(f"Hot symbols refresh error: {e}")
+                    logger.warning("Hot symbols refresh error: %s", e, exc_info=True)
 
             if now - last_temp >= temperature_interval:
                 try:
                     await fetcher.get_market_temperature()
                     last_temp = now
                 except Exception as e:
-                    logger.debug(f"Temperature refresh error: {e}")
+                    logger.warning("Temperature refresh error: %s", e, exc_info=True)
 
             if now - last_fundamental >= fundamental_interval:
                 try:
@@ -218,7 +223,7 @@ async def _scheduler_loop(app):
                                 pass
                     last_fundamental = now
                 except Exception as e:
-                    logger.debug(f"Fundamental refresh error: {e}")
+                    logger.warning("Fundamental refresh error: %s", e, exc_info=True)
 
             try:
                 from datetime import datetime
@@ -232,9 +237,9 @@ async def _scheduler_loop(app):
                         logger.info(f"DB cleanup: {result}")
                         last_cleanup_date = current_date
                     except Exception as e:
-                        logger.debug(f"DB cleanup error: {e}")
+                        logger.warning("DB cleanup error: %s", e, exc_info=True)
             except Exception as e:
-                logger.debug(f"Cleanup check error: {e}")
+                logger.warning("Cleanup check error: %s", e, exc_info=True)
 
             await asyncio.sleep(1)
         except Exception as e:
@@ -279,6 +284,9 @@ async def metrics_middleware(request: Request, call_next):
     return response
 
 app.include_router(router, prefix="/api")
+
+from api.backtest_routes import backtest_router
+app.include_router(backtest_router, prefix="/api")
 
 
 @app.get("/")
@@ -335,12 +343,6 @@ async def health_check(request: Request):
         "checks": checks,
         "version": "3.0.0",
     }
-
-
-@app.get("/api/system/metrics")
-async def get_system_metrics(request: Request):
-    from core.metrics import metrics
-    return {"success": True, "data": metrics.get_summary()}
 
 
 assets_dir = BASE_DIR / "static" / "assets"
@@ -439,7 +441,7 @@ if __name__ == "__main__":
         port=PORT,
         log_level="warning",
         workers=1,
-        loop="uvloop",
+        loop="uvloop" if _has_uvloop else "asyncio",
         http="httptools",
         limit_concurrency=200,
         limit_max_requests=10000,

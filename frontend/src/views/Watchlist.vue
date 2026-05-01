@@ -4,17 +4,23 @@
       <h1 class="page-title">自选股</h1>
       <div class="header-actions">
         <div class="add-row">
-          <input v-model="addSymbol" placeholder="输入股票代码" class="add-input" @keyup.enter="addStock" />
-          <button class="add-btn" @click="addStock">添加</button>
+          <input v-model="addSymbol" placeholder="输入代码或名称" class="add-input" @keyup.enter="addStock" />
+          <button class="add-btn" @click="addStock">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            添加
+          </button>
         </div>
       </div>
     </div>
 
     <div class="main-layout">
-      <div class="stocks-section">
+      <div class="stocks-section card">
         <div class="list-toolbar">
-          <span class="list-count">共 {{ stocks.length }} 只</span>
-          <button class="refresh-btn" @click="refreshPrices" :class="{ spinning: refreshing }">刷新行情</button>
+          <span class="list-count mono">{{ stocks.length }} 只</span>
+          <button class="refresh-btn" @click="refreshPrices" :class="{ spinning: refreshing }">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2v6h-6M3 12a9 9 0 0115.36-6.36L21 8M3 22v-6h6M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>
+            刷新
+          </button>
         </div>
         <div v-if="stocks.length" class="stock-list">
           <div
@@ -29,20 +35,29 @@
             @click="$router.push(`/stock/${stock.symbol}`)"
           >
             <span class="drag-handle">⠿</span>
-            <span class="stock-code">{{ stock.symbol }}</span>
+            <span class="stock-code mono">{{ stock.symbol }}</span>
             <span class="stock-name">{{ stock.name }}</span>
-            <span class="stock-price">{{ (stock.price || 0).toFixed(2) }}</span>
-            <span class="stock-pct">{{ stock.change_pct >= 0 ? '+' : '' }}{{ (stock.change_pct || 0).toFixed(2) }}%</span>
-            <button class="remove-btn" @click.stop="removeStock(stock.symbol)">✕</button>
+            <span class="stock-price mono">{{ (stock.price || 0).toFixed(2) }}</span>
+            <span class="stock-pct mono">{{ stock.change_pct >= 0 ? '+' : '' }}{{ (stock.change_pct || 0).toFixed(2) }}%</span>
+            <button class="remove-btn" @click.stop="removeStock(stock.symbol)">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
           </div>
         </div>
-        <div v-else class="empty-state">暂无自选股，请添加</div>
+        <div v-else class="empty-state">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" stroke-width="1.5"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+          <span>暂无自选股</span>
+          <button class="btn-primary" @click="$router.push('/market')">去市场添加</button>
+        </div>
       </div>
 
-      <div class="alerts-section">
+      <div class="alerts-section card">
         <div class="alerts-header">
           <h2 class="section-title">价格预警</h2>
-          <button class="add-alert-btn" @click="showAlertForm = !showAlertForm">+ 新增</button>
+          <button class="add-alert-btn" @click="showAlertForm = !showAlertForm">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            新增
+          </button>
         </div>
 
         <div v-if="showAlertForm" class="alert-form">
@@ -68,17 +83,19 @@
         <div v-if="alerts.length" class="alert-list">
           <div v-for="alert in alerts" :key="alert.id" class="alert-row" :class="{ triggered: alert.triggered }">
             <div class="alert-info">
-              <span class="alert-symbol">{{ alert.symbol }}</span>
+              <span class="alert-symbol mono">{{ alert.symbol }}</span>
               <span class="alert-type">{{ alertLabel(alert.alert_type) }}</span>
-              <span class="alert-value">{{ alert.value }}</span>
+              <span class="alert-value mono">{{ alert.value }}</span>
             </div>
             <div class="alert-actions">
-              <span v-if="alert.triggered" class="alert-triggered">已触发</span>
-              <button class="alert-del" @click="removeAlert(alert.id)">✕</button>
+              <span v-if="alert.triggered" class="badge badge-warn">已触发</span>
+              <button class="alert-del" @click="removeAlert(alert.id)">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
             </div>
           </div>
         </div>
-        <div v-else class="empty-state-small">暂无预警</div>
+        <div v-else class="empty-hint">暂无预警</div>
       </div>
     </div>
   </div>
@@ -87,6 +104,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { api } from '../api'
+import { useToast } from '../composables/useToast'
 import { useWebSocketStore } from '../stores/websocket.store'
 
 const addSymbol = ref('')
@@ -99,6 +117,7 @@ let dragIdx = -1
 let updateTimer: any = null
 
 const wsStore = useWebSocketStore()
+const toast = useToast()
 
 watch(() => wsStore.lastMessage, (msg: any) => {
   if (!msg) return
@@ -137,14 +156,18 @@ async function loadData() {
         return { symbol: s, name: q.name || s, price: q.price, change_pct: q.change_pct, ...q }
       })
     }
-  } catch (e) {}
+  } catch (e) {
+    toast.warning(e instanceof Error ? e.message : '自选股加载失败')
+  }
 }
 
 async function loadAlerts() {
   try {
     const data = await api.getAlerts()
-    if (data) alerts.value = data.alerts || data || []
-  } catch (e) {}
+    alerts.value = Array.isArray(data) ? data : []
+  } catch (e) {
+    toast.warning(e instanceof Error ? e.message : '预警加载失败')
+  }
 }
 
 async function addStock() {
@@ -154,14 +177,18 @@ async function addStock() {
     await api.addToWatchlist(sym)
     addSymbol.value = ''
     await loadData()
-  } catch (e) {}
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '添加自选股失败')
+  }
 }
 
 async function removeStock(symbol: string) {
   try {
     await api.removeFromWatchlist(symbol)
     await loadData()
-  } catch (e) {}
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '删除自选股失败')
+  }
 }
 
 async function refreshPrices() {
@@ -179,14 +206,18 @@ async function addAlert() {
     showAlertForm.value = false
     alertForm.value = { symbol: '', type: 'price_above', value: 0 }
     await loadAlerts()
-  } catch (e) {}
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '添加预警失败')
+  }
 }
 
 async function removeAlert(id: string) {
   try {
     await api.removeAlert(id)
     await loadAlerts()
-  } catch (e) {}
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '删除预警失败')
+  }
 }
 
 function dragStart(idx: number) { dragIdx = idx }
@@ -216,64 +247,115 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.watchlist-page { padding: 20px; max-width: 1200px; margin: 0 auto; }
-.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-.page-title { font-size: 20px; font-weight: 700; color: var(--text-primary); }
-.add-row { display: flex; gap: 6px; }
-.add-input { padding: 7px 12px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; font-family: var(--font-mono); width: 140px; }
-.add-input:focus { outline: none; border-color: var(--accent-cyan); }
-.add-btn { padding: 7px 14px; background: linear-gradient(135deg, #4d9fff, #a78bfa); color: white; border: none; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; cursor: pointer; }
+.watchlist-page { padding: 14px 16px; max-width: 1200px; margin: 0 auto; }
+.page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.page-title { font-size: 18px; font-weight: 700; color: var(--text-primary); }
 
-.main-layout { display: grid; grid-template-columns: 1fr 320px; gap: 16px; }
+.add-row { display: flex; gap: 4px; }
+.add-input {
+  padding: 5px 10px; background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px;
+  font-family: var(--font-mono); width: 150px;
+}
+.add-input:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 2px var(--accent-cyan-dim); }
+.add-btn {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 12px; background: linear-gradient(135deg, var(--accent-blue), var(--accent-violet));
+  color: white; border: none; border-radius: var(--radius-sm);
+  font-size: 11px; font-weight: 600; cursor: pointer;
+}
 
-.stocks-section { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 14px; }
-.list-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.list-count { font-size: 11px; color: var(--text-tertiary); }
-.refresh-btn { padding: 4px 10px; background: transparent; border: 1px solid var(--border-color); border-radius: 3px; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.main-layout { display: grid; grid-template-columns: 1fr 300px; gap: 10px; }
+
+.stocks-section { padding: 12px; }
+.list-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.list-count { font-size: 10px; color: var(--text-tertiary); }
+.refresh-btn {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 8px; background: transparent; border: 1px solid var(--border-color);
+  border-radius: var(--radius-xs); color: var(--text-secondary); font-size: 10px; cursor: pointer;
+}
 .refresh-btn:hover { color: var(--text-primary); }
-.refresh-btn.spinning { opacity: 0.5; }
+.refresh-btn.spinning svg { animation: spin 0.6s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-.stock-list { display: flex; flex-direction: column; gap: 2px; }
-.stock-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer; transition: background 0.1s; }
-.stock-row:hover { background: rgba(255,255,255,0.04); }
-.drag-handle { color: var(--text-tertiary); cursor: grab; font-size: 14px; }
-.stock-code { font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); width: 60px; }
-.stock-name { font-size: 12px; color: var(--text-primary); flex: 1; }
-.stock-price { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-primary); }
-.stock-pct { font-family: var(--font-mono); font-size: 12px; font-weight: 600; }
+.stock-list { display: flex; flex-direction: column; gap: 1px; }
+.stock-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 8px;
+  border-radius: var(--radius-sm); cursor: pointer; transition: background var(--transition-fast);
+}
+.stock-row:hover { background: var(--bg-hover); }
+.drag-handle { color: var(--text-tertiary); cursor: grab; font-size: 12px; opacity: 0.5; }
+.stock-code { font-size: 11px; color: var(--accent-cyan); width: 55px; }
+.stock-name { font-size: 11px; color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stock-price { font-size: 11px; font-weight: 600; color: var(--text-primary); width: 60px; text-align: right; }
+.stock-pct { font-size: 11px; font-weight: 600; width: 60px; text-align: right; }
 .stock-row.up .stock-price, .stock-row.up .stock-pct { color: var(--accent-red); }
 .stock-row.down .stock-price, .stock-row.down .stock-pct { color: var(--accent-green); }
-.remove-btn { background: none; border: none; color: var(--text-tertiary); font-size: 12px; cursor: pointer; padding: 2px 6px; border-radius: 3px; }
-.remove-btn:hover { color: var(--accent-red); background: rgba(244,63,94,0.1); }
+.remove-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 3px;
+  background: none; border: none; color: var(--text-tertiary);
+  cursor: pointer; opacity: 0; transition: all var(--transition-fast);
+}
+.stock-row:hover .remove-btn { opacity: 1; }
+.remove-btn:hover { color: var(--accent-red); background: var(--accent-red-dim); }
 
-.alerts-section { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 14px; }
-.alerts-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.section-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 0; }
-.add-alert-btn { padding: 3px 10px; background: transparent; border: 1px solid var(--border-color); border-radius: 3px; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
-.add-alert-btn:hover { color: var(--accent-cyan); border-color: rgba(77,159,255,0.3); }
+.alerts-section { padding: 12px; }
+.alerts-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.section-title { margin-bottom: 0; }
+.add-alert-btn {
+  display: flex; align-items: center; gap: 3px;
+  padding: 3px 8px; background: transparent; border: 1px solid var(--border-color);
+  border-radius: var(--radius-xs); color: var(--text-secondary); font-size: 10px; cursor: pointer;
+}
+.add-alert-btn:hover { color: var(--accent-cyan); border-color: rgba(56,189,248,0.3); }
 
-.alert-form { padding: 10px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); margin-bottom: 10px; }
-.form-row { margin-bottom: 8px; }
-.form-input { width: 100%; padding: 6px 10px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; }
+.alert-form {
+  padding: 8px; background: var(--bg-hover); border-radius: var(--radius-sm);
+  margin-bottom: 8px; border: 1px solid var(--border-subtle);
+}
+.form-row { margin-bottom: 6px; }
+.form-input {
+  width: 100%; padding: 5px 8px; background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  color: var(--text-primary); font-size: 11px;
+}
 .form-input:focus { outline: none; border-color: var(--accent-cyan); }
-.form-btns { display: flex; gap: 8px; }
-.btn-save { flex: 1; padding: 6px; background: linear-gradient(135deg, #4d9fff, #a78bfa); color: white; border: none; border-radius: var(--radius-sm); font-size: 12px; cursor: pointer; }
-.btn-cancel { flex: 1; padding: 6px; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.form-btns { display: flex; gap: 6px; }
+.btn-save {
+  flex: 1; padding: 5px; background: linear-gradient(135deg, var(--accent-blue), var(--accent-violet));
+  color: white; border: none; border-radius: var(--radius-sm); font-size: 11px; cursor: pointer;
+}
+.btn-cancel {
+  flex: 1; padding: 5px; background: transparent; border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm); color: var(--text-secondary); font-size: 11px; cursor: pointer;
+}
 
-.alert-list { display: flex; flex-direction: column; gap: 4px; }
-.alert-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: rgba(255,255,255,0.02); border-radius: var(--radius-sm); border-left: 3px solid var(--accent-orange); }
+.alert-list { display: flex; flex-direction: column; gap: 3px; }
+.alert-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 8px; background: var(--bg-hover); border-radius: var(--radius-sm);
+  border-left: 2px solid var(--accent-amber);
+}
 .alert-row.triggered { border-left-color: var(--accent-green); opacity: 0.7; }
-.alert-info { display: flex; gap: 8px; align-items: center; }
-.alert-symbol { font-family: var(--font-mono); font-size: 11px; color: var(--accent-cyan); }
-.alert-type { font-size: 11px; color: var(--text-secondary); }
-.alert-value { font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); font-weight: 600; }
-.alert-actions { display: flex; gap: 6px; align-items: center; }
-.alert-triggered { font-size: 10px; color: var(--accent-green); }
-.alert-del { background: none; border: none; color: var(--text-tertiary); font-size: 11px; cursor: pointer; }
-.alert-del:hover { color: var(--accent-red); }
+.alert-info { display: flex; gap: 6px; align-items: center; }
+.alert-symbol { font-size: 10px; color: var(--accent-cyan); }
+.alert-type { font-size: 10px; color: var(--text-secondary); }
+.alert-value { font-size: 10px; color: var(--text-primary); font-weight: 600; }
+.alert-actions { display: flex; gap: 4px; align-items: center; }
+.alert-del {
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 3px;
+  background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+}
+.alert-del:hover { color: var(--accent-red); background: var(--accent-red-dim); }
 
-.empty-state { text-align: center; padding: 60px 20px; color: var(--text-tertiary); font-size: 13px; }
-.empty-state-small { text-align: center; padding: 20px; color: var(--text-tertiary); font-size: 12px; }
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 40px 20px; color: var(--text-tertiary); font-size: 12px;
+}
+.empty-hint { text-align: center; padding: 20px; color: var(--text-tertiary); font-size: 11px; }
 
 @media (max-width: 768px) {
   .watchlist-page { padding: 10px; }

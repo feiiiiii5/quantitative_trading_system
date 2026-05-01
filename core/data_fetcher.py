@@ -202,15 +202,16 @@ class TencentSource:
 
     @staticmethod
     def _build_code(symbol: str, market: str) -> str:
+        clean = re.sub(r"^(sh|sz|SH|SZ)", "", str(symbol)).strip()
         if market == "A":
-            if symbol.startswith("6"):
-                return f"sh{symbol}"
-            return f"sz{symbol}"
+            if clean.startswith("6"):
+                return f"sh{clean}"
+            return f"sz{clean}"
         if market == "HK":
-            return f"hk{symbol.zfill(5)}"
+            return f"hk{clean.zfill(5)}"
         if market == "US":
-            return f"us{symbol.upper()}"
-        return symbol
+            return f"us{clean.upper()}"
+        return clean
 
     @staticmethod
     async def fetch_realtime(symbol: str, market: str) -> Optional[dict]:
@@ -337,16 +338,17 @@ class SinaSource:
 
     @staticmethod
     async def fetch_realtime(symbol: str, market: str) -> Optional[dict]:
+        clean = re.sub(r"^(sh|sz|SH|SZ)", "", str(symbol)).strip()
         if market == "A":
-            if symbol.startswith("6"):
+            if clean.startswith("6"):
                 prefix = "sh"
             else:
                 prefix = "sz"
-            url = f"http://hq.sinajs.cn/list={prefix}{symbol}"
+            url = f"http://hq.sinajs.cn/list={prefix}{clean}"
         elif market == "HK":
-            url = f"http://hq.sinajs.cn/list=rt_hk{symbol.zfill(5)}"
+            url = f"http://hq.sinajs.cn/list=rt_hk{clean.zfill(5)}"
         elif market == "US":
-            url = f"http://hq.sinajs.cn/list=gb_{symbol.lower()}"
+            url = f"http://hq.sinajs.cn/list=gb_{clean.lower()}"
         else:
             return None
 
@@ -800,7 +802,7 @@ def validate_realtime_data(data: dict, symbol: str) -> bool:
         ts_date = datetime.fromtimestamp(float(ts)).date()
     except Exception:
         ts_date = datetime.now().date()
-    ok = price > 0 and -20 <= pct <= 20 and volume >= 0 and ts_date == datetime.now().date()
+    ok = price > 0 and -20 <= pct <= 20 and volume >= 0 and ts_date >= (datetime.now().date() - timedelta(days=1))
     if not ok:
         logger.debug(f"Invalid realtime data for {symbol}: {data}")
     return ok
@@ -1011,7 +1013,8 @@ class SmartDataFetcher:
         if market is None:
             market = MarketDetector.detect(symbol)
 
-        cache_key = f"rt_{symbol}_{market}"
+        clean_symbol = re.sub(r"^(sh|sz|SH|SZ)", "", str(symbol)).strip()
+        cache_key = f"rt_{clean_symbol}_{market}"
         cached = _realtime_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1074,14 +1077,14 @@ class SmartDataFetcher:
                         data["market"] = mkt
                         results[sym] = data
 
-            for s, m in batch:
-                if s not in results:
-                    try:
-                        rt = await self.get_realtime(s, m)
-                        if rt:
-                            results[s] = rt
-                    except Exception:
-                        pass
+                for s, m in batch:
+                    if s not in results:
+                        try:
+                            rt = await self.get_realtime(s, m)
+                            if rt:
+                                results[s] = rt
+                        except Exception:
+                            pass
 
         if other_symbols:
             tasks = [self.get_realtime(s, m) for s, m in other_symbols]
@@ -1095,22 +1098,23 @@ class SmartDataFetcher:
     async def get_history(self, symbol: str, period: str = "1y",
                           kline_type: str = "daily",
                           adjust: str = "") -> pd.DataFrame:
-        if kline_type == "daily" and period in KLINE_TYPE_MAP:
+        if kline_type == "daily" and period in KLINE_TYPE_MAP and not adjust:
             kline_type = KLINE_TYPE_MAP[period]
 
         market = MarketDetector.detect(symbol)
+        clean_symbol = re.sub(r"^(sh|sz|SH|SZ)", "", str(symbol)).strip()
 
-        cache_key = f"hist_{symbol}_{market}_{kline_type}_{adjust}_{period}"
+        cache_key = f"hist_{clean_symbol}_{market}_{kline_type}_{adjust}_{period}"
         cached = _history_cache.get(cache_key)
         if cached is not None:
             return cached
 
-        db_df = self._db.load_kline_rows(symbol, market, kline_type, adjust)
+        db_df = self._db.load_kline_rows(clean_symbol, market, kline_type, adjust)
         if not db_df.empty and len(db_df) >= 30:
             _history_cache.set(cache_key, db_df)
             return db_df
 
-        df = await self._fetch_history_from_sources(symbol, market, kline_type, adjust, period)
+        df = await self._fetch_history_from_sources(clean_symbol, market, kline_type, adjust, period)
         if df is not None and not df.empty:
             df, warnings = DataQualityChecker.check_kline(df)
             if warnings:
@@ -1197,7 +1201,7 @@ class SmartDataFetcher:
                     symbol, market, ktype_map.get(kline_type, "101"), fqt_map.get(adjust, 1)
                 )
             elif source_name == "tencent":
-                count_map = {"1y": 300, "3y": 800, "5y": 1300}
+                count_map = {"1y": 300, "3y": 800, "5y": 1300, "all": 2500}
                 count = count_map.get(period, 300)
                 result = await self._circuit_breakers[source_name].call(
                     TencentSource.fetch_history, symbol, market, kline_type, adjust, count

@@ -87,6 +87,7 @@ const sortKey = ref(props.defaultSortKey || '')
 const sortOrder = ref(props.defaultSortOrder)
 
 const sortedData = computed(() => {
+  if (!props.data) return []
   if (!sortKey.value) return props.data
   const key = sortKey.value
   const order = sortOrder.value

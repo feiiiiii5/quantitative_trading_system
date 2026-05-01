@@ -29,6 +29,12 @@ from core.strategies import (
     MarketMicrostructureStrategy,
     CopulaCorrelationStrategy,
     QuantileRegressionStrategy,
+    TurtleTradingStrategy,
+    DualThrustStrategy,
+    ATRChannelBreakoutStrategy,
+    DonchianChannelStrategy,
+    ChandeKrollStopStrategy,
+    VolumeWeightedMACDStrategy,
     SignalType,
     StrategyResult,
     TradeSignal,
@@ -63,36 +69,36 @@ REGIME_LABELS = {
 
 STRATEGY_ALLOCATION = {
     MarketRegime.STRONG_TREND_UP: {
-        "strategies": [AdaptiveTrendFollowingStrategy, MultiFactorConfluenceStrategy, SuperTrendStrategy, MomentumStrategy],
-        "weights": [0.30, 0.30, 0.25, 0.15],
+        "strategies": [AdaptiveTrendFollowingStrategy, MultiFactorConfluenceStrategy, SuperTrendStrategy, TurtleTradingStrategy, MomentumStrategy],
+        "weights": [0.25, 0.25, 0.20, 0.18, 0.12],
     },
     MarketRegime.MILD_TREND_UP: {
-        "strategies": [MultiFactorConfluenceStrategy, DualMAStrategy, MACDStrategy, VolatilitySqueezeBreakoutStrategy],
-        "weights": [0.30, 0.25, 0.25, 0.20],
+        "strategies": [MultiFactorConfluenceStrategy, DualMAStrategy, VolumeWeightedMACDStrategy, VolatilitySqueezeBreakoutStrategy, DonchianChannelStrategy],
+        "weights": [0.25, 0.20, 0.20, 0.18, 0.17],
     },
     MarketRegime.HIGH_VOLATILITY_RANGE: {
-        "strategies": [MeanReversionProStrategy, VolatilitySqueezeBreakoutStrategy, KDJStrategy, RSIMeanReversionStrategy],
-        "weights": [0.30, 0.30, 0.20, 0.20],
+        "strategies": [MeanReversionProStrategy, VolatilitySqueezeBreakoutStrategy, KDJStrategy, RSIMeanReversionStrategy, ATRChannelBreakoutStrategy],
+        "weights": [0.25, 0.25, 0.18, 0.17, 0.15],
     },
     MarketRegime.LOW_VOLATILITY_CONSOLIDATION: {
-        "strategies": [VolatilitySqueezeBreakoutStrategy, MeanReversionProStrategy],
-        "weights": [0.60, 0.40],
+        "strategies": [VolatilitySqueezeBreakoutStrategy, MeanReversionProStrategy, DualThrustStrategy, ATRChannelBreakoutStrategy],
+        "weights": [0.30, 0.25, 0.25, 0.20],
     },
     MarketRegime.MILD_TREND_DOWN: {
-        "strategies": [SuperTrendStrategy, MACDStrategy, MeanReversionProStrategy],
-        "weights": [0.35, 0.35, 0.30],
+        "strategies": [SuperTrendStrategy, ChandeKrollStopStrategy, MACDStrategy, MeanReversionProStrategy],
+        "weights": [0.30, 0.25, 0.25, 0.20],
     },
     MarketRegime.STRONG_TREND_DOWN: {
-        "strategies": [AdaptiveTrendFollowingStrategy, SuperTrendStrategy],
-        "weights": [0.55, 0.45],
+        "strategies": [AdaptiveTrendFollowingStrategy, SuperTrendStrategy, ChandeKrollStopStrategy, DonchianChannelStrategy],
+        "weights": [0.30, 0.28, 0.22, 0.20],
     },
     MarketRegime.BEAR_TRAP: {
-        "strategies": [WyckoffAccumulationStrategy, MeanReversionProStrategy, RSIMeanReversionStrategy, OrderFlowImbalanceStrategy],
-        "weights": [0.30, 0.30, 0.20, 0.20],
+        "strategies": [WyckoffAccumulationStrategy, MeanReversionProStrategy, RSIMeanReversionStrategy, OrderFlowImbalanceStrategy, TurtleTradingStrategy],
+        "weights": [0.25, 0.25, 0.18, 0.17, 0.15],
     },
     MarketRegime.DISTRIBUTION_TOP: {
-        "strategies": [ElliottWaveAIStrategy, SuperTrendStrategy, MarketMicrostructureStrategy],
-        "weights": [0.35, 0.35, 0.30],
+        "strategies": [ElliottWaveAIStrategy, SuperTrendStrategy, MarketMicrostructureStrategy, ChandeKrollStopStrategy],
+        "weights": [0.28, 0.28, 0.22, 0.22],
     },
 }
 
@@ -538,9 +544,9 @@ class AdaptiveStrategyEngine:
             current_vol = float(np.std(returns_arr[max(0, i - lookback_vol):i]) * np.sqrt(252)) if i > 1 else 0
             current_trend = float((c[i] - c[max(0, i - 20)]) / c[max(0, i - 20)]) if c[max(0, i - 20)] > 0 else 0
 
+            alloc = STRATEGY_ALLOCATION.get(regime, {"strategies": [], "weights": []})
             if regime not in seen_regimes:
                 seen_regimes.add(regime)
-                alloc = STRATEGY_ALLOCATION.get(regime, {"strategies": [], "weights": []})
                 strategy_names = [type(s).__name__ for s in strategy_instances.get(regime, [])]
                 weights = alloc.get("weights", [])
                 alloc_items = []
