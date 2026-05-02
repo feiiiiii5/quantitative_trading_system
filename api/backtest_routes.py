@@ -91,25 +91,30 @@ async def compare_strategies(
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
             df = df.dropna(subset=["date"])
-            df = df[(df["date"] >= start_date) & (df["date"] <= end_date)].reset_index(drop=True)
 
-        if len(df) < 30:
-            return _json_response(False, error="指定时间段数据不足")
+        work_df = df.copy()
+        if "date" in work_df.columns:
+            work_df = work_df[(work_df["date"] >= start_date) & (work_df["date"] <= end_date)].reset_index(drop=True)
+
+        if len(work_df) < 30:
+            work_df = df.tail(252).reset_index(drop=True)
+            if len(work_df) < 30:
+                return _json_response(False, error="数据不足，请更换股票代码或时间范围")
 
         engine = request.app.state.backtest_engine
         strategies = request.app.state.composite_strategy.strategies
-        results = engine.run_multi(strategies, df)
+        results = engine.run_multi(strategies, work_df)
 
         comparison = []
         for name, result in results.items():
             comparison.append({
                 "strategy_name": result.strategy_name,
-                "total_return": result.total_return,
-                "annual_return": result.annual_return,
-                "sharpe_ratio": result.sharpe_ratio,
-                "max_drawdown": result.max_drawdown,
-                "win_rate": result.win_rate,
-                "profit_factor": result.profit_factor,
+                "total_return": round(result.total_return, 4) if result.total_return else 0,
+                "annual_return": round(result.annual_return, 4) if result.annual_return else 0,
+                "sharpe_ratio": round(result.sharpe_ratio, 2) if result.sharpe_ratio else 0,
+                "max_drawdown": round(result.max_drawdown, 4) if result.max_drawdown else 0,
+                "win_rate": round(result.win_rate, 2) if result.win_rate else 0,
+                "profit_factor": round(result.profit_factor, 2) if result.profit_factor else 0,
                 "total_trades": result.total_trades,
             })
 
@@ -117,6 +122,172 @@ async def compare_strategies(
         return _json_response(True, data=comparison)
     except Exception as e:
         logger.error(f"compare strategies error: {e}", exc_info=True)
+        return _json_response(False, error=str(e))
+
+
+@backtest_router.get("/backtest/recommend")
+async def recommend_strategy(
+    request: Request,
+    symbol: str = Query(...),
+    start_date: str = Query("2024-01-01"),
+    end_date: str = Query("2025-12-31"),
+):
+    try:
+        import numpy as np
+        import pandas as pd
+        from core.indicators import calc_atr, calc_adx
+        from core.adaptive_strategy import classify_market_regime, REGIME_LABELS, STRATEGY_ALLOCATION, MarketRegime
+        from core.strategies import STRATEGY_REGISTRY
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="无法获取历史数据")
+
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
+
+        work_df = df.copy()
+        if "date" in work_df.columns:
+            work_df = work_df[(work_df["date"] >= start_date) & (work_df["date"] <= end_date)].reset_index(drop=True)
+
+        if len(work_df) < 30:
+            work_df = df.tail(252).reset_index(drop=True)
+            if len(work_df) < 30:
+                return _json_response(False, error="数据不足，请更换股票代码或时间范围")
+
+        c = work_df["close"].values.astype(float)
+        h = work_df["high"].values.astype(float)
+        low_arr = work_df["low"].values.astype(float)
+        v = work_df["volume"].values.astype(float) if "volume" in work_df.columns else np.ones(len(c))
+
+        returns = np.diff(c) / np.where(c[:-1] > 0, c[:-1], 1)
+        returns = np.where(np.isfinite(returns), returns, 0)
+
+        hist_vol = float(np.std(returns) * np.sqrt(252))
+        trend = float((c[-1] - c[0]) / c[0] * 100) if c[0] > 0 else 0
+        total_return = trend
+
+        adx_arr = calc_adx(h, low_arr, c, period=14)
+        last_adx = float(adx_arr[-1]) if not np.isnan(adx_arr[-1]) else 20.0
+
+        atr_arr = calc_atr(h, low_arr, c, period=14)
+        avg_atr_pct = float(np.nanmean(atr_arr[-20:]) / np.mean(c[-20:]) * 100) if len(c) >= 20 else 2.0
+
+        ma5 = float(np.mean(c[-5:]))
+        ma20 = float(np.mean(c[-20:])) if len(c) >= 20 else ma5
+        ma60 = float(np.mean(c[-60:])) if len(c) >= 60 else ma20
+        ma_alignment = "bullish" if ma5 > ma20 > ma60 else ("bearish" if ma5 < ma20 < ma60 else "neutral")
+
+        rsi_period = 14
+        if len(returns) >= rsi_period:
+            delta = np.diff(c)
+            gain = np.where(delta > 0, delta, 0)
+            loss_arr = np.where(delta < 0, -delta, 0)
+            avg_gain = np.mean(gain[-rsi_period:])
+            avg_loss = np.mean(loss_arr[-rsi_period:])
+            rs = avg_gain / max(avg_loss, 1e-9)
+            rsi = 100 - 100 / (1 + rs)
+        else:
+            rsi = 50.0
+
+        vol_ma20 = float(np.mean(v[-20:])) if len(v) >= 20 else 1
+        vol_ratio = float(v[-1]) / max(vol_ma20, 1) if vol_ma20 > 0 else 1.0
+
+        bb_mid = float(np.mean(c[-20:])) if len(c) >= 20 else float(c[-1])
+        bb_std = float(np.std(c[-20:])) if len(c) >= 20 else 0
+        bb_upper = bb_mid + 2 * bb_std
+        bb_lower = bb_mid - 2 * bb_std
+        bb_position = (float(c[-1]) - bb_lower) / max(bb_upper - bb_lower, 1e-9)
+
+        regimes = classify_market_regime(work_df)
+        current_regime = regimes[-1] if regimes else MarketRegime.LOW_VOLATILITY_CONSOLIDATION
+        regime_name = REGIME_LABELS.get(current_regime, "未知")
+
+        regime_counts = {}
+        for r in regimes[-60:]:
+            label = REGIME_LABELS.get(r, "未知")
+            regime_counts[label] = regime_counts.get(label, 0) + 1
+        dominant_regime = max(regime_counts, key=regime_counts.get) if regime_counts else "未知"
+
+        analysis = {
+            "trend": round(trend, 2),
+            "volatility": round(hist_vol, 4),
+            "adx": round(last_adx, 2),
+            "atr_pct": round(avg_atr_pct, 4),
+            "rsi": round(rsi, 2),
+            "ma_alignment": ma_alignment,
+            "volume_ratio": round(vol_ratio, 2),
+            "bb_position": round(bb_position, 4),
+            "regime": regime_name,
+            "dominant_regime": dominant_regime,
+        }
+
+        recommendations = []
+        regime_alloc = STRATEGY_ALLOCATION.get(current_regime, {})
+        regime_strategies = regime_alloc.get("strategies", [])
+        regime_weights = regime_alloc.get("weights", [])
+
+        for idx, strategy_cls in enumerate(regime_strategies):
+            w = regime_weights[idx] if idx < len(regime_weights) else 0.1
+            name = strategy_cls.__name__
+            display_name = name
+            for alias, cls in STRATEGY_REGISTRY.items():
+                if cls == strategy_cls:
+                    display_name = alias
+                    break
+
+            reasons = []
+            if current_regime in (MarketRegime.STRONG_TREND_UP, MarketRegime.MILD_TREND_UP):
+                reasons.append(f"当前市场处于{regime_name}，趋势策略表现更优")
+            elif current_regime in (MarketRegime.HIGH_VOLATILITY_RANGE, MarketRegime.LOW_VOLATILITY_CONSOLIDATION):
+                reasons.append(f"当前市场处于{regime_name}，震荡策略表现更优")
+            elif current_regime in (MarketRegime.MILD_TREND_DOWN, MarketRegime.STRONG_TREND_DOWN):
+                reasons.append(f"当前市场处于{regime_name}，防御策略表现更优")
+            elif current_regime == MarketRegime.BEAR_TRAP:
+                reasons.append("检测到空头陷阱，反转策略表现更优")
+            elif current_regime == MarketRegime.DISTRIBUTION_TOP:
+                reasons.append("检测到派发顶部信号，减仓策略表现更优")
+
+            if last_adx > 30:
+                reasons.append(f"ADX={last_adx:.1f}趋势较强")
+            elif last_adx < 20:
+                reasons.append(f"ADX={last_adx:.1f}趋势较弱，适合均值回归")
+
+            if hist_vol > 0.30:
+                reasons.append(f"波动率{hist_vol:.1%}偏高，注意风险控制")
+            elif hist_vol < 0.15:
+                reasons.append(f"波动率{hist_vol:.1%}偏低，适合布局突破")
+
+            if rsi < 30:
+                reasons.append(f"RSI={rsi:.0f}超卖区间")
+            elif rsi > 70:
+                reasons.append(f"RSI={rsi:.0f}超买区间")
+
+            recommendations.append({
+                "strategy": display_name,
+                "strategy_class": name,
+                "score": round(w, 4),
+                "reasons": reasons,
+            })
+
+        recommendations.sort(key=lambda x: x["score"], reverse=True)
+
+        adaptive_reason = "当前市场环境复杂，自适应引擎可根据市场状态自动切换策略组合"
+        recommendations.insert(0, {
+            "strategy": "adaptive",
+            "strategy_class": "AdaptiveEngine",
+            "score": 1.0,
+            "reasons": [adaptive_reason, f"当前市场状态: {regime_name}", f"近期主导状态: {dominant_regime}"],
+        })
+
+        return _json_response(True, data={
+            "analysis": analysis,
+            "recommendations": recommendations[:6],
+        })
+    except Exception as e:
+        logger.error(f"recommend strategy error: {e}", exc_info=True)
         return _json_response(False, error=str(e))
 
 

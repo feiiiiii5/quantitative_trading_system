@@ -7,7 +7,9 @@ import gc
 import logging
 import multiprocessing
 import os
+import signal
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -29,9 +31,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.routes import router, push_realtime_data
+from api.auth import APIAuthMiddleware
 from core.logger import setup_logger
+from core.config import get_config
 
-import sys
 try:
     if sys.platform == "darwin":
         multiprocessing.set_start_method("spawn")
@@ -47,6 +50,82 @@ gc.set_threshold(700, 10, 10)
 BASE_DIR = Path(__file__).parent
 PORT = 8080
 _preload_done = threading.Event()
+_PID_FILE = BASE_DIR / "data" / ".quantcore.pid"
+
+
+def _kill_existing_process():
+    """终结占用同一端口的旧进程，确保每次启动干净"""
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(("127.0.0.1", PORT))
+        sock.close()
+        if result != 0:
+            return
+    except Exception:
+        return
+
+    try:
+        if _PID_FILE.exists():
+            old_pid = int(_PID_FILE.read_text().strip())
+            if old_pid != os.getpid():
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                    logger.info(f"已发送 SIGTERM 到旧进程 PID={old_pid}")
+                    time.sleep(1)
+                    try:
+                        os.kill(old_pid, 0)
+                        os.kill(old_pid, signal.SIGKILL)
+                        logger.info(f"旧进程未退出，已发送 SIGKILL PID={old_pid}")
+                    except ProcessLookupError:
+                        pass
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    pass
+    except Exception as e:
+        logger.debug(f"PID file cleanup error: {e}")
+
+    try:
+        if sys.platform == "darwin":
+            result = subprocess.run(
+                ["lsof", "-ti", f":{PORT}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.stdout.strip():
+                for pid_str in result.stdout.strip().split("\n"):
+                    pid = int(pid_str.strip())
+                    if pid != os.getpid():
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                            logger.info(f"已终止占用端口 {PORT} 的进程 PID={pid}")
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            pass
+                time.sleep(0.5)
+        elif sys.platform.startswith("linux"):
+            result = subprocess.run(
+                ["fuser", f"{PORT}/tcp"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.stdout.strip():
+                for pid_str in result.stdout.strip().split():
+                    pid = int(pid_str.strip())
+                    if pid != os.getpid():
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except (ProcessLookupError, PermissionError):
+                            pass
+                time.sleep(0.5)
+    except Exception as e:
+        logger.debug(f"Port cleanup error: {e}")
+
+    try:
+        _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _PID_FILE.write_text(str(os.getpid()))
+    except Exception:
+        pass
 
 
 @asynccontextmanager
@@ -67,7 +146,6 @@ async def lifespan(app: FastAPI):
     app.state.start_time = time.time()
     app.state._request_count = 0
     app.state._total_response_time = 0.0
-    app.state._start_time = time.time()
 
     try:
         from core.data_fetcher import get_aiohttp_session
@@ -270,23 +348,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_config = get_config()
+_api_config = _config.get("api", {})
+app.add_middleware(
+    APIAuthMiddleware,
+    api_key=_api_config.get("api_key", ""),
+    enabled=_api_config.get("auth_enabled", False),
+)
 
-@app.middleware("http")
-async def metrics_middleware(request: Request, call_next):
-    start = time.time()
-    response = await call_next(request)
-    elapsed = (time.time() - start) * 1000
-    try:
-        app.state._request_count = getattr(app.state, "_request_count", 0) + 1
-        app.state._total_response_time = getattr(app.state, "_total_response_time", 0.0) + elapsed
-    except Exception:
-        pass
-    return response
 
 app.include_router(router, prefix="/api")
 
 from api.backtest_routes import backtest_router
 app.include_router(backtest_router, prefix="/api")
+
+
+@app.middleware("http")
+async def unified_metrics_middleware(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    elapsed = time.time() - start
+    elapsed_ms = elapsed * 1000
+    try:
+        app.state._request_count = getattr(app.state, "_request_count", 0) + 1
+        app.state._total_response_time = getattr(app.state, "_total_response_time", 0.0) + elapsed_ms
+    except Exception:
+        pass
+    path = request.url.path
+    if path.startswith("/api"):
+        try:
+            from core.metrics import metrics
+            path_seg = path.split("/")[2] if len(path.split("/")) > 2 else "other"
+            metrics.increment("api_requests_total", tags={"path": path_seg})
+            metrics.timer("api_request_duration", elapsed, tags={"path": path_seg})
+        except Exception:
+            pass
+    return response
 
 
 @app.get("/")
@@ -318,8 +415,11 @@ async def health_check(request: Request):
         import psutil
         process = psutil.Process()
         mem = process.memory_info()
+        cpu_pct = process.cpu_percent(interval=0.1)
         checks["memory"] = {
             "rss_mb": round(mem.rss / 1024 ** 2, 1),
+            "vms_mb": round(mem.vms / 1024 ** 2, 1),
+            "cpu_percent": round(cpu_pct, 1),
             "status": "ok" if mem.rss < 512 * 1024 * 1024 else "warning",
         }
     except Exception as e:
@@ -335,35 +435,41 @@ async def health_check(request: Request):
     except Exception as e:
         checks["cache"] = {"status": "warning", "message": str(e)}
 
+    try:
+        fetcher = getattr(request.app.state, "fetcher", None)
+        checks["data_sources"] = {"status": "ok" if fetcher else "unknown"}
+    except Exception as e:
+        checks["data_sources"] = {"status": "warning", "message": str(e)}
+
+    try:
+        config = get_config()
+        checks["config"] = {
+            "status": "ok",
+            "auth_enabled": config.get("api", {}).get("auth_enabled", False),
+            "vectorized_backtest": config.get("backtest", {}).get("use_vectorized", True),
+        }
+    except Exception as e:
+        checks["config"] = {"status": "warning", "message": str(e)}
+
     uptime = time.time() - getattr(request.app.state, "start_time", time.time())
     all_ok = all(v.get("status") == "ok" for v in checks.values())
+    has_warning = any(v.get("status") == "warning" for v in checks.values())
     return {
-        "status": "healthy" if all_ok else "degraded",
+        "status": "healthy" if all_ok else ("degraded" if has_warning else "unhealthy"),
         "uptime_seconds": round(uptime),
         "checks": checks,
         "version": "3.0.0",
+        "request_count": getattr(request.app.state, "_request_count", 0),
+        "avg_response_ms": round(
+            getattr(request.app.state, "_total_response_time", 0) / max(getattr(request.app.state, "_request_count", 1), 1),
+            2,
+        ),
     }
 
 
 assets_dir = BASE_DIR / "static" / "assets"
 if assets_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-
-
-@app.middleware("http")
-async def api_metrics_middleware(request: Request, call_next):
-    start = time.time()
-    response = await call_next(request)
-    elapsed = time.time() - start
-    path = request.url.path
-    if path.startswith("/api"):
-        try:
-            from core.metrics import metrics
-            metrics.increment("api_requests_total", tags={"path": path.split("/")[2] if len(path.split("/")) > 2 else "other"})
-            metrics.timer("api_request_duration", elapsed, tags={"path": path.split("/")[2] if len(path.split("/")) > 2 else "other"})
-        except Exception:
-            pass
-    return response
 
 
 @app.middleware("http")
@@ -427,6 +533,7 @@ def _build_frontend():
 
 
 if __name__ == "__main__":
+    _kill_existing_process()
     _build_frontend()
 
     def open_browser():

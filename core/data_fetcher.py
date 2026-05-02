@@ -124,10 +124,24 @@ US_INDICES = {
     ".INX": "标普500",
 }
 
-_realtime_cache = ThreadSafeLRU(maxsize=500, ttl=5)
-_history_cache = ThreadSafeLRU(maxsize=200, ttl=60)
+_realtime_cache = ThreadSafeLRU(maxsize=1000, ttl=8)
+_history_cache = ThreadSafeLRU(maxsize=500, ttl=120)
+_indicator_cache = ThreadSafeLRU(maxsize=300, ttl=300)
+_financial_cache = ThreadSafeLRU(maxsize=200, ttl=3600)
+_northbound_cache = ThreadSafeLRU(maxsize=50, ttl=60)
 _hot_symbols_cache: list[str] = []
 _hot_symbols_lock = asyncio.Lock()
+
+CACHE_TTL_TIERS = {
+    "realtime": 8,
+    "realtime_hot": 3,
+    "history": 120,
+    "indicator": 300,
+    "financial": 3600,
+    "northbound": 60,
+    "limit_up": 30,
+    "dragon_tiger": 300,
+}
 
 
 class DataSourceHealthMonitor:
@@ -591,33 +605,32 @@ class EastMoneySource:
 
     @staticmethod
     async def fetch_north_bound_flow(date=None) -> Optional[dict]:
-        url = (
-            f"{EastMoneySource.DATA_URL}?reportName=RPT_MUTUAL_MARKET_STA"
-            "&columns=ALL&pageNumber=1&pageSize=10&sortColumns=TRADE_DATE&sortTypes=-1"
-        )
-        if date:
-            url += f"&filter=(TRADE_DATE='{date}')"
-        text = await async_http_get(url, headers={"Referer": "https://data.eastmoney.com"})
-        if not text:
-            return None
         try:
-            payload = json.loads(text)
-            records = ((payload.get("result") or {}).get("data")) or []
-            latest = records[0] if records else {}
-            total_net = (
-                EastMoneySource._num(latest.get("HGT_NET_BUY_AMT"))
-                + EastMoneySource._num(latest.get("SGT_NET_BUY_AMT"))
-            )
+            import akshare as ak
+            df_sh = await asyncio.to_thread(ak.stock_hsgt_hist_em, symbol="沪股通")
+            df_sz = await asyncio.to_thread(ak.stock_hsgt_hist_em, symbol="深股通")
+            valid_sh = df_sh.dropna(subset=["当日成交净买额"]) if df_sh is not None and len(df_sh) > 0 else pd.DataFrame()
+            valid_sz = df_sz.dropna(subset=["当日成交净买额"]) if df_sz is not None and len(df_sz) > 0 else pd.DataFrame()
+            if len(valid_sh) == 0 and len(valid_sz) == 0:
+                return None
+            sh_row = valid_sh.iloc[-1] if len(valid_sh) > 0 else None
+            sz_row = valid_sz.iloc[-1] if len(valid_sz) > 0 else None
+            sh_buy = float(sh_row["买入成交额"]) if sh_row is not None else 0.0
+            sh_sell = float(sh_row["卖出成交额"]) if sh_row is not None else 0.0
+            sz_buy = float(sz_row["买入成交额"]) if sz_row is not None else 0.0
+            sz_sell = float(sz_row["卖出成交额"]) if sz_row is not None else 0.0
+            sh_net = float(sh_row["当日成交净买额"]) if sh_row is not None else 0.0
+            sz_net = float(sz_row["当日成交净买额"]) if sz_row is not None else 0.0
             return {
-                "sh_buy": EastMoneySource._num(latest.get("HGT_BUY_AMT")),
-                "sh_sell": EastMoneySource._num(latest.get("HGT_SELL_AMT")),
-                "sz_buy": EastMoneySource._num(latest.get("SGT_BUY_AMT")),
-                "sz_sell": EastMoneySource._num(latest.get("SGT_SELL_AMT")),
-                "total_net": total_net,
+                "sh_buy": sh_buy,
+                "sh_sell": sh_sell,
+                "sz_buy": sz_buy,
+                "sz_sell": sz_sell,
+                "total_net": sh_net + sz_net,
                 "top_stocks": [],
             }
-        except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug(f"EastMoney northbound parse error: {e}")
+        except Exception as e:
+            logger.debug(f"akshare northbound fetch error: {e}")
             return None
 
     @staticmethod
@@ -666,6 +679,29 @@ class EastMoneySource:
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             logger.debug(f"EastMoney dragon-tiger parse error: {e}")
             return []
+
+    @staticmethod
+    def simulate_level2_depth(current_price: float, volume: float,
+                              avg_volume: float = 0, n_levels: int = 5) -> dict:
+        """基于1分钟K线模拟盘口深度（买一到买五/卖一到卖五）"""
+        if current_price <= 0:
+            return {"bids": [], "asks": []}
+        tick = max(current_price * 0.001, 0.01)
+        vol_ratio = (volume / avg_volume) if avg_volume > 0 else 1.0
+        base_qty = max(volume * 0.05, 100)
+        rng = np.random.default_rng()
+        bids = []
+        asks = []
+        for i in range(n_levels):
+            bid_price = round(current_price - tick * (i + 1), 2)
+            ask_price = round(current_price + tick * (i + 1), 2)
+            depth_decay = 1.0 / (i + 1)
+            noise = rng.uniform(0.5, 1.5)
+            bid_qty = int(base_qty * depth_decay * noise * min(vol_ratio, 3.0))
+            ask_qty = int(base_qty * depth_decay * noise * min(vol_ratio, 3.0))
+            bids.append({"price": bid_price, "quantity": bid_qty})
+            asks.append({"price": ask_price, "quantity": ask_qty})
+        return {"bids": bids, "asks": asks}
 
 
 class DataQualityChecker:
@@ -1239,8 +1275,21 @@ class SmartDataFetcher:
             market = MarketDetector.detect(symbol)
         if market == "A":
             em = await EastMoneySource.fetch_financial_report(symbol)
-            if em and any(v for v in em.values()):
+            if em and any(v for v in em.values() if v and v != 0):
                 return em
+            ak = await AKShareSource.fetch_fundamentals(symbol, market)
+            if ak:
+                return ak
+            rt = await self.get_realtime(symbol, market)
+            if rt:
+                return {
+                    "pe_ttm": rt.get("pe", 0),
+                    "pb": rt.get("pb", 0),
+                    "name": rt.get("name", ""),
+                    "price": rt.get("price", 0),
+                    "market_cap": rt.get("total_market_cap", 0),
+                    "source": "realtime_fallback",
+                }
         return await AKShareSource.fetch_fundamentals(symbol, market)
 
     async def fetch_north_bound_flow(self, date=None) -> Optional[dict]:

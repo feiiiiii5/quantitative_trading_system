@@ -72,7 +72,7 @@ class ThreadSafeLRU:
             return len(self._cache)
 
 
-_db_query_cache = ThreadSafeLRU(maxsize=200, ttl=60)
+_db_query_cache = ThreadSafeLRU(maxsize=500, ttl=90)
 
 
 class CacheManager:
@@ -116,11 +116,11 @@ class SQLiteStore:
         self._local = threading.local()
         self._write_buffer: list[tuple[str, tuple]] = []
         self._buffer_lock = threading.Lock()
-        self._buffer_max_size = 50
+        self._buffer_max_size = 100
         self._last_flush = time.time()
         self._pool: list[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
-        self._pool_max_size = 5
+        self._pool_max_size = 8
         self._init_db()
         self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
         self._flush_thread.start()
@@ -130,7 +130,7 @@ class SQLiteStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA cache_size=-64000")
+        conn.execute("PRAGMA cache_size=-128000")
         conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA mmap_size=67108864")
         conn.execute("PRAGMA page_size=4096")

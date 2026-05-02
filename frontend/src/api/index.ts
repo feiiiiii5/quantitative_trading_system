@@ -1,256 +1,129 @@
-const API_BASE = '/api'
+import axios from 'axios'
+import type {
+  ApiResponse,
+  MarketOverview,
+  MarketStatus,
+  StockQuote,
+  KlineBar,
+  HeatmapItem,
+  AnomalyItem,
+  NorthboundData,
+  SignalItem,
+  DeepAnalysis,
+  PredictionData,
+  AiSummary,
+  Fundamentals,
+  CorrelationData,
+  FactorAnalysis,
+  StrategyInfo,
+  BacktestResult,
+  AccountInfo,
+  PortfolioRisk,
+  PortfolioEquity,
+  WatchlistData,
+  PriceAlert,
+  SearchItem,
+  SystemMetrics,
+  WeeklyReport,
+  MarketStock,
+} from '@/types'
 
-async function _fetch(path: string, params?: Record<string, string>, method = 'GET') {
-  const url = new URL(`${API_BASE}${path}`, window.location.origin)
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      url.searchParams.set(k, v)
-    }
-  }
-  const resp = await fetch(url.toString(), { method })
-  if (!resp.ok) {
-    throw new Error(`请求失败: ${resp.status} ${resp.statusText}`)
-  }
-  const data = await resp.json()
-  if (!data.success) {
-    throw new Error(data.error || '操作失败')
-  }
+const http = axios.create({ baseURL: '/api', timeout: 30000 })
+
+async function get<T>(url: string, params?: Record<string, unknown>): Promise<T> {
+  const { data } = await http.get<ApiResponse<T>>(url, { params })
+  if (!data.success) throw new Error(data.error || '请求失败')
+  return data.data
+}
+
+async function post<T>(url: string, params?: Record<string, unknown>): Promise<T> {
+  const { data } = await http.post<ApiResponse<T>>(url, null, { params })
+  if (!data.success) throw new Error(data.error || '请求失败')
   return data.data
 }
 
 export const api = {
-  async getMarketOverview() {
-    return _fetch('/market/overview')
+  market: {
+    overview: () => get<MarketOverview>('/market/overview'),
+    status: () => get<Record<string, MarketStatus>>('/market/status'),
+    heatmap: (market = 'A') => get<{ market: string; items: HeatmapItem[] }>('/market/heatmap', { market }),
+    stocks: (market = 'A', limit = 5000) => get<MarketStock[]>('/market/stocks', { market, limit }),
+    anomaly: () => get<AnomalyItem[]>('/market/anomaly'),
+    northbound: () => get<NorthboundData>('/market/northbound/detail'),
+    limitUp: () => get<unknown[]>('/market/limit_up'),
+    dragonTiger: () => get<unknown[]>('/market/dragon_tiger'),
   },
 
-  async getStockList(market = 'A', limit = 100) {
-    return _fetch('/market/stocks', { market, limit: String(limit) })
+  stock: {
+    realtime: (symbol: string) => get<StockQuote>(`/stock/realtime/${symbol}`),
+    history: (symbol: string, period = '1y', klineType = 'daily', adjust = '') =>
+      get<KlineBar[]>(`/stock/history/${symbol}`, { period, kline_type: klineType, adjust }),
+    indicators: (symbol: string, period = '1y', klineType = 'daily') =>
+      get<Record<string, unknown>>(`/stock/indicators/${symbol}`, { period, kline_type: klineType }),
+    analysis: (symbol: string, period = '1y') => get<DeepAnalysis>(`/stock/analysis/${symbol}`, { period }),
+    prediction: (symbol: string, period = '1y') => get<PredictionData>(`/stock/prediction/${symbol}`, { period }),
+    signals: (symbol: string, period = '1y', strategy = 'all') =>
+      get<{ symbol: string; signals: SignalItem[] }>(`/stock/signals/${symbol}`, { period, strategy }),
+    aiSummary: (symbol: string, period = '1y') => get<AiSummary>(`/stock/ai_summary/${symbol}`, { period }),
+    fundamentals: (symbol: string) => get<Fundamentals>(`/stock/fundamentals/${symbol}`),
+    correlation: (symbol: string, benchmark = 'sh000300', period = '1y') =>
+      get<CorrelationData>(`/stock/correlation/${symbol}`, { benchmark, period }),
   },
 
-  async getAnomalyList() {
-    return _fetch('/market/anomaly')
+  factor: {
+    analysis: (symbol: string, period = '1y') => get<FactorAnalysis>(`/factor/analysis/${symbol}`, { period }),
   },
 
-  async getMarketStatus() {
-    return _fetch('/market/status')
+  backtest: {
+    strategies: () => get<Record<string, StrategyInfo>>('/backtest/strategies'),
+    run: (params: { symbol: string; strategy_type?: string; start_date?: string; end_date?: string; initial_capital?: number }) =>
+      post<BacktestResult>('/backtest/run', params),
+    compare: (symbol: string, startDate = '2024-01-01', endDate = '2025-12-31') =>
+      get<BacktestResult[]>('/backtest/compare', { symbol, start_date: startDate, end_date: endDate }),
+    advanced: (params: Record<string, unknown>) => post<BacktestResult>('/backtest/advanced', params),
+    recommend: (symbol: string, startDate = '2024-01-01', endDate = '2025-12-31') =>
+      get<{ analysis: Record<string, unknown>; recommendations: { strategy: string; strategy_class: string; score: number; reasons: string[] }[] }>('/backtest/recommend', { symbol, start_date: startDate, end_date: endDate }),
+    history: (symbol?: string, limit = 20) => get<unknown[]>('/backtest/history', { symbol, limit }),
   },
 
-  async getRealtime(symbol: string) {
-    return _fetch(`/stock/realtime/${symbol}`)
+  portfolio: {
+    riskAnalysis: (symbols: string[], period = '1y') =>
+      get<PortfolioRisk>('/portfolio/risk_analysis', { symbols: symbols.join(','), period }),
+    attribution: (symbols: string[], benchmark = 'sh000300', period = '1y') =>
+      get<unknown>('/portfolio/attribution', { symbols: symbols.join(','), benchmark, period }),
+    equity: (symbols: string[], period = '1y') =>
+      get<PortfolioEquity>('/portfolio/equity', { symbols: symbols.join(','), period }),
   },
 
-  async getRealtimeBatch(symbols: string[]) {
-    const results: Record<string, any> = {}
-    const tasks = symbols.map(s => _fetch(`/stock/realtime/${s}`))
-    const responses = await Promise.allSettled(tasks)
-    responses.forEach((res, i) => {
-      if (res.status === 'fulfilled' && res.value) {
-        results[symbols[i]] = res.value
-      }
-    })
-    return results
+  trading: {
+    account: () => get<AccountInfo>('/trading/account'),
+    buy: (params: { symbol: string; name?: string; market?: string; price: number; shares: number; stop_loss?: number; take_profit?: number; strategy?: string }) =>
+      post<unknown>('/trading/buy', params),
+    sell: (params: { symbol: string; price: number; shares?: number; reason?: string }) =>
+      post<unknown>('/trading/sell', params),
+    history: (limit = 100) => get<{ trades: unknown[]; total: number }>('/trading/history', { limit }),
   },
 
-  async getHistory(symbol: string, period = '1y', klineType = 'daily', adjust = '') {
-    const params: Record<string, string> = { period, kline_type: klineType }
-    if (adjust) params.adjust = adjust
-    return _fetch(`/stock/history/${symbol}`, params)
+  watchlist: {
+    get: () => get<WatchlistData>('/watchlist'),
+    add: (symbol: string) => post<string[]>('/watchlist/add', { symbol }),
+    remove: (symbol: string) => post<string[]>('/watchlist/remove', { symbol }),
+    reorder: (symbols: string) => post<string[]>('/watchlist/reorder', { symbols }),
+    alerts: () => get<PriceAlert[]>('/watchlist/alert/list'),
+    addAlert: (params: { symbol: string; alert_type: string; value: number }) =>
+      post<PriceAlert>('/watchlist/alert/add', params),
+    removeAlert: (alertId: string) => post<unknown>('/watchlist/alert/remove', { alert_id: alertId }),
   },
 
-  async getFundamentals(symbol: string) {
-    return _fetch(`/stock/fundamentals/${symbol}`)
+  search: {
+    stocks: (q: string, limit = 10) => get<SearchItem[]>('/search', { q, limit }),
   },
 
-  async getIndicators(symbol: string, period = '1y', klineType = 'daily') {
-    return _fetch(`/stock/indicators/${symbol}`, { period, kline_type: klineType })
+  report: {
+    weekly: () => get<WeeklyReport>('/report/weekly'),
   },
 
-  async getDeepAnalysis(symbol: string, period = '1y') {
-    return _fetch(`/stock/analysis/${symbol}`, { period })
-  },
-
-  async getPrediction(symbol: string, period = '1y') {
-    return _fetch(`/stock/prediction/${symbol}`, { period })
-  },
-
-  async getSignals(symbol: string, period = '1y', strategy = 'all') {
-    return _fetch(`/stock/signals/${symbol}`, { period, strategy })
-  },
-
-  async getCorrelation(symbol: string, benchmark = 'sh000300', period = '1y') {
-    return _fetch(`/stock/correlation/${symbol}`, { benchmark, period })
-  },
-
-  async getFactorAnalysis(symbol: string, period = '1y') {
-    return _fetch(`/factor/analysis/${symbol}`, { period })
-  },
-
-  async getMarketHeatmap(market = 'A') {
-    return _fetch('/market/heatmap', { market })
-  },
-
-  async getNorthboundDetail() {
-    return _fetch('/market/northbound/detail')
-  },
-
-  async getLimitUpPool() {
-    return _fetch('/market/limit_up')
-  },
-
-  async getDragonTiger(date?: string) {
-    const params: Record<string, string> = {}
-    if (date) params.date = date
-    return _fetch('/market/dragon_tiger', params)
-  },
-
-  async getPortfolioRiskAnalysis(symbols: string, period = '1y') {
-    return _fetch('/portfolio/risk_analysis', { symbols, period })
-  },
-
-  async getPortfolioAttribution(symbols: string, benchmark = 'sh000300', period = '1y') {
-    return _fetch('/portfolio/attribution', { symbols, benchmark, period })
-  },
-
-  async getWeeklyReport() {
-    return _fetch('/report/weekly')
-  },
-
-  async runBacktest(symbol: string, strategyName = 'adaptive', startDate = '2022-01-01', endDate = '2024-12-31', initialCapital = 1000000, options: {
-    monte_carlo?: boolean
-    n_simulations?: number
-    sensitivity?: boolean
-    walk_forward?: boolean
-  } = {}) {
-    const params: Record<string, string> = {
-      symbol,
-      strategy_name: strategyName,
-      start_date: startDate,
-      end_date: endDate,
-      initial_capital: String(initialCapital),
-      monte_carlo: String(options.monte_carlo ?? false),
-      n_simulations: String(options.n_simulations ?? 500),
-      sensitivity: String(options.sensitivity ?? false),
-      walk_forward: String(options.walk_forward ?? false),
-    }
-    return _fetch('/backtest/advanced', params, 'POST')
-  },
-
-  async optimizeStrategy(symbol: string, strategyName = 'ma_cross', startDate = '2023-01-01', endDate = '2024-12-31', metric = 'sharpe_ratio', maxCombinations = 100) {
-    return _fetch('/backtest/optimize', {
-      symbol,
-      strategy_name: strategyName,
-      start_date: startDate,
-      end_date: endDate,
-      metric,
-      max_combinations: String(maxCombinations),
-    }, 'POST')
-  },
-
-  async getBacktestHistory(symbol?: string, limit = 20) {
-    const params: Record<string, string> = { limit: String(limit) }
-    if (symbol) params.symbol = symbol
-    return _fetch('/backtest/history', params)
-  },
-
-  async getWatchlist() {
-    return _fetch('/watchlist')
-  },
-
-  async addToWatchlist(symbol: string) {
-    return _fetch('/watchlist/add', { symbol }, 'POST')
-  },
-
-  async removeFromWatchlist(symbol: string) {
-    return _fetch('/watchlist/remove', { symbol }, 'POST')
-  },
-
-  async search(query: string, limit = 10) {
-    return _fetch('/search', { q: query, limit: String(limit) })
-  },
-
-  async getAccount() {
-    return _fetch('/trading/account')
-  },
-
-  async getTradeHistory(limit = 100) {
-    return _fetch('/trading/history', { limit: String(limit) })
-  },
-
-  async buy(symbol: string, price: number, shares: number, options: {
-    name?: string
-    market?: string
-    stopLoss?: number
-    takeProfit?: number
-    strategy?: string
-  } = {}) {
-    const params: Record<string, string> = {
-      symbol,
-      price: String(price),
-      shares: String(shares),
-    }
-    if (options.name) params.name = options.name
-    if (options.market) params.market = options.market
-    if (options.stopLoss) params.stop_loss = String(options.stopLoss)
-    if (options.takeProfit) params.take_profit = String(options.takeProfit)
-    if (options.strategy) params.strategy = options.strategy
-    return _fetch('/trading/buy', params, 'POST')
-  },
-
-  async sell(symbol: string, price: number, shares?: number, reason = 'manual') {
-    const params: Record<string, string> = {
-      symbol,
-      price: String(price),
-      reason,
-    }
-    if (shares) params.shares = String(shares)
-    return _fetch('/trading/sell', params, 'POST')
-  },
-
-  async getSystemMetrics() {
-    return _fetch('/system/metrics')
-  },
-
-  async getAiSummary(symbol: string, period = '1y') {
-    return _fetch(`/stock/ai_summary/${symbol}`, { period })
-  },
-
-  async getPortfolioEquity(symbols: string, period = '1y') {
-    return _fetch('/portfolio/equity', { symbols, period })
-  },
-
-  async getConfig(key: string) {
-    return _fetch(`/config/${key}`)
-  },
-
-  async setConfig(key: string, value: string) {
-    return _fetch(`/config/${key}`, { value }, 'POST')
-  },
-
-  async getAlerts() {
-    return _fetch('/watchlist/alert/list')
-  },
-
-  async addAlert(symbol: string, alertType: string, value: number) {
-    return _fetch('/watchlist/alert/add', { symbol, alert_type: alertType, value: String(value) }, 'POST')
-  },
-
-  async removeAlert(id: string) {
-    return _fetch('/watchlist/alert/remove', { alert_id: id }, 'POST')
-  },
-
-  async reorderWatchlist(symbols: string[]) {
-    return _fetch('/watchlist/reorder', { symbols: symbols.join(',') }, 'POST')
-  },
-
-  async getStrategies() {
-    return _fetch('/backtest/strategies')
-  },
-
-  async getPortfolio() {
-    return _fetch('/trading/account')
-  },
-
-  async getRecentTrades() {
-    return _fetch('/trading/history', { limit: '10' })
+  system: {
+    metrics: () => get<SystemMetrics>('/system/metrics'),
   },
 }

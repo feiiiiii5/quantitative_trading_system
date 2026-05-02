@@ -1,26 +1,49 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-const Dashboard = () => import('../views/Dashboard.vue')
-const Market = () => import('../views/Market.vue')
-const StrategyIntro = () => import('../views/StrategyIntro.vue')
-const Strategy = () => import('../views/Strategy.vue')
-const Portfolio = () => import('../views/Portfolio.vue')
-const Watchlist = () => import('../views/Watchlist.vue')
-const StockDetail = () => import('../views/StockDetail.vue')
-
-const routes = [
-  { path: '/', name: 'Dashboard', component: Dashboard },
-  { path: '/market', name: 'Market', component: Market },
-  { path: '/strategy-intro', name: 'StrategyIntro', component: StrategyIntro },
-  { path: '/strategy', name: 'Strategy', component: Strategy },
-  { path: '/portfolio', name: 'Portfolio', component: Portfolio },
-  { path: '/watchlist', name: 'Watchlist', component: Watchlist },
-  { path: '/stock/:code', name: 'StockDetail', component: StockDetail },
-]
-
 const router = createRouter({
   history: createWebHistory(),
-  routes,
+  routes: [
+    {
+      path: '/',
+      redirect: '/dashboard',
+    },
+    {
+      path: '/dashboard',
+      name: 'Dashboard',
+      component: () => import('@/views/dashboard/DashboardPage.vue'),
+    },
+    {
+      path: '/market',
+      name: 'Market',
+      component: () => import('@/views/market/MarketPage.vue'),
+    },
+    {
+      path: '/stock/:symbol',
+      name: 'StockDetail',
+      component: () => import('@/views/stock/StockDetailPage.vue'),
+      props: true,
+    },
+    {
+      path: '/strategy',
+      name: 'StrategyIntro',
+      component: () => import('@/views/strategy/StrategyIntroPage.vue'),
+    },
+    {
+      path: '/strategy/run',
+      name: 'StrategyRun',
+      component: () => import('@/views/strategy/StrategyRunPage.vue'),
+    },
+    {
+      path: '/portfolio',
+      name: 'Portfolio',
+      component: () => import('@/views/portfolio/PortfolioPage.vue'),
+    },
+    {
+      path: '/watchlist',
+      name: 'Watchlist',
+      component: () => import('@/views/watchlist/WatchlistPage.vue'),
+    },
+  ],
 })
 
 export default router

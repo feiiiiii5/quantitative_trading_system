@@ -150,8 +150,8 @@ class SimulatedTrading:
         self._trade_lock = threading.Lock()
         self._order_ids: set[str] = set()
         self._audit_logger = self._init_audit_logger()
-        from core.risk_manager import RiskManager
-        self._risk_manager = RiskManager()
+        from core.risk_manager import EnhancedRiskManager
+        self._risk_manager = EnhancedRiskManager()
 
     @staticmethod
     def _init_audit_logger() -> logging.Logger:

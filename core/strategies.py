@@ -54,13 +54,58 @@ class StrategyResult:
 
 
 class BaseStrategy:
-    """策略基类"""
+    """策略基类 - 支持逐K线迭代和向量化两种模式"""
 
     def __init__(self):
         self.name = self.__class__.__name__
 
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
         raise NotImplementedError
+
+    def populate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+    def populate_entry_exit(self, df: pd.DataFrame) -> pd.DataFrame:
+        if "enter_signal" not in df.columns:
+            df["enter_signal"] = 0.0
+        if "exit_signal" not in df.columns:
+            df["exit_signal"] = 0.0
+        return df
+
+    def generate_signals_vectorized(self, df: pd.DataFrame) -> StrategyResult:
+        if df is None or len(df) < 2:
+            return StrategyResult(strategy_name=self.name, signals=[])
+
+        try:
+            df = self.populate_indicators(df.copy())
+            df = self.populate_entry_exit(df)
+        except Exception as e:
+            logger.debug(f"{self.name} vectorized signal generation failed: {e}")
+            return self.generate_signals(df)
+
+        signals = []
+        for i in range(len(df)):
+            enter = float(df["enter_signal"].iloc[i]) if "enter_signal" in df.columns else 0
+            exit_s = float(df["exit_signal"].iloc[i]) if "exit_signal" in df.columns else 0
+            if enter > 0.3:
+                strength = min(float(np.clip(enter, 0, 1)), 0.95)
+                signals.append(TradeSignal(
+                    signal_type=SignalType.BUY,
+                    strength=strength,
+                    reason=f"{self.name} 向量化买入",
+                    bar_index=i,
+                    position_pct=round(float(np.clip(strength * 0.55, 0.2, 0.65)), 2),
+                ))
+            elif exit_s > 0.3:
+                strength = min(float(np.clip(exit_s, 0, 1)), 0.95)
+                signals.append(TradeSignal(
+                    signal_type=SignalType.SELL,
+                    strength=strength,
+                    reason=f"{self.name} 向量化卖出",
+                    bar_index=i,
+                ))
+
+        return StrategyResult(strategy_name=self.name, signals=signals)
 
     def generate_score(self, df: pd.DataFrame) -> float:
         signal = self.generate_signal(df)
@@ -137,6 +182,22 @@ class DualMAStrategy(BaseStrategy):
         self._short = short_period
         self._long = long_period
 
+    def populate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        c = df["close"].astype(float)
+        df[f"ma_{self._short}"] = c.rolling(self._short).mean()
+        df[f"ma_{self._long}"] = c.rolling(self._long).mean()
+        return df
+
+    def populate_entry_exit(self, df: pd.DataFrame) -> pd.DataFrame:
+        ma_s = df[f"ma_{self._short}"]
+        ma_l = df[f"ma_{self._long}"]
+        golden_cross = (ma_s > ma_l) & (ma_s.shift(1) <= ma_l.shift(1))
+        death_cross = (ma_s < ma_l) & (ma_s.shift(1) >= ma_l.shift(1))
+        bullish = ma_s > ma_l
+        df["enter_signal"] = np.where(golden_cross, 0.7, np.where(bullish & ~golden_cross, 0.3, 0.0))
+        df["exit_signal"] = np.where(death_cross, 0.7, np.where(~bullish & ~death_cross, 0.3, 0.0))
+        return df
+
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
         if len(df) < self._long + 1:
             return TradeSignal(SignalType.HOLD)
@@ -154,6 +215,27 @@ class DualMAStrategy(BaseStrategy):
 
 class MACDStrategy(BaseStrategy):
     """MACD策略"""
+
+    def populate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        c = df["close"].astype(float)
+        ema12 = c.ewm(span=12, adjust=False).mean()
+        ema26 = c.ewm(span=26, adjust=False).mean()
+        df["dif"] = ema12 - ema26
+        df["dea"] = df["dif"].ewm(span=9, adjust=False).mean()
+        df["hist"] = (df["dif"] - df["dea"]) * 2
+        return df
+
+    def populate_entry_exit(self, df: pd.DataFrame) -> pd.DataFrame:
+        dif = df["dif"]
+        dea = df["dea"]
+        hist = df["hist"]
+        golden = (dif > dea) & (dif.shift(1) <= dea.shift(1))
+        death = (dif < dea) & (dif.shift(1) >= dea.shift(1))
+        hist_growing = (hist > 0) & (hist > hist.shift(1))
+        hist_shrinking = (hist < 0) & (hist < hist.shift(1))
+        df["enter_signal"] = np.where(golden, 0.8, np.where(hist_growing & ~golden, 0.4, 0.0))
+        df["exit_signal"] = np.where(death, 0.8, np.where(hist_shrinking & ~death, 0.4, 0.0))
+        return df
 
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
         if len(df) < 35:
@@ -177,6 +259,32 @@ class MACDStrategy(BaseStrategy):
 
 class KDJStrategy(BaseStrategy):
     """KDJ策略"""
+
+    def populate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        h = df["high"].astype(float)
+        l = df["low"].astype(float)
+        c = df["close"].astype(float)
+        n = 9
+        hh = h.rolling(n).max()
+        ll = l.rolling(n).min()
+        rsv = (c - ll) / (hh - ll) * 100
+        rsv = rsv.fillna(50)
+        df["k"] = rsv.ewm(alpha=1/3, adjust=False).mean()
+        df["d"] = df["k"].ewm(alpha=1/3, adjust=False).mean()
+        df["j"] = 3 * df["k"] - 2 * df["d"]
+        return df
+
+    def populate_entry_exit(self, df: pd.DataFrame) -> pd.DataFrame:
+        k = df["k"]
+        d = df["d"]
+        j = df["j"]
+        low_golden = (k > d) & (k.shift(1) <= d.shift(1)) & (k < 30)
+        high_death = (k < d) & (k.shift(1) >= d.shift(1)) & (k > 70)
+        j_oversold = j < 0
+        j_overbought = j > 100
+        df["enter_signal"] = np.where(low_golden, 0.8, np.where(j_oversold & ~low_golden, 0.5, 0.0))
+        df["exit_signal"] = np.where(high_death, 0.8, np.where(j_overbought & ~high_death, 0.5, 0.0))
+        return df
 
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
         if len(df) < 12:
@@ -206,6 +314,20 @@ class KDJStrategy(BaseStrategy):
 class BollingerBreakoutStrategy(BaseStrategy):
     """布林带突破策略"""
 
+    def populate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        c = df["close"].astype(float)
+        df["bb_mid"] = c.rolling(20).mean()
+        std = c.rolling(20).std()
+        df["bb_upper"] = df["bb_mid"] + 2 * std
+        df["bb_lower"] = df["bb_mid"] - 2 * std
+        return df
+
+    def populate_entry_exit(self, df: pd.DataFrame) -> pd.DataFrame:
+        c = df["close"].astype(float)
+        df["enter_signal"] = np.where(c <= df["bb_lower"], 0.7, 0.0)
+        df["exit_signal"] = np.where(c >= df["bb_upper"], 0.7, 0.0)
+        return df
+
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
         if len(df) < 22:
             return TradeSignal(SignalType.HOLD)
@@ -222,22 +344,45 @@ class BollingerBreakoutStrategy(BaseStrategy):
 
 
 class MomentumStrategy(BaseStrategy):
-    """动量策略"""
+    """动量策略 - 多周期动量+波动率缩放+加速度确认"""
 
-    def __init__(self, period: int = 20):
+    def __init__(self, period: int = 20, accel_period: int = 10):
         super().__init__()
-        self._period = period
+        self._period = int(period)
+        self._accel_period = int(accel_period)
 
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
-        if len(df) < self._period + 1:
+        if len(df) < self._period + self._accel_period + 1:
             return TradeSignal(SignalType.HOLD)
         c = df["close"].astype(float)
-        ret = (c.iloc[-1] / c.iloc[-self._period] - 1) * 100
-        if ret > 5:
-            return TradeSignal(SignalType.BUY, min(0.9, ret / 10), f"动量上涨{ret:.1f}%")
-        if ret < -5:
-            return TradeSignal(SignalType.SELL, min(0.9, abs(ret) / 10), f"动量下跌{ret:.1f}%")
+        v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
+
+        m1 = (c.iloc[-1] / c.iloc[-self._period] - 1) * 100
+        m2 = (c.iloc[-1] / c.iloc[-self._accel_period] - 1) * 100
+        accel = m1 - m2 if self._accel_period < self._period else 0
+
+        realized_vol = c.pct_change().rolling(20).std().replace(0, np.nan).iloc[-1]
+        target_vol = 0.02
+        vol_scale = min(2.0, max(0.3, target_vol / max(_safe_float(realized_vol, 0.02), 0.005)))
+
+        vol_ma = _safe_float(v.rolling(20).mean().iloc[-1])
+        vol_ratio = _safe_float(v.iloc[-1]) / max(vol_ma, 1) if vol_ma > 0 else 1.0
+
+        if m1 > 5 and accel > 0 and vol_ratio > 1.0:
+            strength = min(0.95, (m1 / 10) * vol_scale)
+            return _signal(SignalType.BUY, strength, f"动量加速上涨{m1:.1f}%(加速度={accel:.1f}%)", 0.45 * vol_scale)
+        if m1 > 5 and accel < -2:
+            return _signal(SignalType.BUY, min(0.6, m1 / 15), f"动量上涨{m1:.1f}%但减速，注意风险")
+        if m1 < -5 and accel < 0 and vol_ratio > 1.0:
+            strength = min(0.95, (abs(m1) / 10) * vol_scale)
+            return _signal(SignalType.SELL, strength, f"动量加速下跌{m1:.1f}%(加速度={accel:.1f}%)")
+        if m1 < -5 and accel > 2:
+            return _signal(SignalType.SELL, min(0.6, abs(m1) / 15), f"动量下跌{m1:.1f}%但减速，关注反转")
         return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"period": {"min": 10, "max": 30, "step": 5}, "accel_period": {"min": 5, "max": 15, "step": 5}}
 
 
 class MultiFactorConfluenceStrategy(BaseStrategy):
@@ -327,43 +472,140 @@ class AdaptiveTrendFollowingStrategy(BaseStrategy):
 
 
 class MeanReversionProStrategy(BaseStrategy):
-    """均值回归增强策略"""
+    """均值回归增强策略 - 自适应Z-Score + 导数确认"""
+
+    min_bars = 30
+
+    def __init__(self, window: int = 20, entry_z: float = 2.0, exit_z: float = 0.5):
+        super().__init__()
+        self._window = int(window)
+        self._entry_z = float(entry_z)
+        self._exit_z = float(exit_z)
 
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
-        if len(df) < 30:
-            return TradeSignal(SignalType.HOLD)
-        c = df["close"].astype(float)
-        ma = c.rolling(20).mean()
-        std = c.rolling(20).std()
-        z_score = (c - ma) / std.replace(0, np.nan)
-        z = z_score.iloc[-1]
-        if np.isnan(z):
-            return TradeSignal(SignalType.HOLD)
-        if z < -2.0:
-            return TradeSignal(SignalType.BUY, min(0.9, abs(z) / 3), f"Z-score超卖({z:.2f})")
-        if z > 2.0:
-            return TradeSignal(SignalType.SELL, min(0.9, z / 3), f"Z-score超买({z:.2f})")
-        return TradeSignal(SignalType.HOLD)
-
-
-class VolatilitySqueezeBreakoutStrategy(BaseStrategy):
-    """波动率收缩突破策略"""
-
-    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
-        if len(df) < 25:
+        if len(df) < self._window + 5:
             return TradeSignal(SignalType.HOLD)
         c = df["close"].astype(float)
         h = df["high"].astype(float)
         l = df["low"].astype(float)
-        tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(14).mean()
-        bb_width = c.rolling(20).std() * 4 / c.rolling(20).mean().replace(0, np.nan)
-        squeeze = bb_width.iloc[-1] < bb_width.rolling(20).mean().iloc[-1] * 0.6
-        if squeeze and c.iloc[-1] > c.rolling(20).mean().iloc[-1]:
-            return TradeSignal(SignalType.BUY, 0.7, "波动率收缩向上突破")
-        if squeeze and c.iloc[-1] < c.rolling(20).mean().iloc[-1]:
-            return TradeSignal(SignalType.SELL, 0.7, "波动率收缩向下突破")
+        v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
+
+        realized_vol = c.pct_change().rolling(20).std().replace(0, np.nan)
+        long_run_vol = c.pct_change().rolling(60).std().replace(0, np.nan)
+        vol_ratio = (realized_vol / long_run_vol).fillna(1.0).iloc[-1]
+        adaptive_window = max(10, int(self._window * vol_ratio))
+
+        ma = c.rolling(adaptive_window).mean()
+        std = c.rolling(adaptive_window).std()
+        z_score = (c - ma) / std.replace(0, np.nan)
+        z = _safe_float(z_score.iloc[-1])
+        z_prev = _safe_float(z_score.iloc[-2]) if len(z_score) > 1 else 0
+        dz = z - z_prev
+
+        adaptive_threshold = self._entry_z + 0.5 * max(0, vol_ratio - 1)
+
+        rsi = _safe_float(_rsi_series(c, 14).iloc[-1], 50)
+        vol_ma = _safe_float(v.rolling(20).mean().iloc[-1])
+        vol_confirm = vol_ma > 0 and _safe_float(v.iloc[-1]) < vol_ma * 1.5
+
+        bb_width = _safe_float(std.iloc[-1]) * 2 / max(_safe_float(ma.iloc[-1]), 1e-9)
+        bb_width_ma = _safe_float((std * 2 / ma.replace(0, np.nan)).rolling(20).mean().iloc[-1])
+        is_squeeze = bb_width_ma > 0 and bb_width < bb_width_ma * 0.7
+
+        if z < -adaptive_threshold and dz > 0 and rsi < 40:
+            strength = min(0.95, abs(z) / 3)
+            if vol_confirm:
+                strength = min(0.95, strength + 0.1)
+            if is_squeeze:
+                strength = min(0.95, strength + 0.1)
+            return _signal(SignalType.BUY, strength, f"Z-score超卖回升({z:.2f},dz={dz:.2f})", 0.45)
+
+        if z > adaptive_threshold and dz < 0 and rsi > 60:
+            strength = min(0.95, z / 3)
+            if vol_confirm:
+                strength = min(0.95, strength + 0.1)
+            return _signal(SignalType.SELL, strength, f"Z-score超买回落({z:.2f},dz={dz:.2f})")
+
+        if z < -adaptive_threshold and dz <= 0:
+            return TradeSignal(SignalType.HOLD, 0.3, f"Z-score超卖但仍在下跌({z:.2f})，等待确认")
+
+        if z > adaptive_threshold and dz >= 0:
+            return TradeSignal(SignalType.HOLD, 0.3, f"Z-score超买但仍在上涨({z:.2f})，等待确认")
+
         return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"window": {"min": 10, "max": 30, "step": 5}, "entry_z": {"min": 1.5, "max": 3.0, "step": 0.25}}
+
+
+class VolatilitySqueezeBreakoutStrategy(BaseStrategy):
+    """TTM Squeeze波动率收缩突破策略 - BB/KC对比+动量方向确认"""
+
+    min_bars = 25
+
+    def __init__(self, bb_period: int = 20, bb_mult: float = 2.0, kc_period: int = 20, kc_mult: float = 1.5, atr_period: int = 14):
+        super().__init__()
+        self._bb_period = int(bb_period)
+        self._bb_mult = float(bb_mult)
+        self._kc_period = int(kc_period)
+        self._kc_mult = float(kc_mult)
+        self._atr_period = int(atr_period)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if len(df) < max(self._bb_period, self._kc_period) + 10:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        h = df["high"].astype(float)
+        l = df["low"].astype(float)
+
+        bb_mid = c.rolling(self._bb_period).mean()
+        bb_std = c.rolling(self._bb_period).std()
+        bb_upper = bb_mid + self._bb_mult * bb_std
+        bb_lower = bb_mid - self._bb_mult * bb_std
+        bb_width = (bb_upper - bb_lower) / bb_mid.replace(0, np.nan)
+
+        tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
+        atr = tr.rolling(self._atr_period).mean()
+        kc_mid = c.ewm(span=self._kc_period, adjust=False).mean()
+        kc_upper = kc_mid + self._kc_mult * atr
+        kc_lower = kc_mid - self._kc_mult * atr
+        kc_width = (kc_upper - kc_lower) / kc_mid.replace(0, np.nan)
+
+        squeeze_on = bb_width.iloc[-1] < kc_width.iloc[-1]
+        prev_squeeze_on = bb_width.iloc[-2] < kc_width.iloc[-2] if len(bb_width) > 1 else False
+        squeeze_fired = prev_squeeze_on and not squeeze_on
+
+        n_lr = min(20, len(c) - 1)
+        if n_lr >= 5:
+            y = c.iloc[-n_lr:].values
+            x = np.arange(n_lr)
+            slope = np.polyfit(x, y, 1)[0]
+            momentum = slope / max(np.mean(y), 1e-9)
+        else:
+            momentum = 0.0
+
+        squeeze_score = _safe_float((kc_width.iloc[-1] - bb_width.iloc[-1]) / max(_safe_float(kc_width.iloc[-1]), 1e-9))
+
+        if squeeze_fired and momentum > 0:
+            strength = min(0.95, 0.6 + abs(momentum) * 10 + squeeze_score * 0.3)
+            return _signal(SignalType.BUY, strength, f"TTM Squeeze释放+动量向上(mom={momentum:.4f})", 0.50)
+
+        if squeeze_fired and momentum < 0:
+            strength = min(0.95, 0.6 + abs(momentum) * 10 + squeeze_score * 0.3)
+            return _signal(SignalType.SELL, strength, f"TTM Squeeze释放+动量向下(mom={momentum:.4f})")
+
+        if squeeze_on and momentum > 0.003:
+            return _signal(SignalType.BUY, 0.45, f"波动率收缩中+动量蓄势(mom={momentum:.4f})", 0.30)
+
+        if squeeze_on and momentum < -0.003:
+            return _signal(SignalType.SELL, 0.45, f"波动率收缩中+动量走弱(mom={momentum:.4f})")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"bb_period": {"min": 15, "max": 25, "step": 5}, "kc_mult": {"min": 1.0, "max": 2.0, "step": 0.25}}
 
 
 class RSIMeanReversionStrategy(BaseStrategy):
@@ -438,6 +680,14 @@ class SuperTrendStrategy(BaseStrategy):
             return TradeSignal(SignalType.BUY, 0.85, "SuperTrend翻多")
         if direction.iloc[-1] == -1 and direction.iloc[-2] == 1:
             return TradeSignal(SignalType.SELL, 0.85, "SuperTrend翻空")
+        if direction.iloc[-1] == 1:
+            dist = (c.iloc[-1] - supertrend.iloc[-1]) / supertrend.iloc[-1] if supertrend.iloc[-1] > 0 else 0
+            strength = min(0.7, 0.3 + abs(dist) * 5)
+            return TradeSignal(SignalType.BUY, strength, "SuperTrend看多")
+        if direction.iloc[-1] == -1:
+            dist = (supertrend.iloc[-1] - c.iloc[-1]) / supertrend.iloc[-1] if supertrend.iloc[-1] > 0 else 0
+            strength = min(0.7, 0.3 + abs(dist) * 5)
+            return TradeSignal(SignalType.SELL, strength, "SuperTrend看空")
         return TradeSignal(SignalType.HOLD)
 
 
@@ -1381,6 +1631,317 @@ class VolumeWeightedMACDStrategy(BaseStrategy):
         return {"vol_ma_window": {"min": 10, "max": 30, "step": 5}}
 
 
+class OrnsteinUhlenbeckStrategy(BaseStrategy):
+    """OU过程均值回归策略 - 最大似然估计回归参数+半衰期过滤"""
+
+    min_bars = 60
+
+    def __init__(self, window: int = 60, min_half_life: float = 5, max_half_life: float = 30, entry_sigma: float = 2.0):
+        super().__init__()
+        self._window = int(window)
+        self._min_hl = float(min_half_life)
+        self._max_hl = float(max_half_life)
+        self._entry_sigma = float(entry_sigma)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._window + 5:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        prices = c.iloc[-self._window:].values
+        if len(prices) < 30:
+            return TradeSignal(SignalType.HOLD)
+
+        X_t = prices[:-1]
+        X_t1 = prices[1:]
+        n = len(X_t)
+        if n < 10:
+            return TradeSignal(SignalType.HOLD)
+
+        X_mean = np.mean(X_t)
+        denom = np.sum((X_t - X_mean) ** 2)
+        if denom < 1e-12:
+            return TradeSignal(SignalType.HOLD)
+        beta_hat = np.sum((X_t - X_mean) * (X_t1 - X_mean)) / denom
+        alpha_hat = np.mean(X_t1) - beta_hat * np.mean(X_t)
+
+        residuals = X_t1 - (alpha_hat + beta_hat * X_t)
+        sigma_eps = np.sqrt(np.mean(residuals ** 2))
+
+        dt = 1.0
+        if abs(beta_hat) >= 1.0 or beta_hat <= 0:
+            return TradeSignal(SignalType.HOLD)
+
+        kappa = -np.log(beta_hat) / dt
+        if kappa <= 0:
+            return TradeSignal(SignalType.HOLD)
+
+        mu = alpha_hat / (1 - beta_hat)
+        half_life = np.log(2) / kappa
+
+        if half_life < self._min_hl or half_life > self._max_hl:
+            return TradeSignal(SignalType.HOLD)
+
+        sigma_eq = sigma_eps / np.sqrt(2 * kappa * dt) if kappa > 0 else sigma_eps
+        if sigma_eq <= 0:
+            return TradeSignal(SignalType.HOLD)
+
+        current_price = _safe_float(c.iloc[-1])
+        z = (current_price - mu) / sigma_eq
+
+        prev_price = _safe_float(c.iloc[-2])
+        prev_z = (prev_price - mu) / sigma_eq
+        dz = z - prev_z
+
+        if z < -self._entry_sigma and dz > 0:
+            strength = min(0.95, abs(z) / 4)
+            return _signal(SignalType.BUY, strength, f"OU超卖回升(z={z:.2f},HL={half_life:.1f}d)", 0.45)
+
+        if z > self._entry_sigma and dz < 0:
+            strength = min(0.95, z / 4)
+            return _signal(SignalType.SELL, strength, f"OU超买回落(z={z:.2f},HL={half_life:.1f}d)")
+
+        if abs(z) > self._entry_sigma * 2:
+            if z < 0:
+                return TradeSignal(SignalType.HOLD, 0.3, f"OU深度超卖(z={z:.2f})但未回升，等待确认")
+            else:
+                return TradeSignal(SignalType.HOLD, 0.3, f"OU深度超买(z={z:.2f})但未回落，等待确认")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"window": {"min": 40, "max": 80, "step": 10}, "entry_sigma": {"min": 1.5, "max": 3.0, "step": 0.25}}
+
+
+class KaufmanAdaptiveStrategy(BaseStrategy):
+    """Kaufman自适应移动平均策略 - 效率比率+KAMA+波动率过滤"""
+
+    min_bars = 35
+
+    def __init__(self, er_period: int = 10, fast_sc: float = 2.0, slow_sc: float = 30.0, er_threshold: float = 0.3):
+        super().__init__()
+        self._er_period = int(er_period)
+        self._fast_sc = float(fast_sc)
+        self._slow_sc = float(slow_sc)
+        self._er_threshold = float(er_threshold)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._er_period + 10:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float).reset_index(drop=True)
+        n = len(c)
+        if n < self._er_period + 5:
+            return TradeSignal(SignalType.HOLD)
+
+        direction = abs(c.iloc[-1] - c.iloc[-self._er_period])
+        volatility = c.diff().abs().rolling(self._er_period).sum()
+        last_vol = _safe_float(volatility.iloc[-1])
+        if last_vol <= 0:
+            return TradeSignal(SignalType.HOLD)
+        er = direction / last_vol
+
+        fast_sc_val = 2.0 / (self._fast_sc + 1.0)
+        slow_sc_val = 2.0 / (self._slow_sc + 1.0)
+        sc = (er * (fast_sc_val - slow_sc_val) + slow_sc_val) ** 2
+
+        kama = pd.Series(0.0, index=c.index)
+        kama.iloc[self._er_period] = _safe_float(c.iloc[self._er_period])
+        for i in range(self._er_period + 1, n):
+            prev_kama = _safe_float(kama.iloc[i - 1])
+            cur_sc = sc if isinstance(sc, float) else _safe_float(sc.iloc[i]) if i < len(sc) else slow_sc_val ** 2
+            kama.iloc[i] = prev_kama + cur_sc * (_safe_float(c.iloc[i]) - prev_kama)
+
+        last_price = _safe_float(c.iloc[-1])
+        last_kama = _safe_float(kama.iloc[-1])
+        prev_price = _safe_float(c.iloc[-2])
+        prev_kama = _safe_float(kama.iloc[-2])
+
+        if er > self._er_threshold:
+            if prev_price <= prev_kama and last_price > last_kama:
+                strength = min(0.9, 0.5 + er * 0.4)
+                return _signal(SignalType.BUY, strength, f"KAMA金叉(ER={er:.2f}，趋势有效)", 0.45)
+            if prev_price >= prev_kama and last_price < last_kama:
+                strength = min(0.9, 0.5 + er * 0.4)
+                return _signal(SignalType.SELL, strength, f"KAMA死叉(ER={er:.2f}，趋势有效)")
+            if last_price > last_kama and er > 0.5:
+                return _signal(SignalType.BUY, 0.4, f"价格在KAMA上方且趋势强(ER={er:.2f})", 0.30)
+            if last_price < last_kama and er > 0.5:
+                return _signal(SignalType.SELL, 0.4, f"价格在KAMA下方且趋势强(ER={er:.2f})")
+        else:
+            if last_price < last_kama * 0.97:
+                return _signal(SignalType.BUY, 0.5, f"震荡市价格偏离KAMA(ER={er:.2f})", 0.35)
+            if last_price > last_kama * 1.03:
+                return _signal(SignalType.SELL, 0.5, f"震荡市价格偏离KAMA(ER={er:.2f})")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"er_period": {"min": 5, "max": 15, "step": 2}, "er_threshold": {"min": 0.2, "max": 0.5, "step": 0.05}}
+
+
+class GARCHVolatilityStrategy(BaseStrategy):
+    """GARCH波动率策略 - 基于GARCH(1,1)波动率预测进行仓位管理"""
+
+    min_bars = 60
+
+    def __init__(self, vol_lookback: int = 60, vol_surge_threshold: float = 1.5, vol_drop_threshold: float = 0.7):
+        super().__init__()
+        self._lookback = int(vol_lookback)
+        self._surge_threshold = float(vol_surge_threshold)
+        self._drop_threshold = float(vol_drop_threshold)
+
+    def _fit_garch(self, returns: np.ndarray) -> tuple[float, float, float]:
+        r = np.asarray(returns, dtype=float)
+        r = r[np.isfinite(r)]
+        if len(r) < 30:
+            return 0.0, 0.0, 0.0
+
+        omega = np.var(r) * 0.1
+        alpha = 0.1
+        beta = 0.85
+
+        n = len(r)
+        sigma2 = np.zeros(n)
+        sigma2[0] = omega / (1 - alpha - beta) if (1 - alpha - beta) > 0 else np.var(r)
+
+        for _ in range(5):
+            for t in range(1, n):
+                sigma2[t] = omega + alpha * r[t - 1] ** 2 + beta * sigma2[t - 1]
+            num_omega = np.mean(sigma2[1:] - alpha * r[:-1] ** 2 - beta * sigma2[:-1])
+            omega = max(num_omega, 1e-10)
+            num_alpha = np.mean(r[:-1] ** 2 * (sigma2[1:] - omega - beta * sigma2[:-1])) / max(np.mean(r[:-1] ** 2 * sigma2[:-1]), 1e-12)
+            alpha = max(0.01, min(0.3, num_alpha))
+            num_beta = np.mean(sigma2[:-1] * (sigma2[1:] - omega - alpha * r[:-1] ** 2)) / max(np.mean(sigma2[:-1] ** 2), 1e-12)
+            beta = max(0.5, min(0.95, num_beta))
+            if alpha + beta >= 1.0:
+                beta = 0.99 - alpha
+
+        current_vol = np.sqrt(sigma2[-1])
+        forecast_5d = np.sqrt(omega / (1 - alpha - beta) + (alpha + beta) ** 4 * (sigma2[-1] - omega / (1 - alpha - beta))) if (1 - alpha - beta) > 0 else current_vol
+
+        return current_vol, forecast_5d, omega / (1 - alpha - beta) if (1 - alpha - beta) > 0 else sigma2[-1]
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._lookback:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        returns = c.pct_change().dropna().tail(self._lookback).values
+        if len(returns) < 30:
+            return TradeSignal(SignalType.HOLD)
+
+        current_vol, forecast_vol, long_run_vol = self._fit_garch(np.clip(returns, -0.12, 0.12))
+        if current_vol <= 0 or forecast_vol <= 0:
+            return TradeSignal(SignalType.HOLD)
+
+        vol_ratio = forecast_vol / current_vol
+        trend = _safe_float(c.iloc[-1] / c.iloc[-20] - 1) if len(c) > 20 else 0
+
+        if vol_ratio > self._surge_threshold:
+            if trend > 0:
+                return _signal(SignalType.BUY, 0.6, f"波动率飙升+上涨趋势(vol_ratio={vol_ratio:.2f})", 0.30)
+            else:
+                return _signal(SignalType.SELL, 0.8, f"波动率飙升+下跌趋势(vol_ratio={vol_ratio:.2f})，减仓避险")
+
+        if vol_ratio < self._drop_threshold:
+            if trend > 0:
+                return _signal(SignalType.BUY, 0.75, f"波动率收缩+上涨趋势(vol_ratio={vol_ratio:.2f})", 0.50)
+            elif trend < 0:
+                return _signal(SignalType.SELL, 0.5, f"波动率收缩+下跌趋势(vol_ratio={vol_ratio:.2f})")
+            else:
+                return _signal(SignalType.BUY, 0.4, f"低波动盘整(vol_ratio={vol_ratio:.2f})，布局机会", 0.30)
+
+        if current_vol < long_run_vol * 0.7 and trend > 0:
+            return _signal(SignalType.BUY, 0.5, f"波动率低于长期均值+上涨趋势", 0.35)
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"vol_lookback": {"min": 40, "max": 80, "step": 10}, "vol_surge_threshold": {"min": 1.2, "max": 2.0, "step": 0.1}}
+
+
+class MultiTimeframeMomentumStrategy(BaseStrategy):
+    """多周期动量融合策略 - 融合短/中/长期动量信号+趋势一致性"""
+
+    min_bars = 60
+
+    def __init__(self, short_period: int = 5, mid_period: int = 20, long_period: int = 60):
+        super().__init__()
+        self._short = int(short_period)
+        self._mid = int(mid_period)
+        self._long = int(long_period)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._long + 5:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
+
+        ret_short = _safe_float(c.iloc[-1] / c.iloc[-self._short] - 1)
+        ret_mid = _safe_float(c.iloc[-1] / c.iloc[-self._mid] - 1)
+        ret_long = _safe_float(c.iloc[-1] / c.iloc[-self._long] - 1)
+
+        score = 0.0
+        reasons = []
+
+        if ret_short > 0:
+            score += 0.2
+            reasons.append(f"短期动量+{ret_short * 100:.1f}%")
+        else:
+            score -= 0.2
+            reasons.append(f"短期动量{ret_short * 100:.1f}%")
+
+        if ret_mid > 0:
+            score += 0.3
+            reasons.append(f"中期动量+{ret_mid * 100:.1f}%")
+        else:
+            score -= 0.3
+            reasons.append(f"中期动量{ret_mid * 100:.1f}%")
+
+        if ret_long > 0:
+            score += 0.3
+            reasons.append(f"长期动量+{ret_long * 100:.1f}%")
+        else:
+            score -= 0.3
+            reasons.append(f"长期动量{ret_long * 100:.1f}%")
+
+        if ret_short > 0 and ret_mid > 0 and ret_long > 0:
+            score += 0.2
+            reasons.append("三周期共振")
+        elif ret_short < 0 and ret_mid < 0 and ret_long < 0:
+            score -= 0.2
+            reasons.append("三周期共振下跌")
+
+        ma5 = c.rolling(5).mean().iloc[-1]
+        ma20 = c.rolling(20).mean().iloc[-1]
+        ma60 = c.rolling(60).mean().iloc[-1]
+        if _safe_float(ma5) > _safe_float(ma20) > _safe_float(ma60):
+            score += 0.15
+            reasons.append("均线多头排列")
+        elif _safe_float(ma5) < _safe_float(ma20) < _safe_float(ma60):
+            score -= 0.15
+            reasons.append("均线空头排列")
+
+        vol_ma = _safe_float(v.rolling(20).mean().iloc[-1])
+        vol_ratio = _safe_float(v.iloc[-1]) / max(vol_ma, 1) if vol_ma > 0 else 1.0
+        if vol_ratio > 1.5:
+            score *= 1.2
+
+        if score >= 0.6:
+            strength = min(0.95, score)
+            return _signal(SignalType.BUY, strength, "+".join(reasons[:3]), 0.45)
+        if score <= -0.6:
+            strength = min(0.95, abs(score))
+            return _signal(SignalType.SELL, strength, "+".join(reasons[:3]))
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"short_period": {"min": 3, "max": 10, "step": 1}, "mid_period": {"min": 15, "max": 30, "step": 5}}
+
+
 class CompositeStrategy:
     """组合策略"""
 
@@ -1407,6 +1968,10 @@ class CompositeStrategy:
             DonchianChannelStrategy(),
             ChandeKrollStopStrategy(),
             VolumeWeightedMACDStrategy(),
+            OrnsteinUhlenbeckStrategy(),
+            KaufmanAdaptiveStrategy(),
+            GARCHVolatilityStrategy(),
+            MultiTimeframeMomentumStrategy(),
         ]
 
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
@@ -1505,4 +2070,16 @@ STRATEGY_REGISTRY = {
     "vw_macd": VolumeWeightedMACDStrategy,
     "volume_weighted_macd": VolumeWeightedMACDStrategy,
     "VolumeWeightedMACDStrategy": VolumeWeightedMACDStrategy,
+    "ou_mean_reversion": OrnsteinUhlenbeckStrategy,
+    "ornstein_uhlenbeck": OrnsteinUhlenbeckStrategy,
+    "OrnsteinUhlenbeckStrategy": OrnsteinUhlenbeckStrategy,
+    "kaufman": KaufmanAdaptiveStrategy,
+    "kaufman_adaptive": KaufmanAdaptiveStrategy,
+    "KaufmanAdaptiveStrategy": KaufmanAdaptiveStrategy,
+    "garch_vol": GARCHVolatilityStrategy,
+    "garch_volatility": GARCHVolatilityStrategy,
+    "GARCHVolatilityStrategy": GARCHVolatilityStrategy,
+    "mtf_momentum": MultiTimeframeMomentumStrategy,
+    "multi_timeframe_momentum": MultiTimeframeMomentumStrategy,
+    "MultiTimeframeMomentumStrategy": MultiTimeframeMomentumStrategy,
 }

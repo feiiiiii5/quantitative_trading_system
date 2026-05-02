@@ -12,6 +12,7 @@ from functools import wraps
 from typing import Optional, Set
 
 from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field, field_validator
 import numpy as np
 import pandas as pd
 
@@ -23,6 +24,45 @@ from core.market_hours import MarketHours
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class BuyOrderRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10, pattern=r'^[0-9a-zA-Z]{1,10}$')
+    price: float = Field(..., gt=0, description="委托价格")
+    shares: int = Field(..., gt=0, le=1000000, description="买入数量")
+    name: str = Field("", max_length=20)
+    market: str = Field("A", pattern=r'^[AHU]$')
+
+    @field_validator('shares')
+    @classmethod
+    def validate_shares(cls, v):
+        if v % 100 != 0:
+            raise ValueError('A股买入数量必须为100的整数倍')
+        return v
+
+
+class SellOrderRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10, pattern=r'^[0-9a-zA-Z]{1,10}$')
+    price: float = Field(..., gt=0, description="委托价格")
+    shares: int = Field(..., gt=0, le=1000000, description="卖出数量")
+
+
+class BacktestRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    strategy_type: str = Field("adaptive", max_length=50)
+    start_date: str = Field("2024-01-01", pattern=r'^\d{4}-\d{2}-\d{2}$')
+    end_date: str = Field("2025-12-31", pattern=r'^\d{4}-\d{2}-\d{2}$')
+    initial_capital: float = Field(1000000, gt=0, le=100000000)
+
+
+class WatchlistAddRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10, pattern=r'^[0-9a-zA-Z]{1,10}$')
+
+
+class PriceAlertRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    target_price: float = Field(..., gt=0)
+    direction: str = Field("above", pattern=r'^(above|below)$')
 
 
 class ConnectionManager:
@@ -58,7 +98,8 @@ class ConnectionManager:
 
 
 _manager = ConnectionManager()
-_api_response_cache = ThreadSafeLRU(maxsize=300, ttl=30)
+
+_api_response_cache = ThreadSafeLRU(maxsize=600, ttl=30)
 
 
 def _is_trading_hours() -> bool:
@@ -297,10 +338,33 @@ async def get_correlation_analysis(
         fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
         bench_df = await fetcher.get_history(benchmark, _period_to_history(period), "daily", "qfq")
-        if df.empty or bench_df.empty:
+        if bench_df is None or bench_df.empty:
+            try:
+                import baostock as bs
+                bench_code = benchmark.replace("sh", "sh.").replace("sz", "sz.")
+                if not bench_code.startswith("sh.") and not bench_code.startswith("sz."):
+                    bench_code = f"sh.{benchmark.lstrip('shsz')}"
+                lg = bs.login()
+                try:
+                    rs = bs.query_history_k_data_plus(bench_code, "date,close", start_date="2023-01-01", end_date=datetime.now().strftime("%Y-%m-%d"), frequency="d")
+                    rows = []
+                    while rs.next():
+                        rows.append(rs.get_row_data())
+                    if rows:
+                        bench_df = pd.DataFrame(rows, columns=["date", "close"])
+                        bench_df["close"] = pd.to_numeric(bench_df["close"], errors="coerce")
+                        bench_df["date"] = pd.to_datetime(bench_df["date"], errors="coerce")
+                        bench_df = bench_df.dropna(subset=["date", "close"])
+                finally:
+                    bs.logout()
+            except Exception:
+                pass
+        if df is None or df.empty or bench_df is None or bench_df.empty:
             return _json_response(False, error="数据不足")
         left = df[["date", "close"]].rename(columns={"close": "asset_close"})
         right = bench_df[["date", "close"]].rename(columns={"close": "benchmark_close"})
+        left["date"] = pd.to_datetime(left["date"], errors="coerce")
+        right["date"] = pd.to_datetime(right["date"], errors="coerce")
         merged = left.merge(right, on="date", how="inner").tail(260)
         if len(merged) < 30:
             return _json_response(False, error="重叠数据不足")
@@ -603,7 +667,34 @@ async def get_weekly_report(request: Request):
                     "top_losers": top_losers[:5],
                 }
         except Exception:
-            heatmap_data = {"top_gainers": [], "top_losers": []}
+            pass
+
+        if not heatmap_data:
+            try:
+                url = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
+                import aiohttp, re
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        text = await resp.text()
+                match = re.search(r'=\s*({.*})', text)
+                if match:
+                    data = json.loads(match.group(1))
+                    top_gainers = []
+                    top_losers = []
+                    for key, val in data.items():
+                        parts = val.split(',')
+                        if len(parts) >= 6:
+                            name = parts[1]
+                            pct = float(parts[5]) if parts[5] else 0
+                            if pct > 0:
+                                top_gainers.append({"name": name, "change_pct": round(pct, 2)})
+                            else:
+                                top_losers.append({"name": name, "change_pct": round(pct, 2)})
+                    top_gainers.sort(key=lambda x: x["change_pct"], reverse=True)
+                    top_losers.sort(key=lambda x: x["change_pct"])
+                    heatmap_data = {"top_gainers": top_gainers[:5], "top_losers": top_losers[:5]}
+            except Exception:
+                heatmap_data = {"top_gainers": [], "top_losers": []}
 
         # 北向资金
         northbound = {}
@@ -720,10 +811,10 @@ async def get_market_anomaly(request: Request):
 @router.get("/market/heatmap")
 @cache_response(30)
 async def get_market_heatmap(request: Request, market: str = Query("A")):
+    items = []
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.stock_board_industry_name_em)
-        items = []
         if df is not None and not df.empty:
             for _, row in df.iterrows():
                 name = str(row.get("板块名称", row.get("名称", "")))
@@ -737,16 +828,43 @@ async def get_market_heatmap(request: Request, market: str = Query("A")):
                     "value": max(amount, 1),
                     "leader": lead,
                 })
-        return _json_response(True, data={"market": market, "items": items, "timestamp": time.time()})
     except Exception as e:
-        logger.debug(f"Market heatmap fallback: {e}")
-        fallback = [
+        logger.debug(f"Market heatmap akshare failed: {e}")
+
+    if not items:
+        try:
+            url = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    text = await resp.text()
+            import re
+            match = re.search(r'=\s*({.*})', text)
+            if match:
+                data = json.loads(match.group(1))
+                for key, val in data.items():
+                    parts = val.split(',')
+                    if len(parts) >= 6:
+                        name = parts[1]
+                        change_pct = float(parts[5]) if parts[5] else 0
+                        amount = float(parts[7]) if len(parts) > 7 and parts[7] else 0
+                        items.append({
+                            "name": name,
+                            "change_pct": round(change_pct, 2),
+                            "amount": amount,
+                            "value": max(amount, 1),
+                            "leader": parts[11] if len(parts) > 11 else "",
+                        })
+        except Exception as e2:
+            logger.debug(f"Market heatmap sina fallback failed: {e2}")
+
+    if not items:
+        items = [
             {"name": "银行", "change_pct": 0, "amount": 1, "value": 1, "leader": ""},
             {"name": "科技", "change_pct": 0, "amount": 1, "value": 1, "leader": ""},
-            {"name": "医药", "change_pct": 0, "amount": 1, "value": 1, "leader": ""},
-            {"name": "消费", "change_pct": 0, "amount": 1, "value": 1, "leader": ""},
         ]
-        return _json_response(True, data={"market": market, "items": fallback, "timestamp": time.time()})
+
+    return _json_response(True, data={"market": market, "items": items, "timestamp": time.time()})
 
 
 @router.get("/market/northbound/detail")
@@ -835,7 +953,8 @@ async def get_factor_analysis(request: Request, symbol: str, period: str = Query
 async def run_advanced_backtest(
     request: Request,
     symbol: str = Query(...),
-    strategy_name: str = Query("adaptive"),
+    strategy_type: str = Query("adaptive"),
+    strategy_name: str = Query(None),
     start_date: str = Query("2022-01-01"),
     end_date: str = Query("2024-12-31"),
     initial_capital: float = Query(1000000),
@@ -848,12 +967,13 @@ async def run_advanced_backtest(
 ):
     try:
         from core.backtest import BacktestEngine, BacktestResult, run_backtest as run_bt
+        effective_strategy = strategy_name or strategy_type
         fetcher: SmartDataFetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         result = await asyncio.to_thread(
             run_bt,
             symbol,
-            strategy_name,
+            effective_strategy,
             start_date,
             end_date,
             initial_capital * max(leverage, 0.1),
@@ -864,17 +984,18 @@ async def run_advanced_backtest(
             return _json_response(False, error=result["error"])
         result["enable_short"] = enable_short
         result["leverage"] = leverage
-        if monte_carlo:
+        if monte_carlo or sensitivity:
             engine = BacktestEngine(initial_capital=initial_capital)
+        if monte_carlo:
             bt_result = BacktestResult(
-                strategy_name=result.get("strategy_name", strategy_name),
+                strategy_name=result.get("strategy_name", effective_strategy),
                 trades=result.get("trades", []),
                 sharpe_ratio=result.get("sharpe_ratio", 0),
             )
             result["monte_carlo"] = engine.monte_carlo_analysis(bt_result, n_simulations=n_simulations)
-        if sensitivity and strategy_name != "adaptive":
+        if sensitivity and effective_strategy != "adaptive":
             from core.strategies import STRATEGY_REGISTRY
-            strategy_cls = STRATEGY_REGISTRY.get(strategy_name)
+            strategy_cls = STRATEGY_REGISTRY.get(effective_strategy)
             if strategy_cls:
                 fetcher: SmartDataFetcher = request.app.state.fetcher
                 df = await fetcher.get_history(symbol, "all", "daily", "qfq")
@@ -886,14 +1007,14 @@ async def run_advanced_backtest(
         if walk_forward:
             from core.backtest import run_walk_forward
             wf_result = await asyncio.to_thread(
-                run_walk_forward, symbol, strategy_name, start_date, end_date,
+                run_walk_forward, symbol, effective_strategy, start_date, end_date,
                 252, 63, initial_capital, None,
             )
             if "error" not in wf_result:
                 result["walk_forward"] = wf_result
         db = getattr(request.app.state, "db", None)
         if db and hasattr(db, "save_backtest_result"):
-            result["id"] = db.save_backtest_result(strategy_name, symbol, start_date, end_date, {}, result)
+            result["id"] = db.save_backtest_result(effective_strategy, symbol, start_date, end_date, {}, result)
         return _json_response(True, data=result)
     except Exception as e:
         logger.error(f"Advanced backtest error: {e}", exc_info=True)
@@ -1573,3 +1694,237 @@ async def push_market_event(event_type: str, data: dict):
             disconnected.append(ws)
     for ws in disconnected:
         _manager.disconnect(ws)
+
+
+@router.get("/alpha/list")
+async def list_alpha_factors(request: Request):
+    try:
+        from core.alpha_engine import AlphaGenerator
+        gen = AlphaGenerator()
+        alphas = gen.list_alphas()
+        result = []
+        for a in alphas:
+            result.append({
+                "name": a.name,
+                "expression": a.expression,
+                "category": a.category,
+                "description": a.description,
+            })
+        return _json_response(True, data=result)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/alpha/compute/{symbol}")
+async def compute_alpha_factors(
+    request: Request,
+    symbol: str,
+    period: str = Query("1y"),
+):
+    try:
+        from core.alpha_engine import AlphaGenerator
+        from core.alpha_screener import AlphaScreener, AlphaScreeningConfig
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        if df.empty or len(df) < 60:
+            return _json_response(False, error="数据不足")
+
+        gen = AlphaGenerator()
+        alpha_values = gen.compute_all_alphas(df)
+
+        screener = AlphaScreener(AlphaScreeningConfig(ic_threshold=0.01, ic_ir_threshold=0.1))
+        screened = screener.screen_all(alpha_values, df["close"])
+
+        result = []
+        for name, r in screened.items():
+            result.append({
+                "name": name,
+                "ic": r.ic,
+                "ic_ir": r.ic_ir,
+                "turnover": r.turnover,
+                "decay": r.decay,
+                "passed": r.passed,
+                "category": r.category,
+            })
+        result.sort(key=lambda x: abs(x["ic_ir"]), reverse=True)
+        return _json_response(True, data=result)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/regime/detect/{symbol}")
+async def detect_market_regime(
+    request: Request,
+    symbol: str,
+    period: str = Query("1y"),
+):
+    try:
+        from core.regime_detector import RegimeDetector
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        if df.empty or len(df) < 30:
+            return _json_response(False, error="数据不足")
+
+        detector = RegimeDetector()
+        result = detector.detect(df)
+        summary = detector.get_regime_summary(result)
+        return _json_response(True, data=summary)
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/risk/monitor/{symbol}")
+async def get_risk_monitor(
+    request: Request,
+    symbol: str,
+    period: str = Query("1y"),
+):
+    try:
+        from core.risk_monitor import EnhancedRiskMonitor
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        if df.empty or len(df) < 30:
+            return _json_response(False, error="数据不足")
+
+        monitor = EnhancedRiskMonitor()
+        close = df["close"].astype(float)
+        for price in close:
+            monitor.update_equity(float(price))
+
+        returns = close.pct_change().dropna()
+        metrics = monitor.get_risk_metrics(returns=returns)
+        should_liquidate, liq_reason = monitor.should_force_liquidate(metrics)
+        should_reduce, reduce_scale, reduce_reason = monitor.should_reduce_position(metrics)
+
+        return _json_response(True, data={
+            "risk_level": metrics.risk_level.value,
+            "volatility": metrics.volatility,
+            "max_drawdown": metrics.max_drawdown,
+            "current_drawdown": metrics.current_drawdown,
+            "var_95": metrics.var_95,
+            "cvar_95": metrics.cvar_95,
+            "sharpe_ratio": metrics.sharpe_ratio,
+            "sortino_ratio": metrics.sortino_ratio,
+            "warnings": metrics.warnings,
+            "should_force_liquidate": should_liquidate,
+            "should_reduce_position": should_reduce,
+            "reduce_scale": reduce_scale,
+        })
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.get("/metrics/institutional/{symbol}")
+async def get_institutional_metrics(
+    request: Request,
+    symbol: str,
+    benchmark: str = Query("sh000300"),
+    period: str = Query("1y"),
+):
+    try:
+        from core.metrics import calc_all_metrics, metrics_to_dict
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        if df.empty or len(df) < 30:
+            return _json_response(False, error="数据不足")
+
+        close = df["close"].astype(float)
+        equity_curve = list(close / close.iloc[0] * 100000)
+        returns = close.pct_change().dropna()
+
+        benchmark_returns = None
+        try:
+            bench_df = await fetcher.get_history(benchmark, _period_to_history(period), "daily", "qfq")
+            if not bench_df.empty:
+                benchmark_returns = bench_df["close"].astype(float).pct_change().dropna()
+        except Exception:
+            pass
+
+        metrics = calc_all_metrics(equity_curve, returns, benchmark_returns)
+        return _json_response(True, data=metrics_to_dict(metrics))
+    except Exception as e:
+        return _json_response(False, error=str(e))
+
+
+@router.post("/alpha/evolve")
+async def run_alpha_evolution(
+    request: Request,
+    symbol: str = Query(...),
+    max_iterations: int = Query(3),
+    period: str = Query("1y"),
+):
+    try:
+        from core.self_evolver import SelfEvolver, EvolutionConfig
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        if df.empty or len(df) < 60:
+            return _json_response(False, error="数据不足")
+
+        config = EvolutionConfig(max_iterations=max_iterations)
+        evolver = SelfEvolver(config=config)
+        result = await asyncio.to_thread(evolver.evolve, df)
+        report = evolver.get_evolution_report(result)
+        return _json_response(True, data=report)
+    except Exception as e:
+        logger.error(f"Alpha evolution error: {e}")
+        return _json_response(False, error=str(e))
+
+
+@router.post("/audit/strategy")
+async def audit_strategy(
+    request: Request,
+    symbol: str = Query(...),
+    strategy_name: str = Query("adaptive"),
+    period: str = Query("1y"),
+):
+    try:
+        from core.auto_auditor import AutoAuditor
+        from core.strategies import STRATEGY_REGISTRY
+        from core.backtest import BacktestEngine
+        fetcher: SmartDataFetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        if df.empty or len(df) < 60:
+            return _json_response(False, error="数据不足")
+
+        strategy_cls = STRATEGY_REGISTRY.get(strategy_name)
+        if not strategy_cls:
+            return _json_response(False, error=f"未知策略: {strategy_name}")
+
+        strategy = strategy_cls()
+        engine = BacktestEngine(initial_capital=1000000)
+        bt_result = await asyncio.to_thread(engine.run, strategy, df)
+
+        n = len(df)
+        train_end = int(n * 0.7)
+        train_df = df.iloc[:train_end]
+        test_df = df.iloc[train_end:]
+
+        train_result = engine.run(strategy, train_df)
+        test_result = engine.run(strategy, test_df)
+
+        from core.walk_forward import calc_strategy_metrics
+        train_metrics = calc_strategy_metrics(train_result.equity_curve)
+        test_metrics = calc_strategy_metrics(test_result.equity_curve)
+
+        returns = df["close"].astype(float).pct_change().dropna()
+        auditor = AutoAuditor()
+        audit_report = auditor.audit(train_metrics, test_metrics, returns)
+
+        return _json_response(True, data={
+            "passed": audit_report.passed,
+            "overall_score": audit_report.overall_score,
+            "overfitting": {
+                "is_overfitted": audit_report.overfitting.is_overfitted,
+                "score": audit_report.overfitting.overfitting_score,
+                "sharpe_gap": audit_report.overfitting.train_test_sharpe_gap,
+            },
+            "return_anomaly": {
+                "has_anomaly": audit_report.return_anomaly.has_anomaly,
+                "score": audit_report.return_anomaly.anomaly_score,
+                "types": audit_report.return_anomaly.anomaly_types,
+            },
+            "recommendations": audit_report.recommendations,
+        })
+    except Exception as e:
+        logger.error(f"Audit error: {e}")
+        return _json_response(False, error=str(e))

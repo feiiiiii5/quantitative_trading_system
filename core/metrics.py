@@ -1,149 +1,267 @@
-"""
-QuantCore 性能指标收集器
-收集API响应时间、策略命中率、数据源可用性等运行指标
-"""
 import logging
-import threading
-import time
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class MetricPoint:
-    timestamp: float
-    value: float
-    tags: Dict[str, str] = field(default_factory=dict)
+class InstitutionalMetrics:
+    cagr: float = 0.0
+    sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
+    max_drawdown: float = 0.0
+    calmar_ratio: float = 0.0
+    volatility: float = 0.0
+    win_rate: float = 0.0
+    profit_loss_ratio: float = 0.0
+    total_return: float = 0.0
+    annual_turnover: float = 0.0
+    avg_ic: float = 0.0
+    ic_ir: float = 0.0
+    var_95: float = 0.0
+    cvar_95: float = 0.0
+    information_ratio: float = 0.0
+    tracking_error: float = 0.0
+    alpha: float = 0.0
+    beta: float = 0.0
+    skewness: float = 0.0
+    kurtosis: float = 0.0
+    n_trades: int = 0
+    avg_holding_period: float = 0.0
+    max_consecutive_wins: int = 0
+    max_consecutive_losses: int = 0
 
 
-class MetricsCollector:
-    """线程安全的指标收集器"""
-
-    def __init__(self, max_points: int = 1000):
-        self._max_points = max_points
-        self._lock = threading.Lock()
-        self._counters: Dict[str, float] = defaultdict(float)
-        self._gauges: Dict[str, float] = defaultdict(float)
-        self._histories: Dict[str, List[MetricPoint]] = defaultdict(list)
-        self._timers: Dict[str, List[float]] = defaultdict(list)
-        self._start_time = time.time()
-
-    def increment(self, name: str, value: float = 1.0, tags: Optional[Dict[str, str]] = None):
-        with self._lock:
-            self._counters[name] += value
-            self._record(name, self._counters[name], tags)
-
-    def gauge(self, name: str, value: float, tags: Optional[Dict[str, str]] = None):
-        with self._lock:
-            self._gauges[name] = value
-            self._record(name, value, tags)
-
-    def timer(self, name: str, elapsed_seconds: float, tags: Optional[Dict[str, str]] = None):
-        with self._lock:
-            self._timers[name].append(elapsed_seconds)
-            if len(self._timers[name]) > 200:
-                self._timers[name] = self._timers[name][-200:]
-            self._record(name, elapsed_seconds, tags)
-
-    def _record(self, name: str, value: float, tags: Optional[Dict[str, str]] = None):
-        point = MetricPoint(timestamp=time.time(), value=value, tags=tags or {})
-        history = self._histories[name]
-        history.append(point)
-        if len(history) > self._max_points:
-            self._histories[name] = history[-self._max_points:]
-
-    def get_counter(self, name: str) -> float:
-        return self._counters.get(name, 0.0)
-
-    def get_gauge(self, name: str) -> float:
-        return self._gauges.get(name, 0.0)
-
-    def get_timer_stats(self, name: str) -> dict:
-        values = self._timers.get(name, [])
-        if not values:
-            return {"count": 0, "avg": 0, "p50": 0, "p95": 0, "p99": 0}
-        sorted_v = sorted(values)
-        return {
-            "count": len(sorted_v),
-            "avg": round(sum(sorted_v) / len(sorted_v), 4),
-            "p50": round(sorted_v[int(len(sorted_v) * 0.5)], 4),
-            "p95": round(sorted_v[int(len(sorted_v) * 0.95)], 4),
-            "p99": round(sorted_v[min(int(len(sorted_v) * 0.99), len(sorted_v) - 1)], 4),
-        }
-
-    def get_history(self, name: str, last_n: int = 100) -> List[dict]:
-        history = self._histories.get(name, [])
-        points = history[-last_n:]
-        return [{"timestamp": p.timestamp, "value": p.value, "tags": p.tags} for p in points]
-
-    def get_summary(self) -> dict:
-        uptime = time.time() - self._start_time
-        timer_stats = {}
-        for name in self._timers:
-            timer_stats[name] = self.get_timer_stats(name)
-        return {
-            "uptime_seconds": round(uptime, 1),
-            "counters": dict(self._counters),
-            "gauges": dict(self._gauges),
-            "timers": timer_stats,
-        }
-
-    def reset(self):
-        with self._lock:
-            self._counters.clear()
-            self._gauges.clear()
-            self._histories.clear()
-            self._timers.clear()
+def calc_cagr(equity_curve: List[float], n_days: int = None) -> float:
+    if len(equity_curve) < 2 or equity_curve[0] <= 0:
+        return 0.0
+    total_return = equity_curve[-1] / equity_curve[0] - 1
+    n_days = n_days or len(equity_curve) - 1
+    n_years = max(n_days / 252, 1e-6)
+    if total_return <= -1:
+        return -1.0
+    return float((1 + total_return) ** (1 / n_years) - 1)
 
 
-class TimerContext:
-    """计时上下文管理器"""
-
-    def __init__(self, collector: MetricsCollector, name: str, tags: Optional[Dict[str, str]] = None):
-        self._collector = collector
-        self._name = name
-        self._tags = tags
-        self._start = 0.0
-
-    def __enter__(self):
-        self._start = time.time()
-        return self
-
-    def __exit__(self, *args):
-        elapsed = time.time() - self._start
-        self._collector.timer(self._name, elapsed, self._tags)
+def calc_sharpe(returns: pd.Series, risk_free: float = 0.03) -> float:
+    if len(returns) < 2:
+        return 0.0
+    excess = returns - risk_free / 252
+    std = excess.std()
+    if std < 1e-12:
+        return 0.0
+    return float(excess.mean() / std * np.sqrt(252))
 
 
-metrics = MetricsCollector()
+def calc_sortino(returns: pd.Series, risk_free: float = 0.03) -> float:
+    if len(returns) < 2:
+        return 0.0
+    excess = returns - risk_free / 252
+    downside = excess[excess < 0]
+    if len(downside) == 0:
+        return float("inf") if excess.mean() > 0 else 0.0
+    downside_std = np.sqrt(np.mean(downside ** 2))
+    if downside_std < 1e-12:
+        return 0.0
+    return float(excess.mean() / downside_std * np.sqrt(252))
 
 
-def record_api_call(endpoint: str, elapsed: float, success: bool = True):
-    metrics.increment("api.calls.total")
-    if success:
-        metrics.increment("api.calls.success")
-    else:
-        metrics.increment("api.calls.error")
-    metrics.timer(f"api.latency.{endpoint}", elapsed)
+def calc_max_drawdown(equity_curve: List[float]) -> float:
+    if len(equity_curve) < 2:
+        return 0.0
+    eq = pd.Series(equity_curve)
+    cummax = eq.cummax()
+    drawdown = (eq - cummax) / cummax
+    return float(drawdown.min())
 
 
-def record_strategy_signal(strategy_name: str, signal_type: str, confidence: float):
-    metrics.increment(f"strategy.signal.{strategy_name}.{signal_type}")
-    metrics.gauge(f"strategy.confidence.{strategy_name}", confidence)
+def calc_calmar(cagr: float, max_drawdown: float) -> float:
+    if abs(max_drawdown) < 1e-10:
+        return 0.0
+    return cagr / abs(max_drawdown)
 
 
-def record_data_fetch(source: str, elapsed: float, success: bool = True):
-    metrics.increment(f"data.fetch.{source}.total")
-    if success:
-        metrics.increment(f"data.fetch.{source}.success")
-    else:
-        metrics.increment(f"data.fetch.{source}.error")
-    metrics.timer(f"data.latency.{source}", elapsed)
+def calc_win_rate(returns: pd.Series) -> float:
+    if len(returns) == 0:
+        return 0.0
+    return float((returns > 0).sum() / len(returns))
 
 
-def record_backtest(strategy_name: str, sharpe: float, total_return: float):
-    metrics.increment("backtest.runs.total")
-    metrics.gauge(f"backtest.sharpe.{strategy_name}", sharpe)
-    metrics.gauge(f"backtest.return.{strategy_name}", total_return)
+def calc_profit_loss_ratio(returns: pd.Series) -> float:
+    wins = returns[returns > 0]
+    losses = returns[returns < 0]
+    if len(losses) == 0:
+        return float("inf") if len(wins) > 0 else 0.0
+    avg_win = wins.mean() if len(wins) > 0 else 0.0
+    avg_loss = abs(losses.mean())
+    if avg_loss < 1e-12:
+        return 0.0
+    return float(avg_win / avg_loss)
+
+
+def calc_turnover(positions_history: List[Dict[str, float]], total_equity: float = None) -> float:
+    if len(positions_history) < 2:
+        return 0.0
+    total_turnover = 0.0
+    for i in range(1, len(positions_history)):
+        prev = positions_history[i - 1]
+        curr = positions_history[i]
+        all_keys = set(prev.keys()) | set(curr.keys())
+        for key in all_keys:
+            prev_val = prev.get(key, 0.0)
+            curr_val = curr.get(key, 0.0)
+            total_turnover += abs(curr_val - prev_val)
+    if total_equity and total_equity > 0:
+        return total_turnover / (2 * total_equity * len(positions_history))
+    return total_turnover
+
+
+def calc_var(returns: pd.Series, confidence: float = 0.95) -> float:
+    if len(returns) < 5:
+        return 0.0
+    return float(np.percentile(returns, (1 - confidence) * 100))
+
+
+def calc_cvar(returns: pd.Series, confidence: float = 0.95) -> float:
+    if len(returns) < 5:
+        return 0.0
+    threshold = np.percentile(returns, (1 - confidence) * 100)
+    tail = returns[returns <= threshold]
+    return float(tail.mean()) if len(tail) > 0 else float(threshold)
+
+
+def calc_information_ratio(returns: pd.Series, benchmark_returns: pd.Series) -> float:
+    if len(returns) < 2 or len(benchmark_returns) < 2:
+        return 0.0
+    n = min(len(returns), len(benchmark_returns))
+    active_return = returns.iloc[-n:] - benchmark_returns.iloc[-n:]
+    tracking_error = active_return.std()
+    if tracking_error < 1e-12:
+        return 0.0
+    return float(active_return.mean() / tracking_error * np.sqrt(252))
+
+
+def calc_alpha_beta(returns: pd.Series, benchmark_returns: pd.Series, risk_free: float = 0.03) -> Tuple:
+    if len(returns) < 2 or len(benchmark_returns) < 2:
+        return 0.0, 0.0
+    n = min(len(returns), len(benchmark_returns))
+    r = returns.iloc[-n:].values
+    b = benchmark_returns.iloc[-n:].values
+    rf_daily = risk_free / 252
+    excess_r = r - rf_daily
+    excess_b = b - rf_daily
+    cov = np.cov(excess_r, excess_b)
+    if cov[1, 1] < 1e-12:
+        return 0.0, 0.0
+    beta = float(cov[0, 1] / cov[1, 1])
+    alpha = float(excess_r.mean() - beta * excess_b.mean()) * 252
+    return alpha, beta
+
+
+def calc_max_consecutive(returns: pd.Series, positive: bool = True) -> int:
+    max_streak = 0
+    current_streak = 0
+    for r in returns:
+        if (positive and r > 0) or (not positive and r < 0):
+            current_streak += 1
+            max_streak = max(max_streak, current_streak)
+        else:
+            current_streak = 0
+    return max_streak
+
+
+def calc_all_metrics(
+    equity_curve: List[float],
+    returns: pd.Series = None,
+    benchmark_returns: pd.Series = None,
+    positions_history: List[Dict[str, float]] = None,
+    risk_free: float = 0.03,
+) -> InstitutionalMetrics:
+    if len(equity_curve) < 2:
+        return InstitutionalMetrics()
+
+    eq = pd.Series(equity_curve)
+    if returns is None:
+        returns = eq.pct_change().dropna()
+
+    cagr = calc_cagr(equity_curve)
+    sharpe = calc_sharpe(returns, risk_free)
+    sortino = calc_sortino(returns, risk_free)
+    max_dd = calc_max_drawdown(equity_curve)
+    calmar = calc_calmar(cagr, max_dd)
+    vol = float(returns.std() * np.sqrt(252))
+    win_rate = calc_win_rate(returns)
+    pl_ratio = calc_profit_loss_ratio(returns)
+    total_return = float(eq.iloc[-1] / eq.iloc[0] - 1) if eq.iloc[0] > 0 else 0.0
+    turnover = calc_turnover(positions_history) if positions_history else 0.0
+    var_95 = calc_var(returns)
+    cvar_95 = calc_cvar(returns)
+    skewness = float(returns.skew()) if len(returns) > 2 else 0.0
+    kurtosis = float(returns.kurtosis()) if len(returns) > 2 else 0.0
+    max_consec_wins = calc_max_consecutive(returns, True)
+    max_consec_losses = calc_max_consecutive(returns, False)
+
+    alpha_val = 0.0
+    beta_val = 0.0
+    ir = 0.0
+    te = 0.0
+    if benchmark_returns is not None:
+        alpha_val, beta_val = calc_alpha_beta(returns, benchmark_returns, risk_free)
+        ir = calc_information_ratio(returns, benchmark_returns)
+        n = min(len(returns), len(benchmark_returns))
+        active = returns.iloc[-n:] - benchmark_returns.iloc[-n:]
+        te = float(active.std() * np.sqrt(252))
+
+    return InstitutionalMetrics(
+        cagr=round(cagr, 6),
+        sharpe_ratio=round(sharpe, 4),
+        sortino_ratio=round(sortino, 4),
+        max_drawdown=round(max_dd, 6),
+        calmar_ratio=round(calmar, 4),
+        volatility=round(vol, 6),
+        win_rate=round(win_rate, 4),
+        profit_loss_ratio=round(pl_ratio, 4),
+        total_return=round(total_return, 6),
+        annual_turnover=round(turnover, 6),
+        var_95=round(var_95, 6),
+        cvar_95=round(cvar_95, 6),
+        information_ratio=round(ir, 4),
+        tracking_error=round(te, 6),
+        alpha=round(alpha_val, 6),
+        beta=round(beta_val, 4),
+        skewness=round(skewness, 4),
+        kurtosis=round(kurtosis, 4),
+        n_trades=len(returns),
+        max_consecutive_wins=max_consec_wins,
+        max_consecutive_losses=max_consec_losses,
+    )
+
+
+def metrics_to_dict(metrics: InstitutionalMetrics) -> Dict:
+    return {
+        "CAGR": f"{metrics.cagr:.2%}",
+        "Sharpe Ratio": f"{metrics.sharpe_ratio:.2f}",
+        "Sortino Ratio": f"{metrics.sortino_ratio:.2f}",
+        "Max Drawdown": f"{metrics.max_drawdown:.2%}",
+        "Calmar Ratio": f"{metrics.calmar_ratio:.2f}",
+        "Volatility": f"{metrics.volatility:.2%}",
+        "Win Rate": f"{metrics.win_rate:.2%}",
+        "Profit/Loss Ratio": f"{metrics.profit_loss_ratio:.2f}",
+        "Total Return": f"{metrics.total_return:.2%}",
+        "Annual Turnover": f"{metrics.annual_turnover:.2%}",
+        "VaR(95%)": f"{metrics.var_95:.4f}",
+        "CVaR(95%)": f"{metrics.cvar_95:.4f}",
+        "Information Ratio": f"{metrics.information_ratio:.2f}",
+        "Tracking Error": f"{metrics.tracking_error:.4f}",
+        "Alpha": f"{metrics.alpha:.4f}",
+        "Beta": f"{metrics.beta:.2f}",
+        "Skewness": f"{metrics.skewness:.2f}",
+        "Kurtosis": f"{metrics.kurtosis:.2f}",
+        "N Trades": metrics.n_trades,
+        "Max Consecutive Wins": metrics.max_consecutive_wins,
+        "Max Consecutive Losses": metrics.max_consecutive_losses,
+    }

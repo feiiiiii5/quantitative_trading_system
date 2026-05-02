@@ -11,3 +11,7 @@ node_modules/
 static/
 *.db
 *.sqlite3
+test-results/
+*.egg-info/
+dist/
+build/

@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 
 from core.strategies import BaseStrategy, CompositeStrategy, StrategyResult, SignalType
+from core.events import EventBus, Event, EventType
+from core.risk_manager import EnhancedRiskManager
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,14 @@ class RealisticCostModel:
 
     def calc_financing_cost(self, borrowed: float, days: int) -> float:
         return round(borrowed * self.financing_rate * days, 2)
+
+
+def _simulate_call_auction_fill(open_price: float, rng: np.random.Generator = None) -> float:
+    """模拟开盘集合竞价：以开盘价±0.1%的随机价格成交"""
+    if rng is None:
+        rng = np.random.default_rng()
+    noise = rng.uniform(-0.001, 0.001)
+    return open_price * (1 + noise)
 
 
 def _simulate_twap_fill(price: float, shares: int, daily_amount: float,
@@ -149,14 +159,18 @@ class BacktestEngine:
     def __init__(self, initial_capital: float = 1000000, commission: float = 0.0003, stamp_tax: float = 0.001,
                  slippage_pct: float = 0.001, market_impact_pct: float = 0.0005,
                  cost_model: RealisticCostModel = None, enable_twap: bool = True,
-                 enable_limit_check: bool = True):
+                 enable_limit_check: bool = True, use_vectorized: bool = True,
+                 event_bus: Optional[EventBus] = None, risk_manager: Optional[EnhancedRiskManager] = None):
         self._initial_capital = initial_capital
         self._slippage_pct = slippage_pct
         self._cost_model = cost_model or RealisticCostModel(
             commission=commission, stamp_tax=stamp_tax, market_impact_pct=market_impact_pct)
         self._enable_twap = enable_twap
         self._enable_limit_check = enable_limit_check
+        self._use_vectorized = use_vectorized
         self._rng = np.random.default_rng(42)
+        self._event_bus = event_bus or EventBus()
+        self._risk_manager = risk_manager or EnhancedRiskManager(initial_capital=initial_capital)
 
     def run(self, strategy: BaseStrategy, df: pd.DataFrame) -> BacktestResult:
         if df is None or len(df) < 10:
@@ -171,8 +185,17 @@ class BacktestEngine:
         if len(df) < 10:
             return BacktestResult(strategy_name=strategy.name)
 
+        self._event_bus.publish(Event(EventType.INIT, {"strategy": strategy.name}))
+
         try:
-            result = strategy.generate_signals(df)
+            if self._use_vectorized and hasattr(strategy, 'populate_indicators'):
+                has_custom = strategy.__class__.populate_indicators is not BaseStrategy.populate_indicators
+                if has_custom:
+                    result = strategy.generate_signals_vectorized(df)
+                else:
+                    result = strategy.generate_signals(df)
+            else:
+                result = strategy.generate_signals(df)
         except Exception as e:
             logger.error(f"Strategy {strategy.name} generate_signals failed: {e}")
             return BacktestResult(strategy_name=strategy.name)
@@ -345,6 +368,7 @@ class BacktestEngine:
         trades = []
         buy_bar_set = set()
         sell_bar_set = set()
+        lot_size = 100
 
         buy_idx = 0
         sell_idx = 0
@@ -383,6 +407,8 @@ class BacktestEngine:
                 if fill_price <= 0:
                     continue
 
+                fill_price = _simulate_call_auction_fill(fill_price, self._rng)
+
                 if self._enable_limit_check and i > 0:
                     prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
                     is_normal, fill_prob = _check_limit_price(float(prev_close), fill_price, is_buy=True)
@@ -404,7 +430,6 @@ class BacktestEngine:
                 if alloc_amount > cash * 0.98:
                     alloc_amount = cash * 0.98
 
-                lot_size = 100
                 buy_shares = int(alloc_amount / fill_price / lot_size) * lot_size
                 if buy_shares <= 0:
                     continue
@@ -479,6 +504,8 @@ class BacktestEngine:
                 fill_price = opens[i] if i < len(opens) and opens[i] > 0 else closes[i]
                 if fill_price <= 0:
                     continue
+
+                fill_price = _simulate_call_auction_fill(fill_price, self._rng)
 
                 if self._enable_limit_check and i > 0:
                     prev_close = prev_closes[i] if i < len(prev_closes) else closes[i - 1]
@@ -968,19 +995,19 @@ def run_backtest(
 
     return {
         "strategy_name": result.strategy_name,
-        "total_return": result.total_return / 100 if result.total_return else 0,
-        "annual_return": result.annual_return / 100 if result.annual_return else 0,
-        "max_drawdown": result.max_drawdown / 100 if result.max_drawdown else 0,
+        "total_return": round(result.total_return, 4) if result.total_return else 0,
+        "annual_return": round(result.annual_return, 4) if result.annual_return else 0,
+        "max_drawdown": round(result.max_drawdown, 4) if result.max_drawdown else 0,
         "sharpe_ratio": result.sharpe_ratio,
         "calmar_ratio": result.calmar_ratio,
-        "win_rate": result.win_rate / 100 if result.win_rate else 0,
+        "win_rate": round(result.win_rate, 2) if result.win_rate else 0,
         "profit_factor": result.profit_factor,
         "total_trades": result.total_trades,
         "win_trades": result.win_trades,
         "loss_trades": result.loss_trades,
         "avg_hold_days": result.avg_hold_days,
-        "benchmark_return": result.benchmark_return / 100 if result.benchmark_return else 0,
-        "alpha": result.alpha,
+        "benchmark_return": round(result.benchmark_return, 4) if result.benchmark_return else 0,
+        "alpha": round(result.alpha, 4) if result.alpha else 0,
         "beta": result.beta,
         "slippage_model": "fixed_pct",
         "sortino_ratio": result.sortino_ratio,
@@ -993,10 +1020,13 @@ def run_backtest(
         "avg_mfe": result.avg_mfe,
         "expectancy": result.expectancy,
         "payoff_ratio": result.payoff_ratio,
-        "equity_curve": equity_curve,
-        "benchmark_curve": benchmark_curve,
-        "trades": result.trades,
-        "kline_with_signals": result.kline_with_signals,
+        "cvar_95": result.cvar_95,
+        "annual_volatility": result.annual_volatility,
+        "downside_deviation": result.downside_deviation,
+        "equity_curve": equity_curve[-500:] if equity_curve else [],
+        "benchmark_curve": benchmark_curve[-500:] if benchmark_curve else [],
+        "trades": result.trades[-200:] if result.trades else [],
+        "kline_with_signals": result.kline_with_signals[-500:] if result.kline_with_signals else [],
     }
 
 
