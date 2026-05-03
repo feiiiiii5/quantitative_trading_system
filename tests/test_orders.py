@@ -72,6 +72,24 @@ class TestOrder:
         assert order.filled_quantity == 1000
         assert abs(order.avg_fill_price - 10.5) < 0.01
 
+    def test_overfill_clamps_quantity(self):
+        order = Order(order_id="t", symbol="s", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=100, price=10.0)
+        order.transition_to(OrderStatus.ACTIVE)
+        order.fill(80, 10.0)
+        order.fill(50, 11.0)
+        assert order.filled_quantity == 100
+        expected_avg = (80 * 10.0 + 20 * 11.0) / 100
+        assert abs(order.avg_fill_price - expected_avg) < 0.01
+        assert order.filled_value == 80 * 10.0 + 20 * 11.0
+
+    def test_fill_when_already_filled_is_noop(self):
+        order = Order(order_id="t", symbol="s", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=100, price=10.0)
+        order.transition_to(OrderStatus.ACTIVE)
+        order.fill(100, 10.0)
+        order.fill(50, 12.0)
+        assert order.filled_quantity == 100
+        assert abs(order.avg_fill_price - 10.0) < 0.01
+
     def test_to_dict(self):
         order = Order(order_id="t", symbol="s", side=OrderSide.BUY, order_type=OrderType.MARKET, quantity=100, price=10.0)
         d = order.to_dict()

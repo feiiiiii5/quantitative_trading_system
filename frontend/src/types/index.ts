@@ -237,7 +237,9 @@ export interface BacktestResult {
   tail_ratio?: number
   information_ratio?: number
   cvar_95?: number
+  var_95?: number
   annual_volatility?: number
+  volatility?: number
   downside_deviation?: number
   max_consecutive_losses?: number
   equity_curve?: { date: string; value: number }[]
@@ -384,4 +386,158 @@ export interface MarketStock {
   pe?: number
   pb?: number
   total_market_cap?: number
+}
+
+export interface NewsItem {
+  title: string
+  source: string
+  url: string
+  time: string
+  content: string
+  sentiment: number
+  sentiment_label: string
+  related_symbols: string[]
+}
+
+export interface MarketSentimentData {
+  sentiment: {
+    fear_greed_index: number
+    label: string
+    news_sentiment: number
+    volume_sentiment: number
+    momentum_sentiment: number
+    breadth_sentiment: number
+    timestamp: number
+  }
+  summary: {
+    total: number
+    bullish: number
+    bearish: number
+    neutral: number
+    hot_symbols: { symbol: string; count: number }[]
+  }
+}
+
+export interface ScreenerPreset {
+  id: string
+  name: string
+  description: string
+  category: string
+  conditions: { field: string; operator: string; value: number | number[]; label: string }[]
+}
+
+export interface ScreenerResult {
+  total: number
+  stocks: MarketStock[]
+}
+
+export interface CapitalFlowData {
+  symbol: string
+  realtime: CapitalFlowRealtime | null
+  history: CapitalFlowHistory[]
+  pattern?: FlowPattern
+}
+
+export interface CapitalFlowRealtime {
+  symbol: string
+  name: string
+  price: number
+  change_pct: number
+  main_net_inflow: number
+  main_inflow: number
+  main_outflow: number
+  super_large_net: number
+  large_net: number
+  medium_net: number
+  small_net: number
+  main_pct: number
+}
+
+export interface CapitalFlowHistory {
+  date: string
+  main_inflow: number
+  main_outflow: number
+  main_net_inflow: number
+  super_large_net: number
+  large_net: number
+  medium_net: number
+  small_net: number
+}
+
+export interface FlowPattern {
+  pattern: string
+  trend: string
+  total_main_net: number
+  avg_main_net: number
+  max_inflow: number
+  max_outflow: number
+}
+
+export interface SectorFlowItem {
+  name: string
+  change_pct: number
+  main_net_inflow: number
+  main_inflow: number
+  main_outflow: number
+  code: string
+}
+
+export interface ChipData {
+  symbol: string
+  current_price: number
+  avg_cost: number
+  profit_ratio: number
+  concentration: number
+  support_price: number
+  resistance_price: number
+  peak_price: number
+  prices: number[]
+  distribution: number[]
+  chip_bands: { range: string; price_low: number; price_high: number; weight: number }[]
+  fire: ChipFireData
+}
+
+export interface ChipFireData {
+  status: string
+  signal?: string
+  short_concentration?: number
+  mid_concentration?: number
+  long_concentration?: number
+  avg_cost_short?: number
+  avg_cost_mid?: number
+  avg_cost_long?: number
+  profit_ratio?: number
+  support?: number
+  resistance?: number
+}
+
+export interface SectorStrengthItem {
+  code: string
+  name: string
+  change_pct: number
+  change: number
+  amount: number
+  turnover_rate: number
+  main_net_inflow: number
+  up_count: number
+  down_count: number
+  leading_stock: string
+  leading_change: number
+  momentum_score: number
+  rank: number
+}
+
+export interface SectorRotationData {
+  snapshot: {
+    timestamp: number
+    top_sectors: { name: string; change_pct: number; momentum_score: number }[]
+    bottom_sectors: { name: string; change_pct: number; momentum_score: number }[]
+  }
+  trend: { timestamp: number; top_sectors: { name: string; change_pct: number; momentum_score: number }[]; bottom_sectors: { name: string; change_pct: number; momentum_score: number }[] }[]
+  signals: { type: string; sector: string; change_pct?: number; signal: string }[]
+}
+
+export interface SectorDetail {
+  sector: SectorStrengthItem | null
+  stocks: { symbol: string; name: string; price: number; change_pct: number; change: number; turnover_rate: number; high: number; low: number; main_net_inflow: number }[]
 }

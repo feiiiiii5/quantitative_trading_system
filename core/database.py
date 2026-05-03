@@ -117,6 +117,7 @@ class SQLiteStore:
         self._write_buffer: list[tuple[str, tuple]] = []
         self._buffer_lock = threading.Lock()
         self._buffer_max_size = 100
+        self._buffer_abs_max = 1000
         self._last_flush = time.time()
         self._pool: list[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
@@ -171,6 +172,11 @@ class SQLiteStore:
                         conn.close()
                     except Exception:
                         pass
+                return
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -295,6 +301,8 @@ class SQLiteStore:
 
     def buffered_write(self, sql: str, params: tuple) -> None:
         with self._buffer_lock:
+            if len(self._write_buffer) >= self._buffer_abs_max:
+                self._write_buffer = self._write_buffer[-self._buffer_max_size:]
             self._write_buffer.append((sql, params))
             should_flush = (
                 len(self._write_buffer) >= self._buffer_max_size

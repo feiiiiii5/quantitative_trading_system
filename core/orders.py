@@ -79,11 +79,12 @@ class Order:
         return True
 
     def fill(self, fill_quantity: int, fill_price: float, commission: float = 0.0, slippage: float = 0.0) -> None:
-        new_filled = self.filled_quantity + fill_quantity
-        new_value = self.filled_value + fill_quantity * fill_price
-        self.filled_quantity = min(new_filled, self.quantity)
-        self.avg_fill_price = new_value / self.filled_quantity if self.filled_quantity > 0 else 0.0
-        self.filled_value = new_value
+        actual_fill = min(fill_quantity, self.quantity - self.filled_quantity)
+        if actual_fill <= 0:
+            return
+        self.filled_value += actual_fill * fill_price
+        self.filled_quantity += actual_fill
+        self.avg_fill_price = self.filled_value / self.filled_quantity if self.filled_quantity > 0 else 0.0
         self.commission += commission
         self.slippage += slippage
         self.updated_at = datetime.now()

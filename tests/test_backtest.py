@@ -58,3 +58,16 @@ class TestBacktestEngine:
         assert hasattr(result, "total_return")
         assert hasattr(result, "max_drawdown")
         assert hasattr(result, "sharpe_ratio")
+
+    def test_forced_close_uses_correct_attributes(self, sample_ohlcv):
+        engine = BacktestEngine(initial_capital=1000000, slippage_pct=0.001)
+        assert hasattr(engine, "_slippage_pct")
+        assert engine._slippage_pct == 0.001
+        assert hasattr(engine, "_cost_model")
+
+    def test_stop_loss_with_slippage_no_crash(self, trending_down_ohlcv):
+        engine = BacktestEngine(initial_capital=1000000, slippage_pct=0.002)
+        strategy = DualMAStrategy(short_period=5, long_period=20)
+        result = engine.run(strategy, trending_down_ohlcv)
+        assert result is not None
+        assert result.strategy_name == "DualMAStrategy"

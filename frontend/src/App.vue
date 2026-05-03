@@ -26,7 +26,7 @@ function handleGlobalKeydown(e: KeyboardEvent) {
       case '3': e.preventDefault(); router.push('/strategy'); break
       case '4': e.preventDefault(); router.push('/portfolio'); break
       case '5': e.preventDefault(); router.push('/watchlist'); break
-      case 'd': e.preventDefault(); themeStore.toggle(); break
+      case 'd': e.preventDefault(); themeStore.toggleTheme(); break
     }
   }
 }

@@ -208,11 +208,11 @@
           <div class="fin-grid">
             <div class="fin-item"><span class="fin-label">PE(TTM)</span><span class="fin-val mono">{{ fundamentals.pe_ttm?.toFixed(1) }}</span></div>
             <div class="fin-item"><span class="fin-label">PB</span><span class="fin-val mono">{{ fundamentals.pb?.toFixed(2) }}</span></div>
-            <div class="fin-item"><span class="fin-label">ROE</span><span class="fin-val mono">{{ (fundamentals.roe * 100)?.toFixed(2) }}%</span></div>
-            <div class="fin-item"><span class="fin-label">EPS</span><span class="fin-val mono">{{ fundamentals.eps?.toFixed(2) }}</span></div>
-            <div class="fin-item"><span class="fin-label">营收同比</span><span class="fin-val mono" :class="fundamentals.revenue_yoy >= 0 ? 'text-rise' : 'text-fall'">{{ (fundamentals.revenue_yoy * 100)?.toFixed(1) }}%</span></div>
-            <div class="fin-item"><span class="fin-label">净利同比</span><span class="fin-val mono" :class="fundamentals.profit_yoy >= 0 ? 'text-rise' : 'text-fall'">{{ (fundamentals.profit_yoy * 100)?.toFixed(1) }}%</span></div>
-            <div class="fin-item"><span class="fin-label">资产负债率</span><span class="fin-val mono">{{ (fundamentals.debt_ratio * 100)?.toFixed(1) }}%</span></div>
+            <div class="fin-item"><span class="fin-label">ROE</span><span class="fin-val mono">{{ fundamentals.roe != null ? (fundamentals.roe * 100).toFixed(2) + '%' : '-' }}</span></div>
+            <div class="fin-item"><span class="fin-label">EPS</span><span class="fin-val mono">{{ fundamentals.eps?.toFixed(2) ?? '-' }}</span></div>
+            <div class="fin-item"><span class="fin-label">营收同比</span><span class="fin-val mono" :class="(fundamentals.revenue_yoy ?? 0) >= 0 ? 'text-rise' : 'text-fall'">{{ fundamentals.revenue_yoy != null ? (fundamentals.revenue_yoy * 100).toFixed(1) + '%' : '-' }}</span></div>
+            <div class="fin-item"><span class="fin-label">净利同比</span><span class="fin-val mono" :class="(fundamentals.profit_yoy ?? 0) >= 0 ? 'text-rise' : 'text-fall'">{{ fundamentals.profit_yoy != null ? (fundamentals.profit_yoy * 100).toFixed(1) + '%' : '-' }}</span></div>
+            <div class="fin-item"><span class="fin-label">资产负债率</span><span class="fin-val mono">{{ fundamentals.debt_ratio != null ? (fundamentals.debt_ratio * 100).toFixed(1) + '%' : '-' }}</span></div>
           </div>
         </div>
         <div v-show="activeTab === 'backtest'" class="backtest-quick">
@@ -316,14 +316,14 @@ const klineOption = computed(() => {
   const ma60 = calcMA(closes, 60)
 
   const buyMarkers = signals.value
-    .filter(s => s.signal_type === 'buy')
+    .filter(s => s.signals.some(sig => sig.signal === 'buy'))
     .map(s => {
       const idx = dates.indexOf(s.date?.slice(0, 10))
       return idx >= 0 ? { coord: [dates[idx], data[idx].low], value: 'B', itemStyle: { color: '#ef4444' } } : null
     }).filter(Boolean)
 
   const sellMarkers = signals.value
-    .filter(s => s.signal_type === 'sell')
+    .filter(s => s.signals.some(sig => sig.signal === 'sell'))
     .map(s => {
       const idx = dates.indexOf(s.date?.slice(0, 10))
       return idx >= 0 ? { coord: [dates[idx], data[idx].high], value: 'S', itemStyle: { color: '#22c55e' } } : null
@@ -416,7 +416,7 @@ function calcMA(data: number[], period: number): (number | null)[] {
 async function fetchData() {
   if (!symbol.value) return
   try {
-    const [q, k, a, s, ai, f, ind, corr] = await Promise.allSettled([
+    const [rt, k, a, s, ai, f, ind, corr] = await Promise.allSettled([
       api.stock.realtime(symbol.value),
       api.stock.history(symbol.value, period.value),
       api.stock.analysis(symbol.value, period.value),
@@ -426,7 +426,7 @@ async function fetchData() {
       api.stock.indicators(symbol.value, period.value),
       api.stock.correlation(symbol.value, period.value),
     ])
-    if (q.status === 'fulfilled') { quote.value = q.value; tradePrice.value = q.value.price }
+    if (rt.status === 'fulfilled') { quote.value = rt.value; tradePrice.value = rt.value.price }
     if (k.status === 'fulfilled') klineData.value = k.value
     if (a.status === 'fulfilled') analysis.value = a.value
     if (s.status === 'fulfilled') signals.value = s.value.signals
@@ -435,14 +435,15 @@ async function fetchData() {
     if (ind.status === 'fulfilled') indicators.value = ind.value
     if (corr.status === 'fulfilled') correlation.value = corr.value
 
-    if (quote.value) {
+    const q = quote.value
+    if (q) {
       depth.value = {
         bids: Array.from({ length: 5 }, (_, i) => ({
-          price: quote.value.price * (1 - 0.001 * (i + 1)),
+          price: q.price * (1 - 0.001 * (i + 1)),
           quantity: Math.floor(Math.random() * 5000 + 500),
         })),
         asks: Array.from({ length: 5 }, (_, i) => ({
-          price: quote.value.price * (1 + 0.001 * (i + 1)),
+          price: q.price * (1 + 0.001 * (i + 1)),
           quantity: Math.floor(Math.random() * 5000 + 500),
         })),
       }

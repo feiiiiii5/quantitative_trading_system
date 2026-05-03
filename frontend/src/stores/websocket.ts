@@ -3,7 +3,7 @@ import { ref } from 'vue'
 
 export interface WsMessage {
   type: string
-  data: any
+  data: Record<string, unknown>
   timestamp: number
 }
 
@@ -61,15 +61,15 @@ export const useWebSocketStore = defineStore('websocket', () => {
     connected.value = false
   }
 
-  function subscribe(channel: string) {
+  function subscribe(symbols: string[]) {
     if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'subscribe', channel }))
+      ws.value.send(JSON.stringify({ type: 'subscribe', symbols }))
     }
   }
 
-  function unsubscribe(channel: string) {
+  function unsubscribe(symbols: string[]) {
     if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'unsubscribe', channel }))
+      ws.value.send(JSON.stringify({ type: 'unsubscribe', symbols }))
     }
   }
 

@@ -66,6 +66,42 @@ async def async_http_get(url: str, headers: Optional[dict] = None) -> Optional[s
     return None
 
 
+async def http_get_json(
+    url: str,
+    params: Optional[dict] = None,
+    referer: str = "https://data.eastmoney.com/",
+    use_jsonp: bool = False,
+) -> Optional[dict]:
+    if params is None:
+        params = {}
+    if use_jsonp:
+        params["cb"] = "jQuery_callback"
+    from urllib.parse import urlencode
+    full_url = f"{url}?{urlencode(params)}" if params else url
+    try:
+        text = await async_http_get(full_url, headers={
+            "Referer": referer,
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        })
+    except Exception as e:
+        logger.debug(f"http_get_json request error for {url}: {e}")
+        return None
+    if not text:
+        return None
+    if use_jsonp:
+        m = re.search(r'jQuery_callback\((.*)\)', text, re.DOTALL)
+        if m:
+            text = m.group(1)
+        else:
+            logger.debug(f"http_get_json JSONP callback not found in response from {url}")
+            return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.debug(f"http_get_json JSON decode error for {url}: {e}")
+        return None
+
+
 def _http_get(url: str, headers: Optional[dict] = None) -> Optional[str]:
     try:
         loop = asyncio.get_event_loop()
@@ -468,6 +504,16 @@ class SinaSource:
         return None
 
 
+def safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
+    try:
+        if value in (None, "-", ""):
+            return default
+        val = float(value)
+        return val if pd.notna(val) else default
+    except (TypeError, ValueError):
+        return default
+
+
 class EastMoneySource:
     """东方财富数据源"""
 
@@ -477,7 +523,10 @@ class EastMoneySource:
 
     @staticmethod
     def _clean_symbol(symbol: str) -> str:
-        return re.sub(r"^(sh|sz|SH|SZ)", "", str(symbol)).strip()
+        code = re.sub(r"^(sh|sz|SH|SZ)", "", str(symbol)).strip()
+        if not re.match(r'^[0-9a-zA-Z]{1,10}$', code):
+            return ""
+        return code
 
     @staticmethod
     def _secid(symbol: str, market: str = "A") -> str:
@@ -488,13 +537,7 @@ class EastMoneySource:
 
     @staticmethod
     def _num(value: Any, default: float = 0.0) -> float:
-        try:
-            if value in (None, "-", ""):
-                return default
-            val = float(value)
-            return val if pd.notna(val) else default
-        except (TypeError, ValueError):
-            return default
+        return safe_float(value, default)
 
     @staticmethod
     async def fetch_realtime(symbol: str, market: str) -> Optional[dict]:
@@ -1590,3 +1633,13 @@ class SmartDataFetcher:
             return True
         except Exception:
             return False
+
+
+_shared_fetcher: Optional[SmartDataFetcher] = None
+
+
+def get_fetcher() -> SmartDataFetcher:
+    global _shared_fetcher
+    if _shared_fetcher is None:
+        _shared_fetcher = SmartDataFetcher()
+    return _shared_fetcher

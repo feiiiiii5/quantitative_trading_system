@@ -38,11 +38,13 @@ export const useWatchlistStore = defineStore('watchlist', () => {
     }
   }
 
-  async function fetchAlerts() {
+  async function fetchAlerts(): Promise<PriceAlert[]> {
     try {
       alerts.value = await api.watchlist.alerts()
+      return alerts.value
     } catch (e) {
       console.error('Fetch alerts error:', e)
+      return []
     }
   }
 

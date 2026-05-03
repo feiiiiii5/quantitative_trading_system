@@ -1,14 +1,91 @@
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Query, Request
+from pydantic import BaseModel, field_validator
+
+from api.utils import json_response as _json_response, safe_error
 
 logger = logging.getLogger(__name__)
 backtest_router = APIRouter()
 
+_SYMBOL_RE = re.compile(r"^[0-9]{6}\.[A-Z]{2}$|^[0-9]{6}$|^[A-Z]+$")
 
-def _json_response(success: bool, data=None, error: str = ""):
-    return {"success": success, "data": data, "error": error}
+
+class BacktestRunRequest(BaseModel):
+    symbol: str
+    strategy_type: str = "adaptive"
+    start_date: str = "2024-01-01"
+    end_date: str = "2025-12-31"
+    initial_capital: float = 1000000
+    commission: float = 0.0003
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 20:
+            raise ValueError("股票代码格式无效")
+        return v
+
+    @field_validator("initial_capital")
+    @classmethod
+    def validate_capital(cls, v: float) -> float:
+        if v < 10000 or v > 1e9:
+            raise ValueError("初始资金范围: 1万-10亿")
+        return v
+
+    @field_validator("commission")
+    @classmethod
+    def validate_commission(cls, v: float) -> float:
+        if v < 0 or v > 0.01:
+            raise ValueError("佣金费率范围: 0-1%")
+        return v
+
+
+class BacktestAdvancedRequest(BaseModel):
+    symbol: str
+    strategy_type: str = "adaptive"
+    strategy_name: Optional[str] = None
+    start_date: str = "2022-01-01"
+    end_date: str = "2024-12-31"
+    initial_capital: float = 1000000
+    enable_short: bool = False
+    leverage: float = 1.0
+    monte_carlo: bool = False
+    n_simulations: int = 500
+    sensitivity: bool = False
+    walk_forward: bool = False
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 20:
+            raise ValueError("股票代码格式无效")
+        return v
+
+    @field_validator("initial_capital")
+    @classmethod
+    def validate_capital(cls, v: float) -> float:
+        if v < 10000 or v > 1e9:
+            raise ValueError("初始资金范围: 1万-10亿")
+        return v
+
+    @field_validator("leverage")
+    @classmethod
+    def validate_leverage(cls, v: float) -> float:
+        if v < 0.1 or v > 5.0:
+            raise ValueError("杠杆范围: 0.1-5.0")
+        return v
+
+    @field_validator("n_simulations")
+    @classmethod
+    def validate_simulations(cls, v: int) -> int:
+        if v < 10 or v > 5000:
+            raise ValueError("模拟次数范围: 10-5000")
+        return v
 
 
 @backtest_router.get("/backtest/strategies")
@@ -36,27 +113,22 @@ async def get_backtest_strategies(request: Request):
         }
         return _json_response(True, data=strategy_info)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @backtest_router.post("/backtest/run")
 async def run_backtest(
     request: Request,
-    symbol: str = Query(...),
-    strategy_type: str = Query("adaptive"),
-    start_date: str = Query("2024-01-01"),
-    end_date: str = Query("2025-12-31"),
-    initial_capital: float = Query(1000000),
-    commission: float = Query(0.0003),
+    body: BacktestRunRequest,
 ):
     try:
         from core.backtest import run_backtest as run_bt
         fetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+        df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
-            return _json_response(False, error=f"无法获取 {symbol} 的历史数据")
+            return _json_response(False, error=f"无法获取 {body.symbol} 的历史数据")
 
-        result = await _run_single_or_adaptive(strategy_type, symbol, start_date, end_date, initial_capital, df)
+        result = await _run_single_or_adaptive(body.strategy_type, body.symbol, body.start_date, body.end_date, body.initial_capital, df)
 
         if "error" in result:
             return _json_response(False, error=result["error"])
@@ -64,7 +136,7 @@ async def run_backtest(
         return _json_response(True, data=result)
     except Exception as e:
         logger.error(f"backtest run error: {e}", exc_info=True)
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @backtest_router.get("/backtest/result/{task_id}")
@@ -122,7 +194,7 @@ async def compare_strategies(
         return _json_response(True, data=comparison)
     except Exception as e:
         logger.error(f"compare strategies error: {e}", exc_info=True)
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @backtest_router.get("/backtest/recommend")
@@ -288,7 +360,7 @@ async def recommend_strategy(
         })
     except Exception as e:
         logger.error(f"recommend strategy error: {e}", exc_info=True)
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 async def _run_single_or_adaptive(strategy_type, symbol, start_date, end_date, initial_capital, df):
@@ -296,8 +368,10 @@ async def _run_single_or_adaptive(strategy_type, symbol, start_date, end_date, i
     from core.backtest import run_backtest as run_bt
 
     if strategy_type == "composite" or strategy_type == "all":
-        engine = __import__("core.backtest", fromlist=["BacktestEngine"]).BacktestEngine(initial_capital=initial_capital)
-        strategies = __import__("core.strategies", fromlist=["CompositeStrategy"]).CompositeStrategy().strategies
+        from core.backtest import BacktestEngine
+        from core.strategies import CompositeStrategy
+        engine = BacktestEngine(initial_capital=initial_capital)
+        strategies = CompositeStrategy().strategies
         import pandas as pd
         work_df = df.copy()
         if "date" in work_df.columns:

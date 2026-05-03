@@ -219,10 +219,15 @@ class TechnicalIndicators:
     @staticmethod
     def _cci(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
         tp = (h + low_arr + c) / 3
-        ma = pd.Series(tp).rolling(period).mean().values
-        md = pd.Series(tp).rolling(period).apply(
-            lambda x: np.abs(x - x.mean()).mean(), raw=True
-        ).values
+        n = len(tp)
+        if n < period:
+            return np.zeros(n)
+        from numpy.lib.stride_tricks import sliding_window_view
+        windows = sliding_window_view(tp, period)
+        ma = np.full(n, np.nan)
+        md = np.full(n, np.nan)
+        ma[period - 1 :] = windows.mean(axis=1)
+        md[period - 1 :] = np.mean(np.abs(windows - ma[period - 1 :, np.newaxis]), axis=1)
         cci = np.where(np.isfinite(md) & (md != 0), (tp - ma) / (0.015 * md), 0)
         return cci
 
@@ -402,15 +407,25 @@ class KLinePatternRecognizer:
         candles = df.reset_index(drop=True)
         n = len(candles)
         closes = candles["close"].astype(float).values
-        slopes = np.zeros(n)
         lookback = 5
-        for i in range(n):
-            start = max(0, i - lookback)
-            if i - start < 2:
-                slopes[i] = 0.0
-            else:
-                x = np.arange(i - start)
-                slopes[i] = float(np.polyfit(x, closes[start:i], 1)[0])
+        slopes = np.zeros(n)
+        if n >= 2:
+            x_unit = np.arange(lookback + 1, dtype=float)
+            x_mean = x_unit.mean()
+            x_var = ((x_unit - x_mean) ** 2).sum()
+            for i in range(n):
+                start = max(0, i - lookback)
+                window = closes[start:i + 1]
+                if len(window) < 2:
+                    slopes[i] = 0.0
+                else:
+                    x_w = np.arange(len(window), dtype=float)
+                    xm = x_w.mean()
+                    xv = ((x_w - xm) ** 2).sum()
+                    if xv > 0:
+                        slopes[i] = float(np.dot(window - window.mean(), x_w - xm) / xv)
+                    else:
+                        slopes[i] = 0.0
         for i in range(len(candles)):
             row = candles.iloc[i]
             open_price = float(row["open"])
@@ -456,16 +471,6 @@ class KLinePatternRecognizer:
                 if float(a["close"]) > float(a["open"]) and b_body < a_body * 0.5 and float(c["close"]) < float(c["open"]) and float(c["close"]) < midpoint_a:
                     result.append({"index": i, "date": str(row["date"]), "pattern": "evening_star", "label": "黄昏之星", "price": float(c["close"])})
         return result
-
-    @staticmethod
-    def _trend(df: pd.DataFrame, index: int, lookback: int = 5) -> float:
-        start = max(0, index - lookback)
-        if index - start < 2:
-            return 0.0
-        closes = df.iloc[start:index]["close"].astype(float).values
-        x = np.arange(len(closes))
-        slope = np.polyfit(x, closes, 1)[0]
-        return float(slope)
 
 
 class IndicatorAnalysis:
@@ -674,38 +679,38 @@ def calc_all_indicators(kline_data: list) -> dict:
         computed = TechnicalIndicators.compute_all(df)
         if computed:
             result.update(computed)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"compute_all failed: {e}")
 
     try:
         result["ma_alignment"] = IndicatorAnalysis.ma_alignment(df)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"ma_alignment failed: {e}")
 
     try:
         result["support_resistance"] = IndicatorAnalysis.support_resistance(df)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"support_resistance failed: {e}")
 
     try:
         result["volatility"] = IndicatorAnalysis.volatility_range(df)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"volatility_range failed: {e}")
 
     try:
         result["volume_price"] = IndicatorAnalysis.volume_price_analysis(df)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"volume_price_analysis failed: {e}")
 
     try:
         result["rsi_divergence"] = IndicatorAnalysis.rsi_divergence(df)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"rsi_divergence failed: {e}")
 
     try:
         result["kline_patterns"] = KLinePatternRecognizer.recognize(df)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"kline_patterns failed: {e}")
 
     return _sanitize_for_json(result)
 
@@ -822,7 +827,9 @@ def calc_adx(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14
     atr = pd.Series(tr).ewm(alpha=1 / period, min_periods=period).mean().values
     plus_di = np.where(atr > 0, pd.Series(plus_dm).ewm(alpha=1 / period, min_periods=period).mean().values / atr * 100, 0)
     minus_di = np.where(atr > 0, pd.Series(minus_dm).ewm(alpha=1 / period, min_periods=period).mean().values / atr * 100, 0)
-    dx = np.where((plus_di + minus_di) > 0, np.abs(plus_di - minus_di) / (plus_di + minus_di) * 100, 0)
+    denom = plus_di + minus_di
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dx = np.where(denom > 0, np.abs(plus_di - minus_di) / denom * 100, 0)
     adx = pd.Series(dx).ewm(alpha=1 / period, min_periods=period).mean().values
     return adx
 
@@ -937,8 +944,16 @@ def _rsi_np(values: np.ndarray, period: int = 14) -> np.ndarray:
     delta = np.diff(arr, prepend=arr[0])
     gain = np.where(delta > 0, delta, 0.0)
     loss = np.where(delta < 0, -delta, 0.0)
-    avg_gain = _rolling_mean_np(gain, period)
-    avg_loss = _rolling_mean_np(loss, period)
+    alpha = 1.0 / period
+    avg_gain = np.full(len(arr), np.nan)
+    avg_loss = np.full(len(arr), np.nan)
+    if len(arr) < period:
+        return out
+    avg_gain[period - 1] = np.mean(gain[1:period])
+    avg_loss[period - 1] = np.mean(loss[1:period])
+    for i in range(period, len(arr)):
+        avg_gain[i] = alpha * gain[i] + (1 - alpha) * avg_gain[i - 1]
+        avg_loss[i] = alpha * loss[i] + (1 - alpha) * avg_loss[i - 1]
     rs = np.divide(avg_gain, avg_loss, out=np.full(len(arr), np.nan), where=avg_loss > 0)
     out = 100 - 100 / (1 + rs)
     out[(avg_loss == 0) & np.isfinite(avg_gain)] = 100

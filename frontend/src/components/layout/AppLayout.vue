@@ -2,7 +2,12 @@
   <div class="shell">
     <aside class="sidebar" :class="{ expanded }" @mouseenter="expanded = true" @mouseleave="expanded = false">
       <div class="sidebar-brand">
-        <div class="brand-icon">Q</div>
+        <div class="brand-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M3 3v18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M7 16l4-8 4 4 6-10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
         <transition name="fade">
           <span v-if="expanded" class="brand-text">QuantCore</span>
         </transition>
@@ -44,7 +49,7 @@
             <span
               v-for="(s, key) in marketStatus"
               :key="key"
-              class="status-badge"
+              class="status-pill"
               :class="s.is_open ? 'open' : 'closed'"
             >
               <span class="status-dot" />
@@ -54,11 +59,11 @@
         </div>
 
         <div class="topbar-center">
-          <div class="search-box" @click="showSearch = true">
+          <div class="search-trigger" @click="showSearch = true">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
             </svg>
-            <span>搜索股票代码/名称...</span>
+            <span>搜索股票代码或名称</span>
             <kbd>⌘K</kbd>
           </div>
         </div>
@@ -149,12 +154,37 @@ const navItems = [
   {
     path: '/dashboard',
     label: '仪表盘',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
   },
   {
     path: '/market',
     label: '行情',
     icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v18h18"/><path d="M7 16l4-8 4 4 6-10"/></svg>',
+  },
+  {
+    path: '/news',
+    label: '资讯',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 22h16a2 2 0 002-2V4a2 2 0 00-2-2H8a2 2 0 00-2 2v16a2 2 0 01-2 2zm0 0a2 2 0 01-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8M15 18h-5M10 6h8v4h-8z"/></svg>',
+  },
+  {
+    path: '/screener',
+    label: '选股',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg>',
+  },
+  {
+    path: '/moneyflow',
+    label: '资金',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
+  },
+  {
+    path: '/chip',
+    label: '筹码',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>',
+  },
+  {
+    path: '/sector',
+    label: '板块',
+    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/><path d="M2 12h20"/></svg>',
   },
   {
     path: '/strategy',
@@ -254,11 +284,13 @@ onUnmounted(() => {
 
 .sidebar {
   width: var(--sidebar-width);
-  background: var(--bg-surface);
+  background: var(--bg-glass);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  transition: width var(--duration-slow) var(--ease-out);
+  transition: width var(--duration-slower) var(--ease-out);
   z-index: 100;
   flex-shrink: 0;
 }
@@ -273,20 +305,18 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-3);
   padding: 0 var(--space-4);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .brand-icon {
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-sm);
   background: var(--bg-gradient-accent);
   color: white;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: var(--text-md);
   flex-shrink: 0;
   box-shadow: var(--glow-accent);
 }
@@ -297,6 +327,7 @@ onUnmounted(() => {
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
+  letter-spacing: -0.02em;
 }
 
 .sidebar-nav {
@@ -305,6 +336,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow-y: auto;
 }
 
 .nav-item {
@@ -315,7 +347,7 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: all var(--transition-fast);
   white-space: nowrap;
   overflow: hidden;
   text-decoration: none;
@@ -329,7 +361,6 @@ onUnmounted(() => {
 .nav-item.active {
   background: var(--accent-muted);
   color: var(--accent);
-  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .nav-icon {
@@ -345,11 +376,12 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   white-space: nowrap;
   overflow: hidden;
+  font-weight: 500;
 }
 
 .sidebar-footer {
   padding: var(--space-2);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .clock-item {
@@ -370,11 +402,13 @@ onUnmounted(() => {
 
 .topbar {
   height: var(--topbar-height);
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
+  background: var(--bg-glass);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-6);
   gap: var(--space-4);
   flex-shrink: 0;
 }
@@ -390,32 +424,33 @@ onUnmounted(() => {
   gap: var(--space-2);
 }
 
-.status-badge {
+.status-pill {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: var(--text-xs);
-  padding: 2px 8px;
-  border-radius: 10px;
+  padding: 3px 10px;
+  border-radius: 100px;
   background: var(--bg-elevated);
+  font-weight: 500;
 }
 
-.status-badge.open {
+.status-pill.open {
   color: var(--fall);
 }
 
-.status-badge.closed {
+.status-pill.closed {
   color: var(--text-tertiary);
 }
 
 .status-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
 }
 
-.status-badge.open .status-dot {
+.status-pill.open .status-dot {
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -425,107 +460,110 @@ onUnmounted(() => {
   justify-content: center;
 }
 
-.search-box {
+.search-trigger {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-4);
   background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--text-tertiary);
   font-size: var(--text-sm);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
-  min-width: 260px;
+  min-width: 280px;
 }
 
-.search-box:hover {
+.search-trigger:hover {
   border-color: var(--border-hover);
-  box-shadow: var(--glow-accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
-.search-box kbd {
+.search-trigger kbd {
   font-size: 10px;
-  padding: 1px 5px;
+  padding: 2px 6px;
   background: var(--bg-overlay);
-  border-radius: 3px;
+  border-radius: 4px;
   font-family: var(--font-mono);
   margin-left: auto;
+  color: var(--text-tertiary);
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .theme-toggle {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
   background: var(--bg-elevated);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: all var(--transition-fast);
 }
 .theme-toggle:hover {
   border-color: var(--border-hover);
   color: var(--text-primary);
-  background: var(--bg-hover);
+  background: var(--bg-overlay);
 }
 
 .index-tickers {
   display: flex;
-  gap: var(--space-4);
+  gap: var(--space-5);
 }
 
 .ticker {
   font-size: var(--text-xs);
   color: var(--text-secondary);
   display: flex;
-  gap: 4px;
+  gap: 5px;
+  font-weight: 500;
 }
 
 .content {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--space-4);
+  padding: var(--space-6);
 }
 
 .search-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.5);
   z-index: 1000;
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 15vh;
-  backdrop-filter: blur(4px);
+  padding-top: 18vh;
+  backdrop-filter: blur(8px);
 }
 
 .search-modal {
-  width: 520px;
+  width: 560px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-float);
   overflow: hidden;
-  animation: slideDown var(--duration-normal) var(--ease-out);
+  animation: fadeSlideDown var(--duration-normal) var(--ease-out);
 }
 
 .search-input-wrap {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
 }
 
 .search-input-wrap input {
@@ -546,7 +584,7 @@ onUnmounted(() => {
   font-size: 10px;
   padding: 2px 6px;
   background: var(--bg-elevated);
-  border-radius: 3px;
+  border-radius: 4px;
   font-family: var(--font-mono);
   color: var(--text-tertiary);
   cursor: pointer;
@@ -561,9 +599,9 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-5);
   cursor: pointer;
-  transition: background var(--duration-fast);
+  transition: background var(--transition-fast);
 }
 
 .search-item:hover {
@@ -574,6 +612,7 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   color: var(--accent);
   min-width: 60px;
+  font-weight: 500;
 }
 
 .search-name {
@@ -585,13 +624,13 @@ onUnmounted(() => {
 .search-market {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
-  padding: 1px 6px;
+  padding: 2px 8px;
   background: var(--bg-elevated);
-  border-radius: 3px;
+  border-radius: 100px;
 }
 
 .search-empty {
-  padding: var(--space-6);
+  padding: var(--space-8);
   text-align: center;
   color: var(--text-tertiary);
   font-size: var(--text-sm);

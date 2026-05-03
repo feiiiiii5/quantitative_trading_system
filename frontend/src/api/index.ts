@@ -26,6 +26,17 @@ import type {
   SystemMetrics,
   WeeklyReport,
   MarketStock,
+  NewsItem,
+  MarketSentimentData,
+  ScreenerPreset,
+  ScreenerResult,
+  CapitalFlowData,
+  CapitalFlowRealtime,
+  SectorFlowItem,
+  ChipData,
+  SectorStrengthItem,
+  SectorRotationData,
+  SectorDetail,
 } from '@/types'
 
 const http = axios.create({ baseURL: '/api', timeout: 30000 })
@@ -36,10 +47,10 @@ async function get<T>(url: string, params?: Record<string, unknown>): Promise<T>
   return data.data
 }
 
-async function post<T>(url: string, params?: Record<string, unknown>): Promise<T> {
-  const { data } = await http.post<ApiResponse<T>>(url, null, { params })
-  if (!data.success) throw new Error(data.error || '请求失败')
-  return data.data
+async function post<T>(url: string, data?: Record<string, unknown>): Promise<T> {
+  const { data: resp } = await http.post<ApiResponse<T>>(url, data)
+  if (!resp.success) throw new Error(resp.error || '请求失败')
+  return resp.data
 }
 
 export const api = {
@@ -125,5 +136,35 @@ export const api = {
 
   system: {
     metrics: () => get<SystemMetrics>('/system/metrics'),
+  },
+
+  news: {
+    latest: (count = 40) => get<NewsItem[]>('/news/latest', { count }),
+    stock: (symbol: string, count = 20) => get<NewsItem[]>(`/news/stock/${symbol}`, { count }),
+    sentiment: () => get<MarketSentimentData>('/news/sentiment'),
+  },
+
+  screener: {
+    presets: () => get<ScreenerPreset[]>('/screener/presets'),
+    run: (preset?: string, sortBy = 'change_pct', sortDesc = true, limit = 50) =>
+      get<ScreenerResult>('/screener/run', { preset, sort_by: sortBy, sort_desc: sortDesc, limit }),
+    custom: (conditions: Record<string, unknown>[], sortBy = 'change_pct', sortDesc = true, limit = 50) =>
+      post<ScreenerResult>('/screener/custom', { conditions, sort_by: sortBy, sort_desc: sortDesc, limit }),
+  },
+
+  moneyFlow: {
+    stock: (symbol: string, days = 10) => get<CapitalFlowData>(`/moneyflow/stock/${symbol}`, { days }),
+    ranking: (sortBy = 'main_net', count = 30) => get<CapitalFlowRealtime[]>('/moneyflow/ranking', { sort_by: sortBy, count }),
+    sector: () => get<SectorFlowItem[]>('/moneyflow/sector'),
+  },
+
+  chip: {
+    distribution: (symbol: string, period = '1y') => get<ChipData>(`/chip/${symbol}`, { period }),
+  },
+
+  sector: {
+    strength: (topN = 20) => get<SectorStrengthItem[]>('/sector/strength', { top_n: topN }),
+    rotation: () => get<SectorRotationData>('/sector/rotation'),
+    detail: (sectorCode: string) => get<SectorDetail>(`/sector/${sectorCode}/stocks`),
   },
 }

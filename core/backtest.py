@@ -570,10 +570,11 @@ class BacktestEngine:
             if position is not None:
                 current_price = closes[i]
                 if position["stop_loss"] > 0 and current_price <= position["stop_loss"]:
-                    revenue = shares * current_price
-                    cost_detail = self._cost_model.calc_sell_cost(current_price, shares, revenue)
+                    exec_price = current_price * (1 - self._slippage_pct)
+                    revenue = shares * exec_price
+                    cost_detail = self._cost_model.calc_sell_cost(exec_price, shares, revenue)
                     total_fee = cost_detail["total"]
-                    pnl = (current_price - position["entry_price"]) * shares - total_fee
+                    pnl = (exec_price - position["entry_price"]) * shares - total_fee
                     cash += revenue - total_fee
                     date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
                     hold_days = i - position["entry_idx"]
@@ -581,7 +582,7 @@ class BacktestEngine:
                     trades.append({
                         "action": "sell",
                         "symbol": "",
-                        "price": current_price,
+                        "price": exec_price,
                         "shares": shares,
                         "amount": round(revenue, 2),
                         "fee": round(total_fee, 2),
@@ -598,10 +599,11 @@ class BacktestEngine:
                     shares = 0
                     position = None
                 elif position["take_profit"] > 0 and current_price >= position["take_profit"]:
-                    revenue = shares * current_price
-                    cost_detail = self._cost_model.calc_sell_cost(current_price, shares, revenue)
+                    exec_price = current_price * (1 - self._slippage_pct)
+                    revenue = shares * exec_price
+                    cost_detail = self._cost_model.calc_sell_cost(exec_price, shares, revenue)
                     total_fee = cost_detail["total"]
-                    pnl = (current_price - position["entry_price"]) * shares - total_fee
+                    pnl = (exec_price - position["entry_price"]) * shares - total_fee
                     cash += revenue - total_fee
                     date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
                     hold_days = i - position["entry_idx"]
@@ -609,7 +611,7 @@ class BacktestEngine:
                     trades.append({
                         "action": "sell",
                         "symbol": "",
-                        "price": current_price,
+                        "price": exec_price,
                         "shares": shares,
                         "amount": round(revenue, 2),
                         "fee": round(total_fee, 2),
@@ -630,7 +632,19 @@ class BacktestEngine:
             equity_curve.append(bar_equity)
 
         if position is not None and shares > 0:
-            cash += shares * closes[-1]
+            close_price = closes[-1] * (1 - self._slippage_pct)
+            close_cost_detail = self._cost_model.calc_sell_cost(close_price, shares, shares * close_price)
+            close_fee = close_cost_detail["total"]
+            cash += shares * close_price - close_fee
+            trades.append({
+                "date": dates_list[-1] if dates_list else "",
+                "action": "sell",
+                "price": round(close_price, 4),
+                "shares": shares,
+                "fee": round(close_fee, 2),
+                "pnl": round(shares * close_price - shares * position["entry_price"] - close_fee, 2),
+                "reason": "回测结束强平",
+            })
             shares = 0
             position = None
 
@@ -867,6 +881,15 @@ def _get_strategy_min_bars(strategy_name: str, params: dict = None) -> int:
         "donchian": 30, "donchian_channel": 30,
         "chande_kroll": 40, "chande_kroll_stop": 40,
         "vw_macd": 50, "volume_weighted_macd": 50,
+        "ornstein_uhlenbeck": 60,
+        "kaufman_adaptive": 40,
+        "garch_volatility": 60,
+        "mtf_momentum": 50, "multi_timeframe_momentum": 50,
+        "adx_trend": 55, "adx_trend_strength": 55,
+        "cmf": 50, "chaikin_money_flow": 50,
+        "psar": 25, "parabolic_sar": 25,
+        "hurst": 100, "hurst_exponent": 100,
+        "pairs": 65, "pairs_trading": 65,
     }
     return _min_bars.get(strategy_name, 30)
 
@@ -880,7 +903,7 @@ def run_backtest(
     params: dict = None,
     _df=None,
 ) -> dict:
-    from core.data_fetcher import SmartDataFetcher
+    from core.data_fetcher import get_fetcher
     from core.strategies import STRATEGY_REGISTRY
 
     if strategy_name == "adaptive":
@@ -895,7 +918,7 @@ def run_backtest(
     except (TypeError, ValueError) as e:
         return {"error": f"策略参数错误: {e}"}
 
-    fetcher = SmartDataFetcher()
+    fetcher = get_fetcher()
 
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -1043,8 +1066,8 @@ def _run_adaptive_backtest(
     if _df is not None:
         df = _df.copy()
     else:
-        from core.data_fetcher import SmartDataFetcher
-        fetcher = SmartDataFetcher()
+        from core.data_fetcher import get_fetcher
+        fetcher = get_fetcher()
 
         try:
             start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -1214,10 +1237,10 @@ def run_walk_forward(
     initial_capital: float = 1000000,
     params: dict = None,
 ) -> dict:
-    from core.data_fetcher import SmartDataFetcher
+    from core.data_fetcher import get_fetcher
     import asyncio
 
-    fetcher = SmartDataFetcher()
+    fetcher = get_fetcher()
 
     async def _fetch_df():
         return await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")

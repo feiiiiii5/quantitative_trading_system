@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from core.events import Event, EventType, EventBus
-from core.orders import Order, OrderSide, OrderStatus
+from core.orders import Order, OrderSide, OrderStatus, OrderType
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +275,11 @@ class EnhancedRiskManager:
         if symbol not in self._position_returns:
             self._position_returns[symbol] = []
         self._position_returns[symbol].append(daily_return)
+        if len(self._position_returns[symbol]) > 252:
+            self._position_returns[symbol] = self._position_returns[symbol][-252:]
+        if len(self._position_returns) > 500:
+            oldest = next(iter(self._position_returns))
+            del self._position_returns[oldest]
 
     def get_risk_report(self) -> Dict[str, object]:
         daily_loss_filter = None
@@ -295,6 +300,3 @@ class EnhancedRiskManager:
             "active_filters": [f.__class__.__name__ for f in self._filters],
         }
         return report
-
-
-from core.orders import OrderType

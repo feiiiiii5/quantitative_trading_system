@@ -5,6 +5,7 @@ QuantCore API路由模块
 import asyncio
 import json
 import logging
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -13,6 +14,9 @@ from typing import Optional, Set
 
 from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
+
+from api.utils import sanitize, json_response as _json_response, safe_error
+from api.backtest_routes import BacktestAdvancedRequest
 import numpy as np
 import pandas as pd
 
@@ -55,6 +59,67 @@ class BacktestRequest(BaseModel):
     initial_capital: float = Field(1000000, gt=0, le=100000000)
 
 
+class BacktestOptimizeRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    strategy_name: str = Field("ma_cross", max_length=50)
+    start_date: str = Field("2023-01-01", pattern=r'^\d{4}-\d{2}-\d{2}$')
+    end_date: str = Field("2024-12-31", pattern=r'^\d{4}-\d{2}-\d{2}$')
+    metric: str = Field("sharpe_ratio", max_length=30)
+    max_combinations: int = Field(100, gt=0, le=1000)
+
+
+class WatchlistAddRemoveRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+
+
+class WatchlistReorderRequest(BaseModel):
+    symbols: str = Field(..., min_length=1)
+
+
+class AlertAddRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    alert_type: str = Field(...)
+    value: float = Field(...)
+
+
+class AlertRemoveRequest(BaseModel):
+    alert_id: str = Field(...)
+
+
+class TradingBuyRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    name: str = Field("", max_length=20)
+    market: str = Field("", max_length=2)
+    price: float = Field(..., gt=0)
+    shares: int = Field(..., gt=0, le=1000000)
+    stop_loss: float = Field(0, ge=0)
+    take_profit: float = Field(0, ge=0)
+    strategy: str = Field("manual", max_length=50)
+
+
+class TradingSellRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    price: float = Field(..., gt=0)
+    shares: Optional[int] = Field(None, gt=0, le=1000000)
+    reason: str = Field("manual", max_length=50)
+
+
+class ConfigSetRequest(BaseModel):
+    value: str = Field(...)
+
+
+class AlphaEvolveRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    max_iterations: int = Field(3, gt=0, le=20)
+    period: str = Field("1y", max_length=5)
+
+
+class AuditStrategyRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=10)
+    strategy_name: str = Field("adaptive", max_length=50)
+    period: str = Field("1y", max_length=5)
+
+
 class WatchlistAddRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=10, pattern=r'^[0-9a-zA-Z]{1,10}$')
 
@@ -71,30 +136,38 @@ class ConnectionManager:
     def __init__(self):
         self.connections: list[WebSocket] = []
         self._subscriptions: dict[WebSocket, Set[str]] = {}
+        self._lock = asyncio.Lock()
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
-        self.connections.append(ws)
-        self._subscriptions[ws] = set()
+        async with self._lock:
+            self.connections.append(ws)
+            self._subscriptions[ws] = set()
 
-    def disconnect(self, ws: WebSocket):
-        if ws in self.connections:
-            self.connections.remove(ws)
-        self._subscriptions.pop(ws, None)
+    async def disconnect(self, ws: WebSocket):
+        async with self._lock:
+            if ws in self.connections:
+                self.connections.remove(ws)
+            self._subscriptions.pop(ws, None)
 
-    def subscribe(self, ws: WebSocket, symbols: list[str]):
-        if ws in self._subscriptions:
-            self._subscriptions[ws].update(symbols)
+    async def subscribe(self, ws: WebSocket, symbols: list[str]):
+        async with self._lock:
+            if ws in self._subscriptions:
+                self._subscriptions[ws].update(symbols)
 
-    def unsubscribe(self, ws: WebSocket, symbols: list[str]):
-        if ws in self._subscriptions:
-            self._subscriptions[ws] -= set(symbols)
+    async def unsubscribe(self, ws: WebSocket, symbols: list[str]):
+        async with self._lock:
+            if ws in self._subscriptions:
+                self._subscriptions[ws] -= set(symbols)
 
     def get_all_subscribed_symbols(self) -> Set[str]:
         all_symbols: Set[str] = set()
         for symbols in self._subscriptions.values():
             all_symbols.update(symbols)
         return all_symbols
+
+    def get_connections_snapshot(self) -> list[WebSocket]:
+        return list(self.connections)
 
 
 _manager = ConnectionManager()
@@ -112,25 +185,6 @@ def _is_trading_hours() -> bool:
         pass
     return False
 
-
-def _sanitize(obj):
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, (np.bool_,)):
-        return bool(obj)
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, dict):
-        return {k: _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize(v) for v in obj]
-    return obj
-
-
-def _json_response(success: bool, data=None, error: str = ""):
-    return {"success": success, "data": _sanitize(data), "error": error}
 
 
 def cache_response(ttl_seconds: int):
@@ -157,7 +211,7 @@ async def get_market_overview(request: Request):
         return _json_response(True, data=data)
     except Exception as e:
         logger.error(f"Market overview error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/market/status")
@@ -169,7 +223,7 @@ async def get_market_status(request: Request):
             statuses[market] = MarketHours.get_market_status(market)
         return _json_response(True, data=statuses)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/stock/realtime/{symbol}")
@@ -181,7 +235,7 @@ async def get_stock_realtime(request: Request, symbol: str):
             return _json_response(True, data=data)
         return _json_response(False, error="未获取到数据")
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/stock/history/{symbol}")
@@ -200,7 +254,7 @@ async def get_stock_history(
         result = df.to_dict("records")
         return _json_response(True, data=result)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/stock/fundamentals/{symbol}")
@@ -214,7 +268,7 @@ async def get_stock_fundamentals(request: Request, symbol: str):
             return _json_response(True, data=data)
         return _json_response(False, error="无基本面数据")
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/stock/indicators/{symbol}")
@@ -235,7 +289,7 @@ async def get_stock_indicators(
         return _json_response(True, data=result)
     except Exception as e:
         logger.error(f"Indicators error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 def _period_to_history(period: str) -> str:
@@ -324,7 +378,7 @@ async def get_deep_analysis(request: Request, symbol: str, period: str = Query("
         return _json_response(True, data=result)
     except Exception as e:
         logger.error(f"Deep analysis error for {symbol}: {e}", exc_info=True)
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/stock/correlation/{symbol}")
@@ -382,7 +436,7 @@ async def get_correlation_analysis(
             "stability_score": round(float(100 - rolling_corr.tail(120).std() * 100), 2),
         })
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/stock/prediction/{symbol}")
@@ -449,7 +503,7 @@ async def get_stock_prediction(request: Request, symbol: str, period: str = Quer
         })
     except Exception as e:
         logger.error(f"Prediction error for {symbol}: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/stock/signals/{symbol}")
@@ -498,7 +552,7 @@ async def get_stock_signals(
 
         return _json_response(True, data={"symbol": symbol, "signals": signals})
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/portfolio/risk_analysis")
@@ -567,7 +621,7 @@ async def get_portfolio_risk_analysis(
         })
     except Exception as e:
         logger.error(f"Portfolio risk analysis error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/portfolio/attribution")
@@ -624,7 +678,7 @@ async def get_portfolio_attribution(
             "attribution": attribution,
         })
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/report/weekly")
@@ -673,8 +727,9 @@ async def get_weekly_report(request: Request):
             try:
                 url = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
                 import aiohttp, re
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                from core.data_fetcher import get_aiohttp_session
+                session = await get_aiohttp_session()
+                async with session.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         text = await resp.text()
                 match = re.search(r'=\s*({.*})', text)
                 if match:
@@ -713,12 +768,12 @@ async def get_weekly_report(request: Request):
         })
     except Exception as e:
         logger.error(f"Weekly report error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/market/stocks")
 @cache_response(30)
-async def get_market_stocks(request: Request, market: str = Query("A"), limit: int = Query(5000)):
+async def get_market_stocks(request: Request, market: str = Query("A"), limit: int = Query(5000, le=10000)):
     try:
         from core.market_data import fetch_all_a_stocks_async
         stocks = await fetch_all_a_stocks_async()
@@ -835,8 +890,9 @@ async def get_market_heatmap(request: Request, market: str = Query("A")):
         try:
             url = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
             import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            from core.data_fetcher import get_aiohttp_session
+            session = await get_aiohttp_session()
+            async with session.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     text = await resp.text()
             import re
             match = re.search(r'=\s*({.*})', text)
@@ -885,7 +941,7 @@ async def get_northbound_detail(request: Request):
             data["net_inflow"] = data.get("total_net", sh_inflow + sz_inflow)
         return _json_response(True, data=data)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/market/limit_up")
@@ -895,7 +951,7 @@ async def get_limit_up_pool(request: Request):
         fetcher: SmartDataFetcher = request.app.state.fetcher
         return _json_response(True, data=await fetcher.fetch_limit_up_pool())
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/market/dragon_tiger")
@@ -905,7 +961,7 @@ async def get_dragon_tiger(request: Request, date: Optional[str] = None):
         fetcher: SmartDataFetcher = request.app.state.fetcher
         return _json_response(True, data=await fetcher.fetch_dragon_tiger_list(date))
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/factor/analysis/{symbol}")
@@ -946,110 +1002,94 @@ async def get_factor_analysis(request: Request, symbol: str, period: str = Query
             "composite_score": round(float(composite[-1]), 4) if len(composite) else 0,
         })
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/backtest/advanced")
 async def run_advanced_backtest(
     request: Request,
-    symbol: str = Query(...),
-    strategy_type: str = Query("adaptive"),
-    strategy_name: str = Query(None),
-    start_date: str = Query("2022-01-01"),
-    end_date: str = Query("2024-12-31"),
-    initial_capital: float = Query(1000000),
-    enable_short: bool = Query(False),
-    leverage: float = Query(1.0),
-    monte_carlo: bool = Query(False),
-    n_simulations: int = Query(500),
-    sensitivity: bool = Query(False),
-    walk_forward: bool = Query(False),
+    body: BacktestAdvancedRequest,
 ):
     try:
         from core.backtest import BacktestEngine, BacktestResult, run_backtest as run_bt
-        effective_strategy = strategy_name or strategy_type
+        effective_strategy = body.strategy_name or body.strategy_type
         fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+        df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         result = await asyncio.to_thread(
             run_bt,
-            symbol,
+            body.symbol,
             effective_strategy,
-            start_date,
-            end_date,
-            initial_capital * max(leverage, 0.1),
+            body.start_date,
+            body.end_date,
+            body.initial_capital * max(body.leverage, 0.1),
             None,
             df,
         )
         if "error" in result:
             return _json_response(False, error=result["error"])
-        result["enable_short"] = enable_short
-        result["leverage"] = leverage
-        if monte_carlo or sensitivity:
-            engine = BacktestEngine(initial_capital=initial_capital)
-        if monte_carlo:
+        result["enable_short"] = body.enable_short
+        result["leverage"] = body.leverage
+        if body.monte_carlo or body.sensitivity:
+            engine = BacktestEngine(initial_capital=body.initial_capital)
+        if body.monte_carlo:
             bt_result = BacktestResult(
                 strategy_name=result.get("strategy_name", effective_strategy),
                 trades=result.get("trades", []),
                 sharpe_ratio=result.get("sharpe_ratio", 0),
             )
-            result["monte_carlo"] = engine.monte_carlo_analysis(bt_result, n_simulations=n_simulations)
-        if sensitivity and effective_strategy != "adaptive":
+            result["monte_carlo"] = engine.monte_carlo_analysis(bt_result, n_simulations=body.n_simulations)
+        if body.sensitivity and effective_strategy != "adaptive":
             from core.strategies import STRATEGY_REGISTRY
             strategy_cls = STRATEGY_REGISTRY.get(effective_strategy)
             if strategy_cls:
                 fetcher: SmartDataFetcher = request.app.state.fetcher
-                df = await fetcher.get_history(symbol, "all", "daily", "qfq")
+                df = await fetcher.get_history(body.symbol, "all", "daily", "qfq")
                 if df is not None and not df.empty:
                     df["date"] = pd.to_datetime(df["date"], errors="coerce")
                     df = df.dropna(subset=["date"])
-                    df = df[(df["date"] >= start_date) & (df["date"] <= end_date)].reset_index(drop=True)
+                    df = df[(df["date"] >= body.start_date) & (df["date"] <= body.end_date)].reset_index(drop=True)
                     result["sensitivity"] = engine.sensitivity_analysis(strategy_cls, df, {})
-        if walk_forward:
+        if body.walk_forward:
             from core.backtest import run_walk_forward
             wf_result = await asyncio.to_thread(
-                run_walk_forward, symbol, effective_strategy, start_date, end_date,
-                252, 63, initial_capital, None,
+                run_walk_forward, body.symbol, effective_strategy, body.start_date, body.end_date,
+                252, 63, body.initial_capital, None,
             )
             if "error" not in wf_result:
                 result["walk_forward"] = wf_result
         db = getattr(request.app.state, "db", None)
         if db and hasattr(db, "save_backtest_result"):
-            result["id"] = db.save_backtest_result(effective_strategy, symbol, start_date, end_date, {}, result)
+            result["id"] = db.save_backtest_result(effective_strategy, body.symbol, body.start_date, body.end_date, {}, result)
         return _json_response(True, data=result)
     except Exception as e:
         logger.error(f"Advanced backtest error: {e}", exc_info=True)
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/backtest/optimize")
 async def optimize_strategy(
     request: Request,
-    symbol: str = Query(...),
-    strategy_name: str = Query("ma_cross"),
-    start_date: str = Query("2023-01-01"),
-    end_date: str = Query("2024-12-31"),
-    metric: str = Query("sharpe_ratio"),
-    max_combinations: int = Query(100),
+    body: BacktestOptimizeRequest,
 ):
     try:
         from core.backtest import grid_search_params
         from core.strategies import STRATEGY_REGISTRY
-        if strategy_name not in STRATEGY_REGISTRY:
-            return _json_response(False, error=f"未知策略: {strategy_name}")
+        if body.strategy_name not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"未知策略: {body.strategy_name}")
         fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, "all", "daily", "qfq")
+        df = await fetcher.get_history(body.symbol, "all", "daily", "qfq")
         if df.empty:
             return _json_response(False, error="无历史数据")
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.dropna(subset=["date"])
-        df = df[(df["date"] >= start_date) & (df["date"] <= end_date)].reset_index(drop=True)
+        df = df[(df["date"] >= body.start_date) & (df["date"] <= body.end_date)].reset_index(drop=True)
         if len(df) < 60:
             return _json_response(False, error="优化数据不足")
-        results = await asyncio.to_thread(grid_search_params, STRATEGY_REGISTRY[strategy_name], df, max_combinations)
-        results.sort(key=lambda x: x.get(metric, 0), reverse=True)
-        return _json_response(True, data={"metric": metric, "top": results[:10]})
+        results = await asyncio.to_thread(grid_search_params, STRATEGY_REGISTRY[body.strategy_name], df, body.max_combinations)
+        results.sort(key=lambda x: x.get(body.metric, 0), reverse=True)
+        return _json_response(True, data={"metric": body.metric, "top": results[:10]})
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/backtest/history")
@@ -1060,7 +1100,7 @@ async def get_backtest_history(request: Request, symbol: Optional[str] = None, l
             return _json_response(True, data=db.get_backtest_history(symbol=symbol, limit=limit))
         return _json_response(True, data=[])
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/portfolio/equity")
@@ -1133,7 +1173,7 @@ async def get_portfolio_equity(
         })
     except Exception as e:
         logger.error(f"Portfolio equity error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/watchlist")
@@ -1171,43 +1211,43 @@ async def get_watchlist(request: Request):
         return _json_response(True, data={"symbols": watchlist, "quotes": results})
     except Exception as e:
         logger.error(f"Watchlist error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/watchlist/add")
-async def add_to_watchlist(request: Request, symbol: str = Query(...)):
+async def add_to_watchlist(request: Request, body: WatchlistAddRemoveRequest):
     try:
         from core.database import get_db
         db = get_db()
         watchlist = db.get_config("watchlist", [])
         if not isinstance(watchlist, list):
             watchlist = []
-        if symbol not in watchlist:
-            watchlist.append(symbol)
+        if body.symbol not in watchlist:
+            watchlist.append(body.symbol)
             db.set_config("watchlist", watchlist)
         return _json_response(True, data=watchlist)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/watchlist/remove")
-async def remove_from_watchlist(request: Request, symbol: str = Query(...)):
+async def remove_from_watchlist(request: Request, body: WatchlistAddRemoveRequest):
     try:
         from core.database import get_db
         db = get_db()
         watchlist = db.get_config("watchlist", [])
         if not isinstance(watchlist, list):
             watchlist = []
-        if symbol in watchlist:
-            watchlist.remove(symbol)
+        if body.symbol in watchlist:
+            watchlist.remove(body.symbol)
             db.set_config("watchlist", watchlist)
         return _json_response(True, data=watchlist)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/watchlist/reorder")
-async def reorder_watchlist(request: Request, symbols: str = Query(..., description="逗号分隔的新排序股票代码")):
+async def reorder_watchlist(request: Request, body: WatchlistReorderRequest):
     """重新排序自选股列表"""
     try:
         from core.database import get_db
@@ -1215,22 +1255,20 @@ async def reorder_watchlist(request: Request, symbols: str = Query(..., descript
         watchlist = db.get_config("watchlist", [])
         if not isinstance(watchlist, list):
             watchlist = []
-        new_order = [s.strip() for s in symbols.split(",") if s.strip()]
+        new_order = [s.strip() for s in body.symbols.split(",") if s.strip()]
         reordered = [s for s in new_order if s in watchlist]
         remaining = [s for s in watchlist if s not in set(new_order)]
         watchlist = reordered + remaining
         db.set_config("watchlist", watchlist)
         return _json_response(True, data=watchlist)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/watchlist/alert/add")
 async def add_price_alert(
     request: Request,
-    symbol: str = Query(...),
-    alert_type: str = Query(..., description="price_above|price_below|pct_change_above"),
-    value: float = Query(..., description="目标价格或涨跌幅百分比"),
+    body: AlertAddRequest,
 ):
     """添加价格预警"""
     try:
@@ -1242,9 +1280,9 @@ async def add_price_alert(
 
         alert = {
             "id": str(uuid.uuid4())[:8],
-            "symbol": symbol,
-            "alert_type": alert_type,
-            "value": value,
+            "symbol": body.symbol,
+            "alert_type": body.alert_type,
+            "value": body.value,
             "triggered": False,
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -1252,7 +1290,7 @@ async def add_price_alert(
         db.set_config("price_alerts", alerts)
         return _json_response(True, data=alert)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/watchlist/alert/list")
@@ -1268,11 +1306,11 @@ async def get_price_alerts(request: Request, symbol: str = Query(None)):
             alerts = [a for a in alerts if a.get("symbol") == symbol]
         return _json_response(True, data=alerts)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/watchlist/alert/remove")
-async def remove_price_alert(request: Request, alert_id: str = Query(...)):
+async def remove_price_alert(request: Request, body: AlertRemoveRequest):
     """删除价格预警"""
     try:
         from core.database import get_db
@@ -1280,11 +1318,11 @@ async def remove_price_alert(request: Request, alert_id: str = Query(...)):
         alerts = db.get_config("price_alerts", [])
         if not isinstance(alerts, list):
             alerts = []
-        alerts = [a for a in alerts if a.get("id") != alert_id]
+        alerts = [a for a in alerts if a.get("id") != body.alert_id]
         db.set_config("price_alerts", alerts)
-        return _json_response(True, data={"removed": alert_id})
+        return _json_response(True, data={"removed": body.alert_id})
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/search")
@@ -1294,7 +1332,7 @@ async def search_stocks(request: Request, q: str = Query(...), limit: int = Quer
         results = do_search(q, limit=limit)
         return _json_response(True, data=results)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/trading/account")
@@ -1303,22 +1341,21 @@ async def get_trading_account(request: Request):
         trading = request.app.state.trading
         return _json_response(True, data=trading.get_account_info())
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/trading/buy")
 async def trading_buy(
     request: Request,
-    symbol: str = Query(...),
-    name: str = Query(""),
-    market: str = Query(""),
-    price: float = Query(...),
-    shares: int = Query(...),
-    stop_loss: float = Query(0),
-    take_profit: float = Query(0),
-    strategy: str = Query("manual"),
+    body: TradingBuyRequest,
 ):
     try:
+        validated = BuyOrderRequest(symbol=body.symbol, price=body.price, shares=body.shares, name=body.name, market=body.market)
+        symbol = validated.symbol
+        price = validated.price
+        shares = validated.shares
+        name = validated.name
+        market = validated.market
         if not market:
             market = MarketDetector.detect(symbol)
         if not name:
@@ -1330,35 +1367,35 @@ async def trading_buy(
         market_price = rt.get("price", 0) if rt else 0
         result = trading.execute_buy(
             symbol=symbol, name=name, market=market, price=price,
-            shares=shares, stop_loss=stop_loss, take_profit=take_profit,
-            strategy=strategy, market_price=market_price,
+            shares=shares, stop_loss=body.stop_loss, take_profit=body.take_profit,
+            strategy=body.strategy, market_price=market_price,
         )
         return _json_response(result.get("success", False), data=result)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/trading/sell")
 async def trading_sell(
     request: Request,
-    symbol: str = Query(...),
-    price: float = Query(...),
-    shares: Optional[int] = Query(None),
-    reason: str = Query("manual"),
+    body: TradingSellRequest,
 ):
     try:
+        validated = SellOrderRequest(symbol=body.symbol, price=body.price, shares=body.shares or 0)
+        symbol = validated.symbol
+        price = validated.price
         trading = request.app.state.trading
         fetcher: SmartDataFetcher = request.app.state.fetcher
         market = MarketDetector.detect(symbol)
         rt = await fetcher.get_realtime(symbol, market)
         market_price = rt.get("price", 0) if rt else 0
         result = trading.execute_sell(
-            symbol=symbol, price=price, reason=reason,
-            shares=shares, market_price=market_price,
+            symbol=symbol, price=price, reason=body.reason,
+            shares=body.shares, market_price=market_price,
         )
         return _json_response(result.get("success", False), data=result)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/trading/history")
@@ -1367,7 +1404,7 @@ async def get_trading_history(request: Request, limit: int = Query(100)):
         trading = request.app.state.trading
         return _json_response(True, data=trading.get_trade_history(limit))
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/system/metrics")
@@ -1403,29 +1440,36 @@ async def get_system_metrics(request: Request):
         }
         return _json_response(True, data=metrics)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
+
+
+_ALLOWED_CONFIG_KEYS = {"watchlist", "portfolio_snapshot", "backtest_settings", "ui_settings", "alert_rules"}
 
 
 @router.get("/config/{key}")
 async def get_config(request: Request, key: str):
     try:
+        if key not in _ALLOWED_CONFIG_KEYS:
+            return _json_response(False, error=f"配置键 '{key}' 不允许访问")
         from core.database import get_db
         db = get_db()
         value = db.get_config(key)
         return _json_response(True, data=value)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/config/{key}")
-async def set_config(request: Request, key: str, value: str = Query(...)):
+async def set_config(request: Request, key: str, body: ConfigSetRequest):
     try:
+        if key not in _ALLOWED_CONFIG_KEYS:
+            return _json_response(False, error=f"配置键 '{key}' 不允许修改")
         from core.database import get_db
         db = get_db()
-        db.set_config(key, value)
+        db.set_config(key, body.value)
         return _json_response(True)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/stock/ai_summary/{symbol}")
@@ -1516,7 +1560,7 @@ async def get_stock_ai_summary(request: Request, symbol: str, period: str = Quer
         })
     except Exception as e:
         logger.error(f"AI summary error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.websocket("/ws/realtime")
@@ -1530,23 +1574,25 @@ async def websocket_realtime(ws: WebSocket):
                 msg_type = msg.get("type", msg.get("action", ""))
                 symbols = msg.get("symbols", [])
                 if msg_type == "subscribe" and symbols:
-                    _manager.subscribe(ws, symbols)
+                    await _manager.subscribe(ws, symbols)
                 elif msg_type == "unsubscribe" and symbols:
-                    _manager.unsubscribe(ws, symbols)
+                    await _manager.unsubscribe(ws, symbols)
                 elif msg_type == "ping":
                     await ws.send_json({"type": "pong", "ts": time.time()})
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
-        _manager.disconnect(ws)
+        await _manager.disconnect(ws)
     except Exception:
-        _manager.disconnect(ws)
+        await _manager.disconnect(ws)
 
 
 _last_indices_hash = ""
 _last_quote_hash: dict[str, str] = {}
 _last_push_state: dict[str, dict] = {}
 _push_seq = 0
+_push_seq_lock = threading.Lock()
+_push_state_lock = asyncio.Lock()
 
 
 def _diff_push(old: dict, new: dict) -> dict:
@@ -1561,12 +1607,14 @@ def _diff_push(old: dict, new: dict) -> dict:
 
 def _build_message(msg_type: str, data: dict) -> str:
     global _push_seq
-    _push_seq += 1
+    with _push_seq_lock:
+        _push_seq += 1
+        seq = _push_seq
     return json.dumps({
         "type": msg_type,
         "ts": time.time(),
         "data": data,
-        "seq": _push_seq,
+        "seq": seq,
     }, ensure_ascii=False)
 
 
@@ -1593,50 +1641,51 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
             except Exception:
                 pass
 
-            indices_hash = json.dumps(indices_data, sort_keys=True)[:64]
-            should_push_indices = indices_hash != _last_indices_hash
-            if should_push_indices:
-                _last_indices_hash = indices_hash
-
-            subscribed = _manager.get_all_subscribed_symbols()
-            quotes_data = {}
-            for symbol in list(subscribed)[:30]:
-                try:
-                    rt = await fetcher.get_realtime(symbol)
-                    if rt:
-                        price_str = f"{rt.get('price', 0)}_{rt.get('change_pct', 0)}"
-                        last_hash = _last_quote_hash.get(symbol, "")
-                        if price_str != last_hash:
-                            quotes_data[symbol] = rt
-                            _last_quote_hash[symbol] = price_str
-                except Exception:
-                    pass
-
-            if should_push_indices or quotes_data:
-                msg_data: dict = {}
+            async with _push_state_lock:
+                indices_hash = json.dumps(indices_data, sort_keys=True)[:64]
+                should_push_indices = indices_hash != _last_indices_hash
                 if should_push_indices:
-                    old_indices = _last_push_state.get("indices", {})
-                    diff = _diff_push(old_indices, indices_data)
-                    if diff:
-                        msg_data["indices"] = diff
-                        _last_push_state["indices"] = dict(indices_data)
-                if quotes_data:
-                    old_quotes = _last_push_state.get("quotes", {})
-                    diff = _diff_push(old_quotes, quotes_data)
-                    if diff:
-                        msg_data["quotes"] = diff
-                        _last_push_state["quotes"] = dict(quotes_data)
+                    _last_indices_hash = indices_hash
 
-                if msg_data:
-                    msg_str = _build_message("quote_update", msg_data)
-                    disconnected = []
-                    for ws in _manager.connections:
-                        try:
-                            await ws.send_text(msg_str)
-                        except Exception:
-                            disconnected.append(ws)
-                    for ws in disconnected:
-                        _manager.disconnect(ws)
+                subscribed = _manager.get_all_subscribed_symbols()
+                quotes_data = {}
+                for symbol in list(subscribed)[:30]:
+                    try:
+                        rt = await fetcher.get_realtime(symbol)
+                        if rt:
+                            price_str = f"{rt.get('price', 0)}_{rt.get('change_pct', 0)}"
+                            last_hash = _last_quote_hash.get(symbol, "")
+                            if price_str != last_hash:
+                                quotes_data[symbol] = rt
+                                _last_quote_hash[symbol] = price_str
+                    except Exception:
+                        pass
+
+                if should_push_indices or quotes_data:
+                    msg_data: dict = {}
+                    if should_push_indices:
+                        old_indices = _last_push_state.get("indices", {})
+                        diff = _diff_push(old_indices, indices_data)
+                        if diff:
+                            msg_data["indices"] = diff
+                            _last_push_state["indices"] = dict(indices_data)
+                    if quotes_data:
+                        old_quotes = _last_push_state.get("quotes", {})
+                        diff = _diff_push(old_quotes, quotes_data)
+                        if diff:
+                            msg_data["quotes"] = diff
+                            _last_push_state["quotes"] = dict(quotes_data)
+
+            if msg_data:
+                msg_str = _build_message("quote_update", msg_data)
+                disconnected = []
+                for ws in _manager.get_connections_snapshot():
+                    try:
+                        await ws.send_text(msg_str)
+                    except Exception:
+                        disconnected.append(ws)
+                for ws in disconnected:
+                    await _manager.disconnect(ws)
 
             await asyncio.sleep(5)
         except Exception as e:
@@ -1652,7 +1701,7 @@ async def push_signal_event(symbol: str, strategy: str, signal_type: str, score:
         "signal_type": signal_type, "score": score, "price": price,
     })
     disconnected = []
-    for ws in _manager.connections:
+    for ws in _manager.get_connections_snapshot():
         subs = _manager._subscriptions.get(ws, set())
         if not subs or symbol in subs:
             try:
@@ -1660,7 +1709,7 @@ async def push_signal_event(symbol: str, strategy: str, signal_type: str, score:
             except Exception:
                 disconnected.append(ws)
     for ws in disconnected:
-        _manager.disconnect(ws)
+        await _manager.disconnect(ws)
 
 
 async def push_alert_event(symbol: str, alert_type: str, value: float, current_price: float):
@@ -1671,7 +1720,7 @@ async def push_alert_event(symbol: str, alert_type: str, value: float, current_p
         "value": value, "current_price": current_price,
     })
     disconnected = []
-    for ws in _manager.connections:
+    for ws in _manager.get_connections_snapshot():
         subs = _manager._subscriptions.get(ws, set())
         if not subs or symbol in subs:
             try:
@@ -1679,7 +1728,7 @@ async def push_alert_event(symbol: str, alert_type: str, value: float, current_p
             except Exception:
                 disconnected.append(ws)
     for ws in disconnected:
-        _manager.disconnect(ws)
+        await _manager.disconnect(ws)
 
 
 async def push_market_event(event_type: str, data: dict):
@@ -1687,13 +1736,13 @@ async def push_market_event(event_type: str, data: dict):
         return
     msg_str = _build_message("market_event", data)
     disconnected = []
-    for ws in _manager.connections:
+    for ws in _manager.get_connections_snapshot():
         try:
             await ws.send_text(msg_str)
         except Exception:
             disconnected.append(ws)
     for ws in disconnected:
-        _manager.disconnect(ws)
+        await _manager.disconnect(ws)
 
 
 @router.get("/alpha/list")
@@ -1712,7 +1761,7 @@ async def list_alpha_factors(request: Request):
             })
         return _json_response(True, data=result)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/alpha/compute/{symbol}")
@@ -1749,7 +1798,7 @@ async def compute_alpha_factors(
         result.sort(key=lambda x: abs(x["ic_ir"]), reverse=True)
         return _json_response(True, data=result)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/regime/detect/{symbol}")
@@ -1770,7 +1819,7 @@ async def detect_market_regime(
         summary = detector.get_regime_summary(result)
         return _json_response(True, data=summary)
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/risk/monitor/{symbol}")
@@ -1811,7 +1860,7 @@ async def get_risk_monitor(
             "reduce_scale": reduce_scale,
         })
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.get("/metrics/institutional/{symbol}")
@@ -1843,52 +1892,48 @@ async def get_institutional_metrics(
         metrics = calc_all_metrics(equity_curve, returns, benchmark_returns)
         return _json_response(True, data=metrics_to_dict(metrics))
     except Exception as e:
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/alpha/evolve")
 async def run_alpha_evolution(
     request: Request,
-    symbol: str = Query(...),
-    max_iterations: int = Query(3),
-    period: str = Query("1y"),
+    body: AlphaEvolveRequest,
 ):
     try:
         from core.self_evolver import SelfEvolver, EvolutionConfig
         fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        df = await fetcher.get_history(body.symbol, _period_to_history(body.period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="数据不足")
 
-        config = EvolutionConfig(max_iterations=max_iterations)
+        config = EvolutionConfig(max_iterations=body.max_iterations)
         evolver = SelfEvolver(config=config)
         result = await asyncio.to_thread(evolver.evolve, df)
         report = evolver.get_evolution_report(result)
         return _json_response(True, data=report)
     except Exception as e:
         logger.error(f"Alpha evolution error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))
 
 
 @router.post("/audit/strategy")
 async def audit_strategy(
     request: Request,
-    symbol: str = Query(...),
-    strategy_name: str = Query("adaptive"),
-    period: str = Query("1y"),
+    body: AuditStrategyRequest,
 ):
     try:
         from core.auto_auditor import AutoAuditor
         from core.strategies import STRATEGY_REGISTRY
         from core.backtest import BacktestEngine
         fetcher: SmartDataFetcher = request.app.state.fetcher
-        df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+        df = await fetcher.get_history(body.symbol, _period_to_history(body.period), "daily", "qfq")
         if df.empty or len(df) < 60:
             return _json_response(False, error="数据不足")
 
-        strategy_cls = STRATEGY_REGISTRY.get(strategy_name)
+        strategy_cls = STRATEGY_REGISTRY.get(body.strategy_name)
         if not strategy_cls:
-            return _json_response(False, error=f"未知策略: {strategy_name}")
+            return _json_response(False, error=f"未知策略: {body.strategy_name}")
 
         strategy = strategy_cls()
         engine = BacktestEngine(initial_capital=1000000)
@@ -1927,4 +1972,4 @@ async def audit_strategy(
         })
     except Exception as e:
         logger.error(f"Audit error: {e}")
-        return _json_response(False, error=str(e))
+        return _json_response(False, error=safe_error(e))

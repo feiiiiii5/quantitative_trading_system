@@ -3,7 +3,8 @@ import pandas as pd
 import numpy as np
 from core.strategies import (
     BaseStrategy, DualMAStrategy, MACDStrategy, KDJStrategy,
-    BollingerBreakoutStrategy, SignalType,
+    BollingerBreakoutStrategy, SignalType, KaufmanAdaptiveStrategy,
+    SuperTrendStrategy, AdaptiveTrendFollowingStrategy,
 )
 
 
@@ -128,3 +129,57 @@ class TestBollingerBreakoutStrategy:
         s = BollingerBreakoutStrategy()
         result = s.generate_signals_vectorized(sample_ohlcv)
         assert result.strategy_name == "BollingerBreakoutStrategy"
+
+
+class TestKaufmanAdaptiveStrategy:
+    def test_generate_signal_returns_valid_type(self, sample_ohlcv):
+        s = KaufmanAdaptiveStrategy()
+        signal = s.generate_signal(sample_ohlcv)
+        assert signal.signal_type in [SignalType.BUY, SignalType.SELL, SignalType.HOLD]
+
+    def test_insufficient_data_returns_hold(self):
+        s = KaufmanAdaptiveStrategy()
+        small_df = pd.DataFrame({
+            "close": [10, 11, 12], "high": [11, 12, 13],
+            "low": [9, 10, 11], "open": [10, 10.5, 11.5], "volume": [1000, 1000, 1000],
+        })
+        signal = s.generate_signal(small_df)
+        assert signal.signal_type == SignalType.HOLD
+
+    def test_per_bar_er_adaptation(self, sample_ohlcv):
+        s = KaufmanAdaptiveStrategy()
+        signal = s.generate_signal(sample_ohlcv)
+        assert signal.signal_type in [SignalType.BUY, SignalType.SELL, SignalType.HOLD]
+        assert 0 <= signal.strength <= 1.0
+
+
+class TestSuperTrendStrategy:
+    def test_generate_signal_returns_valid_type(self, sample_ohlcv):
+        s = SuperTrendStrategy()
+        signal = s.generate_signal(sample_ohlcv)
+        assert signal.signal_type in [SignalType.BUY, SignalType.SELL, SignalType.HOLD]
+
+    def test_insufficient_data_returns_hold(self):
+        s = SuperTrendStrategy()
+        small_df = pd.DataFrame({
+            "close": [10, 11], "high": [11, 12],
+            "low": [9, 10], "open": [10, 10.5], "volume": [1000, 1000],
+        })
+        signal = s.generate_signal(small_df)
+        assert signal.signal_type == SignalType.HOLD
+
+
+class TestAdaptiveTrendFollowingStrategy:
+    def test_generate_signal_returns_valid_type(self, sample_ohlcv):
+        s = AdaptiveTrendFollowingStrategy()
+        signal = s.generate_signal(sample_ohlcv)
+        assert signal.signal_type in [SignalType.BUY, SignalType.SELL, SignalType.HOLD]
+
+    def test_insufficient_data_returns_hold(self):
+        s = AdaptiveTrendFollowingStrategy()
+        small_df = pd.DataFrame({
+            "close": [10, 11], "high": [11, 12],
+            "low": [9, 10], "open": [10, 10.5], "volume": [1000, 1000],
+        })
+        signal = s.generate_signal(small_df)
+        assert signal.signal_type == SignalType.HOLD

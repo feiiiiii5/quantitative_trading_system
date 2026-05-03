@@ -245,17 +245,7 @@ def get_stock_list(market: str) -> list[dict]:
     return []
 
 
-def _num(value, default=0.0):
-    try:
-        if value is None or value == "-" or value == "":
-            return default if default is not None else 0.0
-        val = float(value)
-        import numpy as np
-        if np.isnan(val):
-            return default if default is not None else 0.0
-        return val
-    except (TypeError, ValueError):
-        return default if default is not None else 0.0
+from core.data_fetcher import safe_float as _num
 
 
 def _refresh_loop() -> None:

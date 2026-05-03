@@ -124,7 +124,7 @@ class BaseStrategy:
         start = max(1, min(min_bars - 1, len(df) - 1))
         for i in range(start, len(df)):
             try:
-                signal = self.generate_signal(df.iloc[:i + 1].copy())
+                signal = self.generate_signal(df.iloc[:i + 1])
             except Exception as e:
                 logger.debug(f"{self.name} generate_signal failed at {i}: {e}")
                 continue
@@ -413,13 +413,7 @@ class MultiFactorConfluenceStrategy(BaseStrategy):
         else:
             score -= 0.2
             reasons.append("MACD空头")
-        delta = c.diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        rsi = (100 - 100 / (1 + rs)).iloc[-1]
+        rsi = _safe_float(_rsi_series(c, 14).iloc[-1], 50)
         if rsi < 30:
             score += 0.3
             reasons.append(f"RSI超卖({rsi:.0f})")
@@ -447,28 +441,43 @@ class AdaptiveTrendFollowingStrategy(BaseStrategy):
         h = df["high"].astype(float)
         l = df["low"].astype(float)
         tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(14).mean().iloc[-1]
-        if atr <= 0 or np.isnan(atr):
-            return TradeSignal(SignalType.HOLD)
+        atr = tr.rolling(14).mean()
         hl2 = (h + l) / 2
-        upper = hl2 + 3 * tr.rolling(14).mean()
-        lower = hl2 - 3 * tr.rolling(14).mean()
-        supertrend = lower.copy()
-        direction = pd.Series(1, index=df.index)
-        for i in range(1, len(df)):
-            if c.iloc[i] > supertrend.iloc[i - 1]:
-                direction.iloc[i] = 1
-                supertrend.iloc[i] = max(lower.iloc[i], supertrend.iloc[i - 1])
+        upper_band = (hl2 + 3 * atr).values.copy()
+        lower_band = (hl2 - 3 * atr).values.copy()
+        n = len(df)
+        supertrend = np.zeros(n)
+        direction = np.ones(n, dtype=int)
+        for i in range(1, n):
+            if not (lower_band[i] > lower_band[i - 1] or c.iloc[i - 1] < lower_band[i - 1]):
+                lower_band[i] = lower_band[i - 1]
+            if not (upper_band[i] < upper_band[i - 1] or c.iloc[i - 1] > upper_band[i - 1]):
+                upper_band[i] = upper_band[i - 1]
+            if direction[i - 1] == 1:
+                if c.iloc[i] < lower_band[i]:
+                    direction[i] = -1
+                    supertrend[i] = upper_band[i]
+                else:
+                    direction[i] = 1
+                    supertrend[i] = lower_band[i]
             else:
-                direction.iloc[i] = -1
-                supertrend.iloc[i] = min(upper.iloc[i], supertrend.iloc[i - 1])
-        if direction.iloc[-1] == 1 and direction.iloc[-2] == -1:
+                if c.iloc[i] > upper_band[i]:
+                    direction[i] = 1
+                    supertrend[i] = lower_band[i]
+                else:
+                    direction[i] = -1
+                    supertrend[i] = upper_band[i]
+        if direction[-1] == 1 and direction[-2] == -1:
             return TradeSignal(SignalType.BUY, 0.8, "SuperTrend翻多")
-        if direction.iloc[-1] == -1 and direction.iloc[-2] == 1:
+        if direction[-1] == -1 and direction[-2] == 1:
             return TradeSignal(SignalType.SELL, 0.8, "SuperTrend翻空")
-        if direction.iloc[-1] == 1:
-            return TradeSignal(SignalType.BUY, 0.4, "SuperTrend多头")
-        return TradeSignal(SignalType.SELL, 0.4, "SuperTrend空头")
+        if direction[-1] == 1:
+            dist = (c.iloc[-1] - supertrend[-1]) / supertrend[-1] if supertrend[-1] > 0 else 0
+            strength = min(0.7, 0.3 + abs(dist) * 5)
+            return TradeSignal(SignalType.BUY, strength, "SuperTrend多头")
+        dist = (supertrend[-1] - c.iloc[-1]) / supertrend[-1] if supertrend[-1] > 0 else 0
+        strength = min(0.7, 0.3 + abs(dist) * 5)
+        return TradeSignal(SignalType.SELL, strength, "SuperTrend空头")
 
 
 class MeanReversionProStrategy(BaseStrategy):
@@ -615,23 +624,17 @@ class RSIMeanReversionStrategy(BaseStrategy):
         if len(df) < 20:
             return TradeSignal(SignalType.HOLD)
         c = df["close"].astype(float)
-        delta = c.diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        rsi = 100 - 100 / (1 + rs)
-        rsi_val = rsi.iloc[-1]
+        rsi_series = _rsi_series(c, 14)
+        rsi_val = _safe_float(rsi_series.iloc[-1])
         if np.isnan(rsi_val):
             return TradeSignal(SignalType.HOLD)
         if rsi_val < 25:
             return TradeSignal(SignalType.BUY, 0.8, f"RSI深度超卖({rsi_val:.0f})")
         if rsi_val > 75:
             return TradeSignal(SignalType.SELL, 0.8, f"RSI深度超买({rsi_val:.0f})")
-        if rsi_val < 35 and rsi.iloc[-2] < rsi.iloc[-1]:
+        if rsi_val < 35 and _safe_float(rsi_series.iloc[-2]) < rsi_val:
             return TradeSignal(SignalType.BUY, 0.5, "RSI超卖回升")
-        if rsi_val > 65 and rsi.iloc[-2] > rsi.iloc[-1]:
+        if rsi_val > 65 and _safe_float(rsi_series.iloc[-2]) > rsi_val:
             return TradeSignal(SignalType.SELL, 0.5, "RSI超买回落")
         return TradeSignal(SignalType.HOLD)
 
@@ -648,44 +651,40 @@ class SuperTrendStrategy(BaseStrategy):
         tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
         atr = tr.rolling(10).mean()
         hl2 = (h + l) / 2
-        upper_band = hl2 + 3.0 * atr
-        lower_band = hl2 - 3.0 * atr
+        upper_band = (hl2 + 3.0 * atr).values.copy()
+        lower_band = (hl2 - 3.0 * atr).values.copy()
         n = len(df)
-        supertrend = pd.Series(0.0, index=df.index)
-        direction = pd.Series(1, index=df.index)
+        supertrend = np.zeros(n)
+        direction = np.ones(n, dtype=int)
         for i in range(1, n):
-            if lower_band.iloc[i] > lower_band.iloc[i - 1] or c.iloc[i - 1] < lower_band.iloc[i - 1]:
-                pass
-            else:
-                lower_band.iloc[i] = lower_band.iloc[i - 1]
-            if upper_band.iloc[i] < upper_band.iloc[i - 1] or c.iloc[i - 1] > upper_band.iloc[i - 1]:
-                pass
-            else:
-                upper_band.iloc[i] = upper_band.iloc[i - 1]
-            if direction.iloc[i - 1] == 1:
-                if c.iloc[i] < lower_band.iloc[i]:
-                    direction.iloc[i] = -1
-                    supertrend.iloc[i] = upper_band.iloc[i]
+            if not (lower_band[i] > lower_band[i - 1] or c.iloc[i - 1] < lower_band[i - 1]):
+                lower_band[i] = lower_band[i - 1]
+            if not (upper_band[i] < upper_band[i - 1] or c.iloc[i - 1] > upper_band[i - 1]):
+                upper_band[i] = upper_band[i - 1]
+            if direction[i - 1] == 1:
+                if c.iloc[i] < lower_band[i]:
+                    direction[i] = -1
+                    supertrend[i] = upper_band[i]
                 else:
-                    direction.iloc[i] = 1
-                    supertrend.iloc[i] = lower_band.iloc[i]
+                    direction[i] = 1
+                    supertrend[i] = lower_band[i]
             else:
-                if c.iloc[i] > upper_band.iloc[i]:
-                    direction.iloc[i] = 1
-                    supertrend.iloc[i] = lower_band.iloc[i]
+                if c.iloc[i] > upper_band[i]:
+                    direction[i] = 1
+                    supertrend[i] = lower_band[i]
                 else:
-                    direction.iloc[i] = -1
-                    supertrend.iloc[i] = upper_band.iloc[i]
-        if direction.iloc[-1] == 1 and direction.iloc[-2] == -1:
+                    direction[i] = -1
+                    supertrend[i] = upper_band[i]
+        if direction[-1] == 1 and direction[-2] == -1:
             return TradeSignal(SignalType.BUY, 0.85, "SuperTrend翻多")
-        if direction.iloc[-1] == -1 and direction.iloc[-2] == 1:
+        if direction[-1] == -1 and direction[-2] == 1:
             return TradeSignal(SignalType.SELL, 0.85, "SuperTrend翻空")
-        if direction.iloc[-1] == 1:
-            dist = (c.iloc[-1] - supertrend.iloc[-1]) / supertrend.iloc[-1] if supertrend.iloc[-1] > 0 else 0
+        if direction[-1] == 1:
+            dist = (c.iloc[-1] - supertrend[-1]) / supertrend[-1] if supertrend[-1] > 0 else 0
             strength = min(0.7, 0.3 + abs(dist) * 5)
             return TradeSignal(SignalType.BUY, strength, "SuperTrend看多")
-        if direction.iloc[-1] == -1:
-            dist = (supertrend.iloc[-1] - c.iloc[-1]) / supertrend.iloc[-1] if supertrend.iloc[-1] > 0 else 0
+        if direction[-1] == -1:
+            dist = (supertrend[-1] - c.iloc[-1]) / supertrend[-1] if supertrend[-1] > 0 else 0
             strength = min(0.7, 0.3 + abs(dist) * 5)
             return TradeSignal(SignalType.SELL, strength, "SuperTrend看空")
         return TradeSignal(SignalType.HOLD)
@@ -1280,19 +1279,11 @@ class QuantileRegressionStrategy(BaseStrategy):
         prices = c.values
         n = len(prices)
 
-        # 手写分位数回归：用滚动窗口的分位数近似
-        def rolling_quantile(arr, window, q):
-            result = np.full(len(arr), np.nan)
-            for i in range(window - 1, len(arr)):
-                segment = arr[i - window + 1:i + 1]
-                finite = segment[np.isfinite(segment)]
-                if len(finite) >= 10:
-                    result[i] = np.quantile(finite, q)
-            return result
-
-        q10 = rolling_quantile(prices, self._window, 0.1)
-        q50 = rolling_quantile(prices, self._window, 0.5)
-        q90 = rolling_quantile(prices, self._window, 0.9)
+        # 向量化滚动分位数计算，替代O(n*window)的for循环
+        s = pd.Series(prices)
+        q10 = s.rolling(self._window, min_periods=10).quantile(0.1).values
+        q50 = s.rolling(self._window, min_periods=10).quantile(0.5).values
+        q90 = s.rolling(self._window, min_periods=10).quantile(0.9).values
 
         last_price = _safe_float(prices[-1])
         last_q10 = _safe_float(q10[-1])
@@ -1733,28 +1724,28 @@ class KaufmanAdaptiveStrategy(BaseStrategy):
         if n < self._er_period + 5:
             return TradeSignal(SignalType.HOLD)
 
-        direction = abs(c.iloc[-1] - c.iloc[-self._er_period])
+        direction = (c - c.shift(self._er_period)).abs()
         volatility = c.diff().abs().rolling(self._er_period).sum()
-        last_vol = _safe_float(volatility.iloc[-1])
-        if last_vol <= 0:
-            return TradeSignal(SignalType.HOLD)
-        er = direction / last_vol
+        er_series = (direction / volatility.replace(0, np.nan)).fillna(0)
 
         fast_sc_val = 2.0 / (self._fast_sc + 1.0)
         slow_sc_val = 2.0 / (self._slow_sc + 1.0)
-        sc = (er * (fast_sc_val - slow_sc_val) + slow_sc_val) ** 2
 
-        kama = pd.Series(0.0, index=c.index)
-        kama.iloc[self._er_period] = _safe_float(c.iloc[self._er_period])
+        kama = np.zeros(n)
+        kama[self._er_period] = _safe_float(c.iloc[self._er_period])
+        er_vals = er_series.values
+        c_vals = c.values
         for i in range(self._er_period + 1, n):
-            prev_kama = _safe_float(kama.iloc[i - 1])
-            cur_sc = sc if isinstance(sc, float) else _safe_float(sc.iloc[i]) if i < len(sc) else slow_sc_val ** 2
-            kama.iloc[i] = prev_kama + cur_sc * (_safe_float(c.iloc[i]) - prev_kama)
+            prev_kama = kama[i - 1]
+            bar_er = er_vals[i] if i < len(er_vals) else 0.0
+            cur_sc = (bar_er * (fast_sc_val - slow_sc_val) + slow_sc_val) ** 2
+            kama[i] = prev_kama + cur_sc * (c_vals[i] - prev_kama)
 
         last_price = _safe_float(c.iloc[-1])
-        last_kama = _safe_float(kama.iloc[-1])
+        last_kama = kama[-1]
         prev_price = _safe_float(c.iloc[-2])
-        prev_kama = _safe_float(kama.iloc[-2])
+        prev_kama = kama[-2]
+        er = _safe_float(er_series.iloc[-1])
 
         if er > self._er_threshold:
             if prev_price <= prev_kama and last_price > last_kama:
@@ -1942,21 +1933,421 @@ class MultiTimeframeMomentumStrategy(BaseStrategy):
         return {"short_period": {"min": 3, "max": 10, "step": 1}, "mid_period": {"min": 15, "max": 30, "step": 5}}
 
 
+class ADXTrendStrengthStrategy(BaseStrategy):
+    """ADX趋势强度策略 - ADX判断趋势强度+DI方向确认"""
+
+    min_bars = 40
+
+    def __init__(self, adx_period: int = 14, adx_threshold: float = 25.0, strong_threshold: float = 40.0):
+        super().__init__()
+        self._period = int(adx_period)
+        self._threshold = float(adx_threshold)
+        self._strong_threshold = float(strong_threshold)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._period + 15:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        h = df["high"].astype(float)
+        l = df["low"].astype(float)
+
+        from core.indicators import calc_adx, calc_atr
+        h_arr = h.values
+        l_arr = l.values
+        c_arr = c.values
+        adx_arr = calc_adx(h_arr, l_arr, c_arr, self._period)
+        atr_arr = calc_atr(h_arr, l_arr, c_arr, self._period)
+
+        n = len(c)
+        tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
+        plus_dm = np.zeros(n)
+        minus_dm = np.zeros(n)
+        for i in range(1, n):
+            up = _safe_float(h.iloc[i]) - _safe_float(h.iloc[i - 1])
+            down = _safe_float(l.iloc[i - 1]) - _safe_float(l.iloc[i])
+            if up > down and up > 0:
+                plus_dm[i] = up
+            if down > up and down > 0:
+                minus_dm[i] = down
+
+        atr_s = pd.Series(atr_arr)
+        plus_di = np.where(atr_arr > 0, pd.Series(plus_dm).ewm(alpha=1 / self._period, min_periods=self._period).mean().values / atr_arr * 100, 0)
+        minus_di = np.where(atr_arr > 0, pd.Series(minus_dm).ewm(alpha=1 / self._period, min_periods=self._period).mean().values / atr_arr * 100, 0)
+
+        adx_val = _safe_float(adx_arr[-1])
+        pdi_val = _safe_float(plus_di[-1])
+        mdi_val = _safe_float(minus_di[-1])
+        prev_adx = _safe_float(adx_arr[-2]) if len(adx_arr) > 1 else 0
+        prev_pdi = _safe_float(plus_di[-2]) if len(plus_di) > 1 else 0
+        prev_mdi = _safe_float(minus_di[-2]) if len(minus_di) > 1 else 0
+
+        adx_rising = adx_val > prev_adx
+
+        if adx_val > self._strong_threshold and pdi_val > mdi_val and prev_pdi <= prev_mdi:
+            return _signal(SignalType.BUY, 0.9, f"强趋势+DI金叉(ADX={adx_val:.1f})", 0.55)
+
+        if adx_val > self._threshold and pdi_val > mdi_val and adx_rising:
+            strength = min(0.85, 0.5 + (adx_val - self._threshold) / 30)
+            return _signal(SignalType.BUY, strength, f"趋势增强+多头方向(ADX={adx_val:.1f})", 0.45)
+
+        if adx_val > self._strong_threshold and mdi_val > pdi_val and prev_mdi <= prev_pdi:
+            return _signal(SignalType.SELL, 0.9, f"强趋势+DI死叉(ADX={adx_val:.1f})")
+
+        if adx_val > self._threshold and mdi_val > pdi_val and adx_rising:
+            strength = min(0.85, 0.5 + (adx_val - self._threshold) / 30)
+            return _signal(SignalType.SELL, strength, f"趋势增强+空头方向(ADX={adx_val:.1f})")
+
+        if adx_val < self._threshold and adx_val < prev_adx:
+            return TradeSignal(SignalType.HOLD, 0.3, f"无趋势(ADX={adx_val:.1f})，等待突破")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"adx_period": {"min": 10, "max": 20, "step": 2}, "adx_threshold": {"min": 20, "max": 30, "step": 5}}
+
+
+class ChaikinMoneyFlowStrategy(BaseStrategy):
+    """Chaikin资金流策略 - CMF衡量买卖压力+价格确认"""
+
+    min_bars = 30
+
+    def __init__(self, cmf_period: int = 20, cmf_threshold: float = 0.05):
+        super().__init__()
+        self._period = int(cmf_period)
+        self._threshold = float(cmf_threshold)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._period + 5:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        h = df["high"].astype(float)
+        l = df["low"].astype(float)
+        v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
+
+        spread = h - l
+        clv = np.where(spread > 0, ((c - l) - (h - c)) / spread, 0.0)
+        mfv = clv * v
+        cmf = pd.Series(mfv).rolling(self._period).sum() / v.rolling(self._period).sum()
+        cmf = cmf.fillna(0)
+
+        cmf_val = _safe_float(cmf.iloc[-1])
+        cmf_prev = _safe_float(cmf.iloc[-2]) if len(cmf) > 1 else 0
+        cmf_ma = _safe_float(cmf.rolling(10).mean().iloc[-1]) if len(cmf) >= 10 else cmf_val
+
+        price_up = _safe_float(c.iloc[-1]) > _safe_float(c.iloc[-2])
+        vol_ma = _safe_float(v.rolling(20).mean().iloc[-1])
+        vol_confirm = vol_ma > 0 and _safe_float(v.iloc[-1]) > vol_ma * 1.3
+
+        if cmf_val > self._threshold and cmf_prev <= self._threshold and price_up:
+            strength = 0.8 + (0.1 if vol_confirm else 0)
+            return _signal(SignalType.BUY, strength, f"CMF突破零轴上方({cmf_val:.3f})+价格上涨", 0.45)
+
+        if cmf_val < -self._threshold and cmf_prev >= -self._threshold and not price_up:
+            strength = 0.8 + (0.1 if vol_confirm else 0)
+            return _signal(SignalType.SELL, strength, f"CMF跌破零轴下方({cmf_val:.3f})+价格下跌")
+
+        if cmf_val > self._threshold and cmf_val > cmf_prev and price_up:
+            return _signal(SignalType.BUY, 0.6, f"CMF持续走强({cmf_val:.3f})", 0.35)
+
+        if cmf_val < -self._threshold and cmf_val < cmf_prev and not price_up:
+            return _signal(SignalType.SELL, 0.6, f"CMF持续走弱({cmf_val:.3f})")
+
+        if abs(cmf_val) < self._threshold * 0.5 and cmf_val > cmf_prev and price_up:
+            return _signal(SignalType.BUY, 0.35, "CMF从弱势区回升+价格上涨", 0.25)
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"cmf_period": {"min": 10, "max": 30, "step": 5}, "cmf_threshold": {"min": 0.03, "max": 0.10, "step": 0.01}}
+
+
+class ParabolicSARStrategy(BaseStrategy):
+    """抛物线SAR策略 - 趋势跟踪止损反转系统"""
+
+    min_bars = 25
+
+    def __init__(self, af_start: float = 0.02, af_step: float = 0.02, af_max: float = 0.20):
+        super().__init__()
+        self._af_start = float(af_start)
+        self._af_step = float(af_step)
+        self._af_max = float(af_max)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < 10:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float).reset_index(drop=True)
+        h = df["high"].astype(float).reset_index(drop=True)
+        l = df["low"].astype(float).reset_index(drop=True)
+        n = len(c)
+        if n < 5:
+            return TradeSignal(SignalType.HOLD)
+
+        sar = np.zeros(n)
+        af = self._af_start
+        is_long = True
+        ep = h.iloc[1] if n > 1 else h.iloc[0]
+        sar[0] = l.iloc[0]
+
+        for i in range(1, n):
+            sar[i] = sar[i - 1] + af * (ep - sar[i - 1])
+
+            if is_long:
+                if l.iloc[i] < sar[i]:
+                    is_long = False
+                    sar[i] = ep
+                    af = self._af_start
+                    ep = l.iloc[i]
+                else:
+                    if h.iloc[i] > ep:
+                        ep = h.iloc[i]
+                        af = min(af + self._af_step, self._af_max)
+            else:
+                if h.iloc[i] > sar[i]:
+                    is_long = True
+                    sar[i] = ep
+                    af = self._af_start
+                    ep = h.iloc[i]
+                else:
+                    if l.iloc[i] < ep:
+                        ep = l.iloc[i]
+                        af = min(af + self._af_step, self._af_max)
+
+        last_sar = _safe_float(sar[-1])
+        prev_sar = _safe_float(sar[-2]) if n > 1 else last_sar
+        last_close = _safe_float(c.iloc[-1])
+        prev_close = _safe_float(c.iloc[-2]) if n > 1 else last_close
+
+        currently_long = last_close > last_sar
+        previously_long = prev_close > prev_sar
+
+        if currently_long and not previously_long:
+            return _signal(SignalType.BUY, 0.85, f"Parabolic SAR翻多(SAR={last_sar:.2f})", 0.50)
+
+        if not currently_long and previously_long:
+            return _signal(SignalType.SELL, 0.85, f"Parabolic SAR翻空(SAR={last_sar:.2f})")
+
+        if currently_long:
+            dist = (last_close - last_sar) / last_close if last_close > 0 else 0
+            strength = min(0.7, 0.3 + abs(dist) * 10)
+            return _signal(SignalType.BUY, strength, f"SAR多头跟踪(SAR={last_sar:.2f})", 0.30)
+
+        dist = (last_sar - last_close) / last_close if last_close > 0 else 0
+        strength = min(0.7, 0.3 + abs(dist) * 10)
+        return _signal(SignalType.SELL, strength, f"SAR空头跟踪(SAR={last_sar:.2f})")
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"af_start": {"min": 0.01, "max": 0.04, "step": 0.01}, "af_max": {"min": 0.10, "max": 0.30, "step": 0.05}}
+
+
+class HurstExponentStrategy(BaseStrategy):
+    """Hurst指数策略 - 判断价格序列的持续性/反持续性/随机性"""
+
+    min_bars = 100
+
+    def __init__(self, window: int = 100, hurst_persistent: float = 0.6, hurst_anti: float = 0.4):
+        super().__init__()
+        self._window = int(window)
+        self._hurst_persistent = float(hurst_persistent)
+        self._hurst_anti = float(hurst_anti)
+
+    def _calc_hurst(self, prices: np.ndarray) -> float:
+        if len(prices) < 30:
+            return 0.5
+        returns = np.diff(np.log(prices))
+        returns = returns[np.isfinite(returns)]
+        if len(returns) < 20:
+            return 0.5
+
+        max_k = min(len(returns) // 2, 50)
+        if max_k < 5:
+            return 0.5
+
+        rs_list = []
+        ns = []
+        for k in [10, 20, max_k]:
+            if k > len(returns):
+                continue
+            n_segments = len(returns) // k
+            if n_segments < 1:
+                continue
+            rs_vals = []
+            for seg in range(n_segments):
+                segment = returns[seg * k:(seg + 1) * k]
+                mean_seg = np.mean(segment)
+                deviations = np.cumsum(segment - mean_seg)
+                r = np.max(deviations) - np.min(deviations)
+                s = np.std(segment, ddof=1)
+                if s > 0 and np.isfinite(r):
+                    rs_vals.append(r / s)
+            if rs_vals:
+                rs_list.append(np.mean(rs_vals))
+                ns.append(k)
+
+        if len(rs_list) < 2:
+            return 0.5
+
+        try:
+            log_ns = np.log(ns)
+            log_rs = np.log(rs_list)
+            hurst = np.polyfit(log_ns, log_rs, 1)[0]
+            return float(np.clip(hurst, 0.0, 1.0))
+        except Exception:
+            return 0.5
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._window:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
+
+        prices = c.iloc[-self._window:].values
+        hurst = self._calc_hurst(prices)
+
+        ret_5 = _safe_float(c.iloc[-1] / c.iloc[-6] - 1) if len(c) >= 6 else 0
+        ret_20 = _safe_float(c.iloc[-1] / c.iloc[-21] - 1) if len(c) >= 21 else 0
+        vol_ma = _safe_float(v.rolling(20).mean().iloc[-1])
+        vol_confirm = vol_ma > 0 and _safe_float(v.iloc[-1]) > vol_ma * 1.2
+
+        if hurst > self._hurst_persistent:
+            if ret_5 > 0 and ret_20 > 0:
+                strength = min(0.9, 0.5 + (hurst - 0.5) * 1.5)
+                if vol_confirm:
+                    strength = min(0.95, strength + 0.1)
+                return _signal(SignalType.BUY, strength, f"持续性趋势(H={hurst:.2f})+上涨", 0.50)
+            if ret_5 < 0 and ret_20 < 0:
+                strength = min(0.9, 0.5 + (hurst - 0.5) * 1.5)
+                if vol_confirm:
+                    strength = min(0.95, strength + 0.1)
+                return _signal(SignalType.SELL, strength, f"持续性趋势(H={hurst:.2f})+下跌")
+
+        if hurst < self._hurst_anti:
+            rsi = _safe_float(_rsi_series(c, 14).iloc[-1], 50)
+            if rsi < 30:
+                return _signal(SignalType.BUY, 0.7, f"反持续性+超卖(H={hurst:.2f},RSI={rsi:.0f})，均值回归买入", 0.40)
+            if rsi > 70:
+                return _signal(SignalType.SELL, 0.7, f"反持续性+超买(H={hurst:.2f},RSI={rsi:.0f})，均值回归卖出")
+
+        if 0.45 <= hurst <= 0.55:
+            bb_mid = _safe_float(c.rolling(20).mean().iloc[-1])
+            bb_std = _safe_float(c.rolling(20).std().iloc[-1])
+            if bb_mid > 0 and bb_std > 0:
+                z = (_safe_float(c.iloc[-1]) - bb_mid) / bb_std
+                if z < -2:
+                    return _signal(SignalType.BUY, 0.5, f"随机游走+Z超卖(H={hurst:.2f},Z={z:.1f})", 0.35)
+                if z > 2:
+                    return _signal(SignalType.SELL, 0.5, f"随机游走+Z超买(H={hurst:.2f},Z={z:.1f})")
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"window": {"min": 60, "max": 150, "step": 30}}
+
+
+class PairsTradingStrategy(BaseStrategy):
+    """配对交易策略 - 用自身价格与长期均值的偏离模拟配对交易"""
+
+    min_bars = 60
+
+    def __init__(self, window: int = 60, entry_z: float = 2.0, exit_z: float = 0.5,
+                 half_life_min: float = 3, half_life_max: float = 30):
+        super().__init__()
+        self._window = int(window)
+        self._entry_z = float(entry_z)
+        self._exit_z = float(exit_z)
+        self._hl_min = float(half_life_min)
+        self._hl_max = float(half_life_max)
+
+    def _calc_half_life(self, spread: np.ndarray) -> float:
+        if len(spread) < 20:
+            return 999.0
+        y = spread[1:]
+        x = spread[:-1]
+        x_mean = np.mean(x)
+        denom = np.sum((x - x_mean) ** 2)
+        if denom < 1e-12:
+            return 999.0
+        beta = np.sum((x - x_mean) * (y - np.mean(y))) / denom
+        if beta <= 0 or beta >= 1:
+            return 999.0
+        return -np.log(beta)
+
+    def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
+        if df is None or len(df) < self._window + 5:
+            return TradeSignal(SignalType.HOLD)
+        c = df["close"].astype(float)
+        v = df["volume"].astype(float) if "volume" in df.columns else pd.Series(1, index=df.index)
+
+        ma_long = c.rolling(self._window).mean()
+        spread = (c - ma_long).values
+        spread_series = pd.Series(spread)
+        spread_mean = spread_series.rolling(self._window).mean()
+        spread_std = spread_series.rolling(self._window).std().replace(0, np.nan)
+        z_score = (spread_series - spread_mean) / spread_std
+
+        z = _safe_float(z_score.iloc[-1])
+        z_prev = _safe_float(z_score.iloc[-2]) if len(z_score) > 1 else 0
+        dz = z - z_prev
+
+        recent_spread = spread[-self._window:]
+        half_life = self._calc_half_life(recent_spread)
+
+        if half_life > self._hl_max or half_life < self._hl_min:
+            return TradeSignal(SignalType.HOLD)
+
+        rsi = _safe_float(_rsi_series(c, 14).iloc[-1], 50)
+        vol_ma = _safe_float(v.rolling(20).mean().iloc[-1])
+        vol_shrink = vol_ma > 0 and _safe_float(v.iloc[-1]) < vol_ma * 0.8
+
+        if z < -self._entry_z and dz > 0:
+            strength = min(0.95, abs(z) / 3)
+            confirm = "RSI确认" if rsi < 40 else ""
+            confirm += "量缩确认" if vol_shrink else ""
+            return _signal(SignalType.BUY, strength, f"配对交易做多(Z={z:.2f},HL={half_life:.1f}d){confirm}", 0.45)
+
+        if z > self._entry_z and dz < 0:
+            strength = min(0.95, z / 3)
+            confirm = "RSI确认" if rsi > 60 else ""
+            confirm += "量缩确认" if vol_shrink else ""
+            return _signal(SignalType.SELL, strength, f"配对交易做空(Z={z:.2f},HL={half_life:.1f}d){confirm}")
+
+        if abs(z) < self._exit_z and abs(z_prev) >= self._exit_z:
+            if z_prev < 0:
+                return _signal(SignalType.SELL, 0.5, f"配对交易平仓做多(Z回归={z:.2f})")
+            else:
+                return _signal(SignalType.BUY, 0.5, f"配对交易平仓做空(Z回归={z:.2f})", 0.30)
+
+        return TradeSignal(SignalType.HOLD)
+
+    @staticmethod
+    def get_param_space() -> dict:
+        return {"window": {"min": 40, "max": 80, "step": 10}, "entry_z": {"min": 1.5, "max": 3.0, "step": 0.25}}
+
+
 class CompositeStrategy:
     """组合策略"""
 
     def __init__(self):
         self.strategies = [
-            IchimokuCloudStrategy(),
-            VWAPDeviationStrategy(),
-            OrderFlowImbalanceStrategy(),
-            FractalBreakoutStrategy(),
             DualMAStrategy(),
             MACDStrategy(),
             KDJStrategy(),
             BollingerBreakoutStrategy(),
             MomentumStrategy(),
             MultiFactorConfluenceStrategy(),
+            AdaptiveTrendFollowingStrategy(),
+            MeanReversionProStrategy(),
+            VolatilitySqueezeBreakoutStrategy(),
+            RSIMeanReversionStrategy(),
+            SuperTrendStrategy(),
+            IchimokuCloudStrategy(),
+            VWAPDeviationStrategy(),
+            OrderFlowImbalanceStrategy(),
+            RegimeSwitchingStrategy(),
+            FractalBreakoutStrategy(),
             WyckoffAccumulationStrategy(),
             ElliottWaveAIStrategy(),
             MarketMicrostructureStrategy(),
@@ -1972,6 +2363,11 @@ class CompositeStrategy:
             KaufmanAdaptiveStrategy(),
             GARCHVolatilityStrategy(),
             MultiTimeframeMomentumStrategy(),
+            ADXTrendStrengthStrategy(),
+            ChaikinMoneyFlowStrategy(),
+            ParabolicSARStrategy(),
+            HurstExponentStrategy(),
+            PairsTradingStrategy(),
         ]
 
     def generate_signal(self, df: pd.DataFrame) -> TradeSignal:
@@ -2082,4 +2478,19 @@ STRATEGY_REGISTRY = {
     "mtf_momentum": MultiTimeframeMomentumStrategy,
     "multi_timeframe_momentum": MultiTimeframeMomentumStrategy,
     "MultiTimeframeMomentumStrategy": MultiTimeframeMomentumStrategy,
+    "adx_trend": ADXTrendStrengthStrategy,
+    "adx_trend_strength": ADXTrendStrengthStrategy,
+    "ADXTrendStrengthStrategy": ADXTrendStrengthStrategy,
+    "cmf": ChaikinMoneyFlowStrategy,
+    "chaikin_money_flow": ChaikinMoneyFlowStrategy,
+    "ChaikinMoneyFlowStrategy": ChaikinMoneyFlowStrategy,
+    "psar": ParabolicSARStrategy,
+    "parabolic_sar": ParabolicSARStrategy,
+    "ParabolicSARStrategy": ParabolicSARStrategy,
+    "hurst": HurstExponentStrategy,
+    "hurst_exponent": HurstExponentStrategy,
+    "HurstExponentStrategy": HurstExponentStrategy,
+    "pairs": PairsTradingStrategy,
+    "pairs_trading": PairsTradingStrategy,
+    "PairsTradingStrategy": PairsTradingStrategy,
 }

@@ -26,6 +26,8 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
         self._enabled = enabled
         self._rate_limits: dict[str, list[float]] = {}
         self._rate_limit_per_minute = 120
+        self._max_clients = 10000
+        self._last_cleanup = time.time()
 
     async def dispatch(self, request: Request, call_next):
         if not self._enabled:
@@ -88,7 +90,13 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
 
     def _check_rate_limit(self, client_id: str) -> bool:
         now = time.time()
+        if now - self._last_cleanup > 300:
+            self._cleanup_stale_clients(now)
+            self._last_cleanup = now
+
         if client_id not in self._rate_limits:
+            if len(self._rate_limits) >= self._max_clients:
+                self._cleanup_stale_clients(now)
             self._rate_limits[client_id] = [now]
             return True
 
@@ -100,3 +108,8 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
         if len(timestamps) > self._rate_limit_per_minute:
             return False
         return True
+
+    def _cleanup_stale_clients(self, now: float) -> None:
+        stale = [cid for cid, ts in self._rate_limits.items() if not ts or now - ts[-1] > 300]
+        for cid in stale:
+            del self._rate_limits[cid]

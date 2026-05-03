@@ -60,9 +60,9 @@
           <div class="rec-list">
             <div v-for="(r, i) in recommendation.recommendations" :key="i" class="rec-item" @click="applyRecommendation(r.strategy)">
               <div class="rec-top">
-                <span class="rec-rank">#{{ i + 1 }}</span>
+                <span class="rec-rank">#{{ Number(i) + 1 }}</span>
                 <span class="rec-name">{{ r.strategy === 'adaptive' ? '自适应引擎' : strategyDisplayName(r.strategy) }}</span>
-                <span class="rec-score mono">{{ (r.score * 100).toFixed(0) }}%</span>
+                <span class="rec-score mono">{{ (Number(r.score) * 100).toFixed(0) }}%</span>
               </div>
               <div class="rec-reasons">
                 <span v-for="(reason, j) in r.reasons?.slice(0, 2)" :key="j" class="rec-reason-tag">{{ reason }}</span>
@@ -147,7 +147,7 @@
                     <td class="mono">{{ t.amount?.toFixed(0) || '-' }}</td>
                     <td class="mono">{{ t.fee?.toFixed(2) || '-' }}</td>
                     <td class="mono" :class="(t.pnl || 0) >= 0 ? 'text-rise' : 'text-fall'">{{ t.pnl != null ? t.pnl.toFixed(2) : '-' }}</td>
-                    <td class="mono">{{ t.hold_days ?? t.holding_days ?? '-' }}</td>
+                    <td class="mono">{{ t.hold_days ?? '-' }}</td>
                     <td class="trade-reason">{{ t.reason || '-' }}</td>
                   </tr>
                 </tbody>
@@ -156,9 +156,9 @@
 
             <div v-show="activeResultTab === 'risk'" v-if="result">
               <div class="risk-metrics">
-                <div class="rm-card"><span class="rm-label">VaR(95%)</span><span class="rm-value mono">{{ (result.var_95 || 0).toFixed(4) }}</span></div>
+                <div class="rm-card"><span class="rm-label">VaR(95%)</span><span class="rm-value mono">{{ (result.var_95 ?? 0).toFixed(4) }}</span></div>
                 <div class="rm-card"><span class="rm-label">CVaR(95%)</span><span class="rm-value mono">{{ (result.cvar_95 || 0).toFixed(4) }}</span></div>
-                <div class="rm-card"><span class="rm-label">波动率</span><span class="rm-value mono">{{ (result.volatility || 0).toFixed(2) }}%</span></div>
+                <div class="rm-card"><span class="rm-label">波动率</span><span class="rm-value mono">{{ ((result.volatility ?? result.annual_volatility ?? 0) * 100).toFixed(2) }}%</span></div>
                 <div class="rm-card"><span class="rm-label">下行偏差</span><span class="rm-value mono">{{ (result.downside_deviation || 0).toFixed(4) }}</span></div>
                 <div class="rm-card"><span class="rm-label">Beta</span><span class="rm-value mono">{{ (result.beta || 0).toFixed(3) }}</span></div>
                 <div class="rm-card"><span class="rm-label">信息比率</span><span class="rm-value mono">{{ (result.information_ratio || 0).toFixed(3) }}</span></div>

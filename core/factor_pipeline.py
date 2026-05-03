@@ -39,7 +39,7 @@ def zscore_normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def rank_normalize(series: pd.Series) -> pd.Series:
     valid_mask = series.notna()
-    ranked = series.copy()
+    ranked = series.copy().astype(float)
     if valid_mask.sum() < 2:
         return ranked
     ranked[valid_mask] = series[valid_mask].rank(pct=True)

@@ -133,13 +133,13 @@ async def lifespan(app: FastAPI):
     logger.info("QuantCore 启动中...")
 
     from core.database import get_db, get_cache_manager
-    from core.data_fetcher import SmartDataFetcher
+    from core.data_fetcher import SmartDataFetcher, get_fetcher
     from core.backtest import BacktestEngine
     from core.strategies import CompositeStrategy
     from core.simulated_trading import SimulatedTrading
 
     app.state.db = get_db()
-    app.state.fetcher = SmartDataFetcher()
+    app.state.fetcher = get_fetcher()
     app.state.composite_strategy = CompositeStrategy()
     app.state.backtest_engine = BacktestEngine()
     app.state.trading = SimulatedTrading()
@@ -338,12 +338,19 @@ async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
     return JSONResponse(
         status_code=500,
-        content={"success": False, "error": "服务器内部错误，请稍后重试", "error_type": type(exc).__name__},
+        content={"success": False, "error": "服务器内部错误，请稍后重试"},
     )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -361,6 +368,9 @@ app.include_router(router, prefix="/api")
 
 from api.backtest_routes import backtest_router
 app.include_router(backtest_router, prefix="/api")
+
+from api.feature_routes import feature_router
+app.include_router(feature_router, prefix="/api")
 
 
 @app.middleware("http")

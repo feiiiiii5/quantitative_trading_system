@@ -138,7 +138,7 @@
                 <td :class="t.side === 'buy' ? 'text-rise' : 'text-fall'">{{ t.side === 'buy' ? '买入' : '卖出' }}</td>
                 <td class="mono">{{ t.price?.toFixed(2) }}</td>
                 <td class="mono">{{ t.shares }}</td>
-                <td class="mono">{{ formatNumber(t.total || t.price * t.shares, 0) }}</td>
+                <td class="mono">{{ formatNumber(t.total || (t.price ?? 0) * (t.shares ?? 0), 0) }}</td>
               </tr>
             </tbody>
           </table>
@@ -156,14 +156,25 @@ import { api } from '@/api'
 import { formatNumber } from '@/utils/format'
 import { storeToRefs } from 'pinia'
 
+interface TradeRecord {
+  timestamp?: string
+  name?: string
+  symbol?: string
+  side?: string
+  price?: number
+  shares?: number
+  total?: number
+}
+
 const portfolioStore = usePortfolioStore()
 const { account } = storeToRefs(portfolioStore)
-const tradeHistory = ref<{ trades: unknown[]; total: number }>({ trades: [], total: 0 })
+const tradeHistory = ref<{ trades: TradeRecord[]; total: number }>({ trades: [], total: 0 })
 
 onMounted(async () => {
   await portfolioStore.fetchAccount()
   try {
-    tradeHistory.value = await api.trading.history(50)
+    const res = await api.trading.history(50)
+    tradeHistory.value = { trades: (res.trades as TradeRecord[]) ?? [], total: res.total ?? 0 }
   } catch {
     // silent
   }
