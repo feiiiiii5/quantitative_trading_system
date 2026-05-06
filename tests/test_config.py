@@ -1,4 +1,3 @@
-import pytest
 from core.config import validate_config, load_config, DEFAULT_CONFIG, get_config
 
 
@@ -54,3 +53,13 @@ class TestConfigValidation:
         assert config["backtest"]["initial_capital"] == 1000000
         assert config["risk"]["max_concentration"] == 0.3
         assert config["api"]["auth_enabled"] is False
+
+    def test_bool_not_accepted_as_integer(self):
+        config = {"server": {"port": True}}
+        errors = validate_config(config)
+        assert any("port" in e for e in errors)
+
+    def test_bool_not_accepted_as_number(self):
+        config = {"backtest": {"commission": False}}
+        errors = validate_config(config)
+        assert any("commission" in e for e in errors)
