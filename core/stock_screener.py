@@ -6,17 +6,13 @@ QuantCore 智能选股器模块
 import asyncio
 import logging
 import threading
-import time
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
-
-import numpy as np
+from enum import StrEnum
 
 logger = logging.getLogger(__name__)
 
 
-class FilterOperator(str, Enum):
+class FilterOperator(StrEnum):
     GT = "gt"
     GTE = "gte"
     LT = "lt"
@@ -157,9 +153,8 @@ def _apply_condition(stock: dict, cond: FilterCondition) -> bool:
     elif cond.operator == FilterOperator.BETWEEN:
         if isinstance(cond.value, list) and len(cond.value) == 2:
             return cond.value[0] <= val <= cond.value[1]
-    elif cond.operator == FilterOperator.IN:
-        if isinstance(cond.value, list):
-            return val in [float(v) for v in cond.value]
+    elif cond.operator == FilterOperator.IN and isinstance(cond.value, list):
+        return val in [float(v) for v in cond.value]
     return False
 
 
@@ -187,7 +182,7 @@ class StockScreener:
             })
         return result
 
-    def get_preset(self, preset_id: str) -> Optional[ScreeningPreset]:
+    def get_preset(self, preset_id: str) -> ScreeningPreset | None:
         return self._presets.get(preset_id)
 
     def screen_by_preset(self, stocks: list[dict], preset_id: str) -> list[dict]:
@@ -235,8 +230,8 @@ class StockScreener:
     async def screen_with_enrichment(
         self,
         stocks: list[dict],
-        preset_id: Optional[str] = None,
-        custom_conditions: Optional[list[dict]] = None,
+        preset_id: str | None = None,
+        custom_conditions: list[dict] | None = None,
         sort_by: str = "change_pct",
         sort_desc: bool = True,
         limit: int = 50,
@@ -294,7 +289,8 @@ class StockScreener:
         try:
             from core.data_fetcher import get_fetcher
             fetcher = get_fetcher()
-        except Exception:
+        except Exception as e:
+            logger.debug("获取数据源失败，跳过历史数据增强: %s", e)
             return stocks
 
         enriched = []
@@ -303,7 +299,7 @@ class StockScreener:
             batch = stocks[i:i + batch_size]
             tasks = [self._enrich_single(fetcher, s) for s in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for stock, result in zip(batch, results):
+            for stock, result in zip(batch, results, strict=False):
                 if isinstance(result, Exception):
                     stock["pct_5d"] = 0
                     stock["pct_20d"] = 0
@@ -347,11 +343,12 @@ class StockScreener:
                 if vol_ma20 > 0:
                     result["volume_ratio"] = round(float(volume.iloc[-1]) / vol_ma20, 2)
             return result
-        except Exception:
+        except Exception as e:
+            logger.debug("单股增强失败 %s: %s", stock.get("symbol", "?"), e)
             return {"pct_5d": 0, "pct_20d": 0, "high_60d_ratio": 0, "volume_ratio": 0}
 
 
-_screener: Optional[StockScreener] = None
+_screener: StockScreener | None = None
 _screener_lock = threading.Lock()
 
 

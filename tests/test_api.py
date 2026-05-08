@@ -54,6 +54,10 @@ class TestBacktestEndpoints:
         resp = client.get("/api/backtest/strategies")
         assert resp.status_code == 200
 
+    def test_backtest_history(self, client):
+        resp = client.get("/api/backtest/history")
+        assert resp.status_code == 200
+
 
 class TestSystemEndpoints:
     def test_system_metrics(self, client):
@@ -150,7 +154,4 @@ class TestHotEndpoints:
         assert resp.status_code == 200
 
 
-class TestBacktestEndpoints:
-    def test_backtest_history(self, client):
-        resp = client.get("/api/backtest/history")
-        assert resp.status_code == 200
+

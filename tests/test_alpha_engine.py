@@ -1,8 +1,7 @@
 import numpy as np
 import pandas as pd
-import pytest
 
-from core.alpha_engine import AlphaGenerator, AlphaPrimitive, AlphaExpression
+from core.alpha_engine import AlphaExpression, AlphaGenerator, AlphaPrimitive
 
 
 class TestAlphaPrimitive:
@@ -103,7 +102,7 @@ class TestAlphaGenerator:
         gen = AlphaGenerator()
         results = gen.compute_all_alphas(sample_ohlcv)
         assert len(results) >= 5
-        for name, values in results.items():
+        for _name, values in results.items():
             assert values.notna().sum() > 10
 
     def test_register_custom_alpha(self, sample_ohlcv):

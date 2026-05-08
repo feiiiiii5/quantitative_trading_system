@@ -91,9 +91,15 @@ export interface NorthboundData {
 }
 
 export interface SignalItem {
-  date: string
-  price: number
-  signals: StrategySignal[]
+  id?: number
+  symbol?: string
+  name?: string
+  type?: string
+  strategy?: string
+  time?: string
+  date?: string
+  price?: number
+  signals?: StrategySignal[]
 }
 
 export interface StrategySignal {
@@ -186,6 +192,17 @@ export interface CorrelationData {
   alpha: number
   relative_strength: number
   stability_score: number
+  related?: { symbol: string; name: string; coefficient: number }[]
+}
+
+export interface DepthLevel {
+  price: number
+  quantity: number
+}
+
+export interface OrderDepth {
+  bids: DepthLevel[]
+  asks: DepthLevel[]
 }
 
 export interface FactorAnalysis {
@@ -334,12 +351,19 @@ export interface WatchlistData {
 }
 
 export interface PriceAlert {
-  id: string
+  id: string | number
   symbol: string
+  name?: string
   alert_type: string
   value: number
+  target_price?: number
+  direction?: string
+  enabled?: boolean
   triggered: boolean
+  trigger_price?: number | null
+  trigger_time?: string | null
   created_at: string
+  updated_at?: string
 }
 
 export interface SearchItem {
@@ -357,7 +381,7 @@ export interface SystemMetrics {
   cpu_percent: number
   threads: number
   api_requests_total: number
-  avg_response_time: number
+  avg_response_time_ms: number
   ws_connections: number
   cache_size: number
 }
@@ -546,6 +570,12 @@ export interface BacktestHistoryItem {
   id?: string
   symbol: string
   strategy_type: string
+  strategy_name?: string
+  total_return?: number
+  annual_return?: number
+  sharpe_ratio?: number
+  max_drawdown?: number
+  win_rate?: number
   result: BacktestResult
   created_at?: string
 }
@@ -555,6 +585,9 @@ export interface MonteCarloResult {
   paths: number[][]
   percentiles?: { p5: number[]; p50: number[]; p95: number[] }
   avg_final_value?: number
+  median_return?: number
+  p5_return?: number
+  p95_return?: number
 }
 
 export interface SensitivityItem {
@@ -563,11 +596,106 @@ export interface SensitivityItem {
   sharpe_ratio: number
   total_return: number
   max_drawdown: number
+  min?: number
+  max?: number
+  impact?: number
 }
 
 export interface StrategyRecommendation {
+  analysis: {
+    regime?: string
+    trend?: number
+    volatility?: number
+    adx?: number
+    rsi?: number
+  }
+  recommendations: {
+    strategy: string
+    strategy_class: string
+    score: number
+    reasons: string[]
+  }[]
+  strategy?: string
+  strategy_class?: string
+  score?: number
+  reasons?: string[]
+}
+
+export interface LimitUpItem {
+  symbol: string
+  name: string
+  price: number
+  change_pct: number
+  volume: number
+  amount: number
+  first_limit_up_time?: string
+  last_limit_up_time?: string
+  limit_up_count?: number
+  industry?: string
+}
+
+export interface DragonTigerItem {
+  symbol: string
+  name: string
+  date: string
+  reason: string
+  buy_departments: { name: string; buy_amount: number; sell_amount: number; net_amount: number }[]
+  sell_departments: { name: string; buy_amount: number; sell_amount: number; net_amount: number }[]
+  net_buy_amount: number
+}
+
+export interface PortfolioAttribution {
+  total_return: number
+  benchmark_return: number
+  alpha: number
+  beta: number
+  sector_attribution: { sector: string; contribution: number; weight: number }[]
+  stock_attribution: { symbol: string; name: string; contribution: number; weight: number }[]
+}
+
+export interface TradeResult {
+  success: boolean
+  order_id: string
+  symbol: string
+  name?: string
+  price: number
+  shares: number
+  amount: number
+  commission: number
+  timestamp: number
+  message?: string
+}
+
+export interface StrategyPerformanceItem {
   strategy: string
-  strategy_class: string
-  score: number
-  reasons: string[]
+  total_return: number
+  annual_return: number
+  sharpe_ratio: number
+  max_drawdown: number
+  win_rate: number
+  profit_factor: number
+  trade_count: number
+}
+
+export interface PerformanceOverview {
+  symbol: string
+  period: string
+  data_points: number
+  benchmark: { name: string; total_return: number; sharpe_ratio: number }
+  best_strategy: StrategyPerformanceItem | null
+  average_return: number
+  average_sharpe: number
+  strategy_count: number
+  strategies: StrategyPerformanceItem[]
+}
+
+export interface MarketEvent {
+  type: 'limit_up' | 'limit_down' | 'volume_spike'
+  symbol: string
+  name: string
+  change_pct: number
+  price: number
+  volume?: number
+  volume_ratio?: number
+  timestamp: number
 }

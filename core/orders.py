@@ -1,8 +1,7 @@
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +43,8 @@ class Order:
     side: OrderSide
     order_type: OrderType
     quantity: int
-    price: Optional[float] = None
-    stop_price: Optional[float] = None
+    price: float | None = None
+    stop_price: float | None = None
     status: OrderStatus = OrderStatus.PENDING_NEW
     filled_quantity: int = 0
     filled_value: float = 0.0
@@ -72,7 +71,7 @@ class Order:
     def transition_to(self, new_status: OrderStatus) -> bool:
         valid = _VALID_TRANSITIONS.get(self.status, set())
         if new_status not in valid:
-            logger.warning(f"Invalid order transition: {self.status.value} -> {new_status.value} for order {self.order_id}")
+            logger.warning("Invalid order transition: %s -> %s for order %s", self, new_status, self)
             return False
         self.status = new_status
         self.updated_at = datetime.now()

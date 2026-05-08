@@ -1,5 +1,4 @@
 import logging
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -59,7 +58,7 @@ def industry_neutralize(
         return factor_series.copy()
     result = factor_series.copy()
     groups = industry_labels.groupby(industry_labels)
-    for name, idx in groups.groups.items():
+    for _name, idx in groups.groups.items():
         if len(idx) < 2:
             continue
         group_vals = factor_series.loc[idx]
@@ -96,7 +95,7 @@ def market_cap_neutralize(
 
 def orthogonalize(
     factor_df: pd.DataFrame,
-    reference_col: str = None,
+    reference_col: str | None = None,
 ) -> pd.DataFrame:
     if factor_df.empty or len(factor_df.columns) < 2:
         return factor_df.copy()
@@ -131,9 +130,9 @@ def orthogonalize(
 
 def full_factor_pipeline(
     factor_df: pd.DataFrame,
-    industry_labels: pd.Series = None,
-    market_cap: pd.Series = None,
-    winsorize_bounds: Tuple[float, float] = (0.025, 0.975),
+    industry_labels: pd.Series | None = None,
+    market_cap: pd.Series | None = None,
+    winsorize_bounds: tuple[float, float] = (0.025, 0.975),
     neutralize_method: str = "zscore",
 ) -> pd.DataFrame:
     if factor_df.empty:

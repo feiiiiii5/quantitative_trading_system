@@ -1,41 +1,61 @@
 <template>
-  <AppLayout>
-    <router-view v-slot="{ Component }">
-      <transition name="fade" mode="out-in">
-        <component :is="Component" />
-      </transition>
+  <div :data-theme="themeStore.theme">
+    <router-view v-if="isPublicRoute" v-slot="{ Component }">
+      <component :is="Component" />
     </router-view>
-  </AppLayout>
+
+    <AppLayout v-else>
+      <router-view v-slot="{ Component, route: currentRoute }">
+        <component :is="Component" :key="currentRoute.path" />
+      </router-view>
+    </AppLayout>
+    <KeyboardShortcutOverlay />
+  </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useThemeStore } from '@/stores/theme'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import KeyboardShortcutOverlay from '@/components/ui/KeyboardShortcutOverlay.vue'
 
-const router = useRouter()
 const themeStore = useThemeStore()
+const route = useRoute()
+const router = useRouter()
 
-function handleGlobalKeydown(e: KeyboardEvent) {
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
-  if (e.altKey || e.ctrlKey || e.metaKey) {
-    switch (e.key) {
-      case '1': e.preventDefault(); router.push('/dashboard'); break
-      case '2': e.preventDefault(); router.push('/market'); break
-      case '3': e.preventDefault(); router.push('/strategy'); break
-      case '4': e.preventDefault(); router.push('/portfolio'); break
-      case '5': e.preventDefault(); router.push('/watchlist'); break
-      case 'd': e.preventDefault(); themeStore.toggleTheme(); break
+const isPublicRoute = computed(() => {
+  return route.meta?.public === true || route.path === '/' || route.path === '/login'
+})
+
+const NAV_SHORTCUTS: Record<string, string> = {
+  '1': '/dashboard',
+  '2': '/market',
+  '3': '/strategy',
+  '4': '/portfolio',
+  '5': '/watchlist',
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.metaKey || e.ctrlKey) {
+    if (e.key === 'd') {
+      e.preventDefault()
+      themeStore.toggle()
+    }
+    if (NAV_SHORTCUTS[e.key]) {
+      e.preventDefault()
+      router.push(NAV_SHORTCUTS[e.key])
     }
   }
 }
 
 onMounted(() => {
-  window.addEventListener('keydown', handleGlobalKeydown)
+  window.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleGlobalKeydown)
+  window.removeEventListener('keydown', onKeydown)
 })
 </script>
+
+

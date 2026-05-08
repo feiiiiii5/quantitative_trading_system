@@ -47,7 +47,7 @@ class TestCVaRCalculation:
 
 class TestClassifyMarketRegime:
     def test_insufficient_data_returns_all_consolidation(self):
-        from core.adaptive_strategy import classify_market_regime, MarketRegime
+        from core.adaptive_strategy import MarketRegime, classify_market_regime
 
         df = pd.DataFrame({
             "close": [100, 101, 102],
@@ -60,7 +60,7 @@ class TestClassifyMarketRegime:
         assert all(r == MarketRegime.LOW_VOLATILITY_CONSOLIDATION for r in regimes)
 
     def test_returns_list_of_regimes(self):
-        from core.adaptive_strategy import classify_market_regime, MarketRegime
+        from core.adaptive_strategy import MarketRegime, classify_market_regime
 
         np.random.seed(42)
         n = 300
@@ -79,7 +79,7 @@ class TestClassifyMarketRegime:
             assert r in valid_regimes
 
     def test_missing_volume_column_works(self):
-        from core.adaptive_strategy import classify_market_regime, MarketRegime
+        from core.adaptive_strategy import classify_market_regime
 
         np.random.seed(42)
         n = 300
@@ -102,7 +102,7 @@ class TestQLearningWeightAdapter:
         assert adapter._n == 3
 
     def test_select_weights_returns_correct_len(self):
-        from core.adaptive_strategy import QLearningWeightAdapter, MarketRegime
+        from core.adaptive_strategy import MarketRegime, QLearningWeightAdapter
 
         adapter = QLearningWeightAdapter(n_strategies=3)
         base_weights = [0.4, 0.3, 0.3]
@@ -111,13 +111,13 @@ class TestQLearningWeightAdapter:
         assert len(weights) == 3
 
     def test_update_does_not_crash(self):
-        from core.adaptive_strategy import QLearningWeightAdapter, MarketRegime
+        from core.adaptive_strategy import MarketRegime, QLearningWeightAdapter
 
         adapter = QLearningWeightAdapter(n_strategies=3)
         adapter.update(MarketRegime.LOW_VOLATILITY_CONSOLIDATION, 0.1, 0.0, 0, 0.05)
 
     def test_weights_clipped_between_005_and_060(self):
-        from core.adaptive_strategy import QLearningWeightAdapter, MarketRegime
+        from core.adaptive_strategy import MarketRegime, QLearningWeightAdapter
 
         adapter = QLearningWeightAdapter(n_strategies=3)
         weights = adapter.select_weights(
@@ -126,7 +126,7 @@ class TestQLearningWeightAdapter:
             assert 0.05 <= w <= 0.60
 
     def test_weights_sum_to_one(self):
-        from core.adaptive_strategy import QLearningWeightAdapter, MarketRegime
+        from core.adaptive_strategy import MarketRegime, QLearningWeightAdapter
 
         adapter = QLearningWeightAdapter(n_strategies=5)
         weights = adapter.select_weights(
@@ -134,7 +134,7 @@ class TestQLearningWeightAdapter:
         assert pytest.approx(sum(weights), abs=0.01) == 1.0
 
     def test_discretize_state_format(self):
-        from core.adaptive_strategy import QLearningWeightAdapter, MarketRegime
+        from core.adaptive_strategy import MarketRegime, QLearningWeightAdapter
 
         adapter = QLearningWeightAdapter(n_strategies=3)
         state = adapter._discretize_state(MarketRegime.STRONG_TREND_UP, 0.2, 0.02)

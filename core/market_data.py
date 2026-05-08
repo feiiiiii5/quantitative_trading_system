@@ -1,3 +1,10 @@
+__all__ = [
+    "get_all_a_stocks_sync",
+    "get_stock_list",
+    "start_background_refresh",
+    "stop_background_refresh",
+]
+
 """
 QuantCore 市场数据辅助模块
 使用新浪财经API获取全量A股列表（快速稳定，替代akshare）
@@ -7,15 +14,12 @@ import json
 import logging
 import threading
 import time
-from typing import Optional
-
-import aiohttp
 
 from core.data_fetcher import safe_float as _num
 
 logger = logging.getLogger(__name__)
 
-_refresh_thread: Optional[threading.Thread] = None
+_refresh_thread: threading.Thread | None = None
 _refresh_stop = threading.Event()
 
 _all_a_stocks_cache: list[dict] = []
@@ -51,7 +55,7 @@ async def _fetch_sina_stock_list(page: int = 1, num: int = 80, sort: str = "amou
             result = []
             for item in data:
                 code = item.get("code", "")
-                symbol_raw = item.get("symbol", "")
+                item.get("symbol", "")
                 name = item.get("name", "")
                 if not code or not name:
                     continue
@@ -69,15 +73,15 @@ async def _fetch_sina_stock_list(page: int = 1, num: int = 80, sort: str = "amou
                     "last_close": _num(item.get("settlement")),
                     "pe": _num(item.get("per")),
                     "pb": _num(item.get("pb")),
-                    "total_market_cap": _num(item.get("mktcap"), default=None),
-                    "float_market_cap": _num(item.get("nmc"), default=None),
+                    "total_market_cap": _num(item.get("mktcap"), 0.0),
+                    "float_market_cap": _num(item.get("nmc"), 0.0),
                     "turnover_rate": _num(item.get("turnoverratio")),
                     "market": "A",
                     "industry": "",
                 })
             return result
     except Exception as e:
-        logger.debug(f"Sina stock list fetch error (page={page}): {e}")
+        logger.debug("Sina stock list fetch error (page=%s): %s", page, e)
     return []
 
 
@@ -97,14 +101,14 @@ async def _fetch_all_sina_stocks() -> list[dict]:
                 break
         return all_stocks
     except Exception as e:
-        logger.debug(f"Fetch all Sina stocks error: {e}")
+        logger.debug("Fetch all Sina stocks error: %s", e)
     return []
 
 
 async def _fetch_sina_stocks_fast() -> list[dict]:
     try:
         from core.data_fetcher import get_aiohttp_session
-        session = await get_aiohttp_session()
+        await get_aiohttp_session()
         tasks = []
         for page in range(1, 70):
             params = {
@@ -123,7 +127,7 @@ async def _fetch_sina_stocks_fast() -> list[dict]:
         for i in range(0, len(tasks), batch_size):
             batch_tasks = tasks[i:i + batch_size]
             coros = []
-            for page, params in batch_tasks:
+            for page, _params in batch_tasks:
                 coros.append(_fetch_sina_stock_list(page=page, num=80))
             results = await asyncio.gather(*coros, return_exceptions=True)
             for result in results:
@@ -135,7 +139,7 @@ async def _fetch_sina_stocks_fast() -> list[dict]:
 
         return all_stocks
     except Exception as e:
-        logger.debug(f"Sina fast fetch error: {e}")
+        logger.debug("Sina fast fetch error: %s", e)
     return []
 
 
@@ -157,7 +161,7 @@ async def fetch_all_a_stocks_async() -> list[dict]:
             with _all_a_stocks_lock:
                 _all_a_stocks_cache = data
                 _all_a_stocks_ts = now
-            logger.info(f"Fetched {len(data)} A-share stocks from Sina")
+            logger.info("Fetched %s A-share stocks from Sina", len)
             return data
 
         try:
@@ -173,7 +177,7 @@ async def fetch_all_a_stocks_async() -> list[dict]:
                 rename = {k: v for k, v in col_map.items() if k in df.columns}
                 df = df.rename(columns=rename)
                 result = []
-                for _, row in df.iterrows():
+                for row in df.to_dict("records"):
                     result.append({
                         "symbol": str(row.get("symbol", "")),
                         "name": str(row.get("name", "")),
@@ -193,11 +197,12 @@ async def fetch_all_a_stocks_async() -> list[dict]:
                     _all_a_stocks_ts = time.time()
                 return result
         except Exception as e:
-            logger.debug(f"akshare fallback error: {e}")
+            logger.debug("akshare fallback error: %s", e)
 
         with _all_a_stocks_lock:
             return _all_a_stocks_cache if _all_a_stocks_cache else []
-    except Exception:
+    except Exception as e:
+        logger.debug("get_all_a_stocks outer error: %s", e)
         with _all_a_stocks_lock:
             return _all_a_stocks_cache if _all_a_stocks_cache else []
     finally:
@@ -218,7 +223,8 @@ def get_all_a_stocks_sync() -> list[dict]:
             with _all_a_stocks_lock:
                 return _all_a_stocks_cache
         return asyncio.run(fetch_all_a_stocks_async())
-    except Exception:
+    except Exception as e:
+        logger.debug("get_all_a_stocks_sync error: %s", e)
         with _all_a_stocks_lock:
             return _all_a_stocks_cache
 
@@ -234,7 +240,7 @@ def get_stock_list(market: str) -> list[dict]:
             df = ak.stock_zh_a_spot_em()
             if df is not None and not df.empty:
                 result = []
-                for _, row in df.iterrows():
+                for row in df.to_dict("records"):
                     result.append({
                         "code": str(row.get("代码", "")),
                         "name": str(row.get("名称", "")),
@@ -246,7 +252,7 @@ def get_stock_list(market: str) -> list[dict]:
             df = ak.stock_hk_spot_em()
             if df is not None and not df.empty:
                 result = []
-                for _, row in df.iterrows():
+                for row in df.to_dict("records"):
                     result.append({
                         "code": str(row.get("代码", "")),
                         "name": str(row.get("名称", "")),
@@ -257,7 +263,7 @@ def get_stock_list(market: str) -> list[dict]:
             df = ak.stock_us_spot_em()
             if df is not None and not df.empty:
                 result = []
-                for _, row in df.iterrows():
+                for row in df.to_dict("records"):
                     result.append({
                         "code": str(row.get("代码", "")),
                         "name": str(row.get("名称", "")),
@@ -265,7 +271,7 @@ def get_stock_list(market: str) -> list[dict]:
                     })
                 return result
     except Exception as e:
-        logger.debug(f"Get stock list fallback error for {market}: {e}")
+        logger.debug("Get stock list fallback error for %s: %s", market, e)
     return []
 
 
@@ -280,8 +286,9 @@ def _refresh_loop() -> None:
                 loop.run_until_complete(fetch_all_a_stocks_async())
                 loop.close()
             except Exception as e:
-                logger.debug(f"Background refresh error: {e}")
-        except Exception:
+                logger.debug("Background refresh error: %s", e)
+        except Exception as e:
+            logger.debug("Background refresh loop error: %s", e)
             break
 
 

@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import logging
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 import pandas as pd
@@ -7,253 +10,439 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+__all__ = [
+    "OptimizationMethod",
+    "PortfolioOptimizer",
+    "OptimizationResult",
+    "mean_variance_optimize",
+    "risk_parity_optimize",
+    "ic_weighted_optimize",
+]
+
+
 def mean_variance_optimize(
     expected_returns: np.ndarray,
-    cov_matrix: np.ndarray,
-    risk_free_rate: float = 0.03,
-    max_weight: float = 0.05,
+    cov: np.ndarray,
+    max_weight: float = 1.0,
     min_weight: float = 0.0,
 ) -> np.ndarray:
     n = len(expected_returns)
     if n == 0:
         return np.array([])
-    if n == 1:
-        return np.array([min(max_weight, 1.0)])
-
-    cov = cov_matrix.copy()
-    if cov.shape != (n, n):
-        cov = np.eye(n) * 0.01
-
-    eigvals = np.linalg.eigvalsh(cov)
-    if np.min(eigvals) < 1e-10:
-        cov += np.eye(n) * 1e-8
-
-    best_sharpe = -np.inf
-    best_weights = np.ones(n) / n
-
-    for _ in range(200):
-        try:
-            inv_cov = np.linalg.inv(cov)
-            excess = expected_returns - risk_free_rate / 252
-            raw = inv_cov @ excess
-            if np.sum(raw) < 1e-12:
-                continue
-            w = raw / np.sum(np.abs(raw))
-            for _clip_iter in range(20):
-                w = np.clip(w, min_weight, max_weight)
-                s = np.sum(w)
-                if s > 0 and abs(s - 1.0) > 1e-8:
-                    w = w / s
-                else:
-                    break
-                if np.all(w <= max_weight + 1e-10):
-                    break
-            w = np.clip(w, min_weight, max_weight)
-            if np.sum(w) > 0:
-                w = w / np.sum(w)
-
-            port_ret = w @ expected_returns
-            port_vol = np.sqrt(w @ cov @ w)
-            if port_vol < 1e-12:
-                continue
-            sharpe = (port_ret - risk_free_rate / 252) / port_vol
-            if sharpe > best_sharpe:
-                best_sharpe = sharpe
-                best_weights = w.copy()
-        except np.linalg.LinAlgError:
-            continue
-
-    best_weights = np.clip(best_weights, min_weight, max_weight)
-    if np.sum(best_weights) > 0:
-        best_weights = best_weights / np.sum(best_weights)
-    else:
-        best_weights = np.ones(n) / n
-
-    return best_weights
+    cov = _regularize_cov_internal(cov)
+    ones = np.ones(n)
+    try:
+        inv_cov = np.linalg.inv(cov)
+        w = inv_cov @ ones
+        w = w / w.sum()
+        w = np.clip(w, min_weight, max_weight)
+        w = w / w.sum()
+    except np.linalg.LinAlgError:
+        w = np.ones(n) / n
+    return w
 
 
 def risk_parity_optimize(
-    cov_matrix: np.ndarray,
-    risk_budget: np.ndarray = None,
-    max_weight: float = 0.05,
+    cov: np.ndarray,
+    max_weight: float = 1.0,
     min_weight: float = 0.0,
 ) -> np.ndarray:
-    n = cov_matrix.shape[0]
+    n = cov.shape[0]
     if n == 0:
         return np.array([])
-    if n == 1:
-        return np.array([min(max_weight, 1.0)])
+    target_risk = 1.0 / n
 
-    cov = cov_matrix.copy()
-    if cov.shape != (n, n):
-        cov = np.eye(n) * 0.01
+    def risk_contribution(w: np.ndarray) -> np.ndarray:
+        portfolio_var = w @ cov @ w
+        if portfolio_var < 1e-12:
+            return np.zeros(n)
+        marginal = cov @ w
+        return np.array(w * marginal / np.sqrt(portfolio_var), dtype=float)
 
-    eigvals = np.linalg.eigvalsh(cov)
-    if np.min(eigvals) < 1e-10:
-        cov += np.eye(n) * 1e-8
+    def risk_parity_objective(w: np.ndarray) -> float:
+        rc = risk_contribution(w)
+        return float(np.sum((rc - target_risk) ** 2))
 
-    if risk_budget is None:
-        risk_budget = np.ones(n) / n
-    risk_budget = risk_budget / np.sum(risk_budget)
-
-    weights = np.ones(n) / n
-    for iteration in range(1000):
-        port_var = weights @ cov @ weights
-        if port_var < 1e-20:
+    w = np.ones(n) / n
+    lr = 0.5
+    prev_obj = risk_parity_objective(w)
+    for iteration in range(200):
+        grad = np.zeros(n)
+        eps = 1e-6
+        for i in range(n):
+            w_plus = w.copy()
+            w_plus[i] += eps
+            loss_plus = risk_parity_objective(w_plus)
+            w_minus = w.copy()
+            w_minus[i] -= eps
+            loss_minus = risk_parity_objective(w_minus)
+            grad[i] = (loss_plus - loss_minus) / (2 * eps)
+        w = w - lr * grad
+        w = np.clip(w, min_weight, max_weight)
+        total = w.sum()
+        if total > 0:
+            w = w / total
+        curr_obj = risk_parity_objective(w)
+        if curr_obj < 1e-10:
             break
-        marginal_contrib = cov @ weights
-        risk_contrib = weights * marginal_contrib / port_var
-        risk_diff = risk_contrib - risk_budget
-        if np.max(np.abs(risk_diff)) < 1e-8:
-            break
-
-        grad = 2 * (cov @ weights) / port_var - 2 * weights * (marginal_contrib @ weights) / (port_var ** 2)
-        step = 0.01
-        new_weights = weights - step * grad
-        for _clip_iter in range(20):
-            new_weights = np.clip(new_weights, min_weight, max_weight)
-            s = np.sum(new_weights)
-            if s > 0 and abs(s - 1.0) > 1e-8:
-                new_weights = new_weights / s
-            else:
+        if curr_obj >= prev_obj:
+            lr *= 0.5
+            if lr < 1e-8:
+                logger.debug("Risk parity converged at iter %d with obj=%.2e", iteration, curr_obj)
                 break
-            if np.all(new_weights <= max_weight + 1e-10):
-                break
-        new_weights = np.clip(new_weights, min_weight, max_weight)
-        if np.sum(new_weights) > 0:
-            new_weights = new_weights / np.sum(new_weights)
-        else:
-            new_weights = np.ones(n) / n
-        weights = new_weights
-
-    weights = np.clip(weights, min_weight, max_weight)
-    if np.sum(weights) > 0:
-        weights = weights / np.sum(weights)
-    else:
-        weights = np.ones(n) / n
-
-    return weights
+        prev_obj = curr_obj
+    return w
 
 
 def ic_weighted_optimize(
     ics: np.ndarray,
     vols: np.ndarray,
-    max_weight: float = 0.05,
-    min_weight: float = 0.0,
 ) -> np.ndarray:
     n = len(ics)
     if n == 0:
         return np.array([])
+    ic_ratio = np.maximum(ics, 0) / np.maximum(vols, 1e-8)
+    total = ic_ratio.sum()
+    weights = np.zeros_like(ic_ratio, dtype=float)
+    if total > 0:
+        weights = (ic_ratio / total).astype(float)
+    return weights.astype(float)
 
-    abs_ics = np.abs(ics)
-    safe_vols = np.where(vols > 1e-10, vols, 1e-10)
-    raw = abs_ics / safe_vols
-    if np.sum(raw) < 1e-12:
-        return np.ones(n) / n
 
-    weights = raw / np.sum(raw)
-    weights = np.clip(weights, min_weight, max_weight)
-    if np.sum(weights) > 0:
-        weights = weights / np.sum(weights)
-    else:
-        weights = np.ones(n) / n
+def _regularize_cov_internal(cov: np.ndarray, delta: float = 0.01) -> np.ndarray:
+    n = cov.shape[0]
+    diag = np.diag(cov)
+    if np.any(diag <= 0):
+        cov = cov + delta * np.eye(n)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    eigenvalues = np.maximum(eigenvalues, 1e-8)
+    cov = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+    return cov
 
-    return weights
+
+class OptimizationMethod(Enum):
+    MARKOWITZ = "markowitz"
+    RISK_PARITY = "risk_parity"
+    MIN_VARIANCE = "min_variance"
+    MAX_SHARPE = "max_sharpe"
+
+
+@dataclass
+class OptimizationResult:
+    weights: dict[str, float]
+    expected_return: float
+    volatility: float
+    sharpe_ratio: float
+    method: OptimizationMethod
+    efficient_frontier: list[dict] | None
 
 
 class PortfolioOptimizer:
     def __init__(
         self,
-        max_weight: float = 0.05,
-        min_weight: float = 0.0,
         risk_free_rate: float = 0.03,
+        max_weight: float = 1.0,
+        min_weight: float = 0.0,
     ):
+        self._rf = risk_free_rate
         self._max_weight = max_weight
         self._min_weight = min_weight
-        self._risk_free_rate = risk_free_rate
 
     def optimize(
         self,
-        expected_returns: np.ndarray,
-        cov_matrix: np.ndarray,
-        method: str = "mean_variance",
-        risk_budget: np.ndarray = None,
-    ) -> np.ndarray:
-        if method == "mean_variance":
-            return mean_variance_optimize(
-                expected_returns, cov_matrix,
-                self._risk_free_rate, self._max_weight, self._min_weight,
-            )
-        elif method == "risk_parity":
-            return risk_parity_optimize(
-                cov_matrix, risk_budget,
-                self._max_weight, self._min_weight,
-            )
+        returns: pd.DataFrame | np.ndarray,
+        cov: np.ndarray | None = None,
+        method: str | OptimizationMethod = OptimizationMethod.MARKOWITZ,
+        target_return: float | None = None,
+        long_only: bool = True,
+        max_weight: float = 1.0,
+        min_weight: float = 0.0,
+    ) -> np.ndarray | OptimizationResult:
+        if isinstance(returns, np.ndarray):
+            if cov is None:
+                raise ValueError("cov matrix required when returns is ndarray")
+            method_enum = OptimizationMethod.MARKOWITZ if isinstance(method, str) else method
+            if method_enum == OptimizationMethod.MIN_VARIANCE:
+                return mean_variance_optimize(returns, cov, max_weight, min_weight)
+            elif method_enum == OptimizationMethod.RISK_PARITY:
+                return risk_parity_optimize(cov, max_weight, min_weight)
+            elif method_enum == OptimizationMethod.MAX_SHARPE:
+                return self._max_sharpe(returns, cov, long_only, max_weight, min_weight)
+            else:
+                return mean_variance_optimize(returns, cov, max_weight, min_weight)
+
+        if returns.empty or returns.shape[1] < 2:
+            raise ValueError("Need at least 2 assets with return data")
+
+        symbols = list(returns.columns)
+        n = len(symbols)
+        mean_ret = returns.mean().values.astype(float)
+        cov_mat = returns.cov().values.astype(float)
+        if cov is not None:
+            cov_mat = cov.values.astype(float) if hasattr(cov, "values") else np.asarray(cov, dtype=float)
+
+        cov_mat = self._regularize_cov(cov_mat)
+
+        if method == OptimizationMethod.MIN_VARIANCE:
+            w = self._min_variance(cov_mat, long_only, max_weight, min_weight)
+        elif method == OptimizationMethod.MAX_SHARPE:
+            w = self._max_sharpe(mean_ret, cov_mat, long_only, max_weight, min_weight)
+        elif method == OptimizationMethod.RISK_PARITY:
+            w = risk_parity_optimize(cov_mat, max_weight, min_weight)
+        elif method == OptimizationMethod.MARKOWITZ:
+            w = self._markowitz(mean_ret, cov_mat, target_return, long_only, max_weight, min_weight)
         else:
-            return mean_variance_optimize(
-                expected_returns, cov_matrix,
-                self._risk_free_rate, self._max_weight, self._min_weight,
-            )
+            raise ValueError(f"Unknown optimization method: {method}")
 
-    def optimize_from_alphas(
-        self,
-        alpha_results: Dict[str, "AlphaResult"],
-        returns_df: pd.DataFrame,
-        method: str = "ic_weighted",
-    ) -> Dict[str, float]:
-        names = list(alpha_results.keys())
-        n = len(names)
-        if n == 0:
-            return {}
+        weights = {symbols[i]: float(w[i]) for i in range(n)}
+        exp_ret = float(np.dot(w, mean_ret)) * 252
+        vol = float(np.sqrt(w @ cov_mat @ w)) * np.sqrt(252)
+        sharpe = (exp_ret - self._rf) / vol if vol > 1e-12 else 0.0
 
-        ics = np.array([alpha_results[name].ic for name in names])
-        values_df = pd.DataFrame({name: alpha_results[name].values for name in names})
-        vols = values_df.std().values
-        expected_returns = ics * vols
+        frontier = None
+        if method == OptimizationMethod.MARKOWITZ and target_return is not None:
+            frontier = self._build_frontier(mean_ret, cov_mat, long_only, max_weight, min_weight)
 
-        if method == "ic_weighted":
-            weights = ic_weighted_optimize(ics, vols, self._max_weight, self._min_weight)
-        elif method == "mean_variance":
-            cov = values_df.cov().values
-            weights = mean_variance_optimize(
-                expected_returns, cov,
-                self._risk_free_rate, self._max_weight, self._min_weight,
-            )
-        elif method == "risk_parity":
-            cov = values_df.cov().values
-            weights = risk_parity_optimize(cov, max_weight=self._max_weight, min_weight=self._min_weight)
-        else:
-            weights = ic_weighted_optimize(ics, vols, self._max_weight, self._min_weight)
-
-        return {name: round(float(w), 6) for name, w in zip(names, weights)}
+        return OptimizationResult(
+            weights=weights,
+            expected_return=round(exp_ret, 4),
+            volatility=round(vol, 4),
+            sharpe_ratio=round(sharpe, 4),
+            method=method if isinstance(method, OptimizationMethod) else OptimizationMethod.MARKOWITZ,
+            efficient_frontier=frontier,
+        )
 
     def get_portfolio_report(
         self,
         weights: np.ndarray,
         expected_returns: np.ndarray,
-        cov_matrix: np.ndarray,
-        names: List[str] = None,
-    ) -> Dict:
+        cov: np.ndarray,
+        symbols: list[str],
+    ) -> dict:
         n = len(weights)
-        port_ret = float(weights @ expected_returns)
-        port_vol = float(np.sqrt(weights @ cov_matrix @ weights))
-        sharpe = (port_ret - self._risk_free_rate / 252) / port_vol if port_vol > 1e-12 else 0.0
+        if n == 0:
+            return {"weights": {}, "expected_return": 0.0, "volatility": 0.0,
+                    "sharpe_ratio": 0.0, "risk_contribution": {}}
 
-        marginal_contrib = cov_matrix @ weights
-        port_var = float(weights @ cov_matrix @ weights)
-        risk_contrib = weights * marginal_contrib / port_var if port_var > 1e-20 else np.zeros(n)
+        weights_dict = {symbols[i]: float(weights[i]) for i in range(n)}
+        exp_ret = float(np.dot(weights, expected_returns)) * 252
+        vol = float(np.sqrt(weights @ cov @ weights)) * np.sqrt(252)
+        sharpe = (exp_ret - self._rf) / vol if vol > 1e-12 else 0.0
 
-        report = {
-            "expected_return": round(port_ret, 6),
-            "volatility": round(port_vol, 6),
+        marginal_risk = cov @ weights
+        portfolio_var = weights @ marginal_risk
+        risk_contrib = {}
+        if portfolio_var > 1e-12:
+            for i, sym in enumerate(symbols):
+                risk_contrib[sym] = round(float(weights[i] * marginal_risk[i] / np.sqrt(portfolio_var)), 4)
+
+        return {
+            "weights": weights_dict,
+            "expected_return": round(exp_ret, 4),
+            "volatility": round(vol, 4),
             "sharpe_ratio": round(sharpe, 4),
-            "weights": {},
-            "risk_contribution": {},
+            "risk_contribution": risk_contrib,
         }
-        if names is None:
-            names = [f"asset_{i}" for i in range(n)]
-        for i, name in enumerate(names):
-            report["weights"][name] = round(float(weights[i]), 6)
-            report["risk_contribution"][name] = round(float(risk_contrib[i]), 6)
 
-        return report
+    def efficient_frontier(
+        self,
+        expected_returns: np.ndarray,
+        cov: np.ndarray,
+        n_points: int = 20,
+        target_return: float | None = None,
+    ) -> list[dict]:
+        if len(expected_returns) == 0 or cov.shape[0] == 0:
+            return []
+        if len(expected_returns) == 1:
+            return []
+        cov = _regularize_cov_internal(cov)
+        min_ret = float(np.min(expected_returns) * 252)
+        max_ret = float(np.max(expected_returns) * 252)
+        if abs(max_ret - min_ret) < 1e-12:
+            w = mean_variance_optimize(expected_returns, cov, self._max_weight, self._min_weight)
+            exp_r = float(np.dot(w, expected_returns)) * 252
+            vol = float(np.sqrt(w @ cov @ w)) * np.sqrt(252)
+            return [{"return": round(exp_r, 4), "volatility": round(vol, 4), "sharpe": 0.0}]
+        targets = np.linspace(min_ret, max_ret, n_points)
+        frontier = []
+        for tgt in targets:
+            w = self._markowitz(
+                expected_returns, cov, tgt,
+                long_only=True, max_weight=self._max_weight, min_weight=self._min_weight,
+            )
+            exp_r = float(np.dot(w, expected_returns)) * 252
+            vol = float(np.sqrt(w @ cov @ w)) * np.sqrt(252)
+            sharpe = (exp_r - self._rf) / vol if vol > 1e-12 else 0.0
+            frontier.append({"return": round(exp_r, 4), "volatility": round(vol, 4), "sharpe": round(sharpe, 4)})
+        return frontier
+
+    def _regularize_cov(self, cov: np.ndarray, delta: float = 0.01) -> np.ndarray:
+        n = cov.shape[0]
+        diag = np.diag(cov)
+        if np.any(diag <= 0):
+            logger.debug("Covariance diagonal contains non-positive values, applying regularization")
+            cov = cov + delta * np.eye(n)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        eigenvalues = np.maximum(eigenvalues, 1e-8)
+        cov = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+        return cov
+
+    def _min_variance(
+        self,
+        cov: np.ndarray,
+        long_only: bool,
+        max_weight: float,
+        min_weight: float,
+    ) -> np.ndarray:
+        n = cov.shape[0]
+        w = np.ones(n) / n
+        if long_only:
+            ones = np.ones(n)
+            try:
+                inv_cov = np.linalg.inv(cov)
+                w = inv_cov @ ones
+                w = w / w.sum()
+                w = np.clip(w, min_weight, max_weight)
+                w = w / w.sum()
+                return w
+            except np.linalg.LinAlgError:
+                logger.warning("Covariance matrix singular, using diagonal inversion")
+                diag_inv = 1.0 / np.diag(cov)
+                w = diag_inv / diag_inv.sum()
+        else:
+            try:
+                inv_cov = np.linalg.inv(cov)
+                ones = np.ones(n)
+                w = inv_cov @ ones
+                w = w / w.sum()
+                return w
+            except np.linalg.LinAlgError:
+                diag_inv = 1.0 / np.diag(cov)
+                w = diag_inv / diag_inv.sum()
+        return w
+
+    def _max_sharpe(
+        self,
+        mean_ret: np.ndarray,
+        cov: np.ndarray,
+        long_only: bool,
+        max_weight: float,
+        min_weight: float,
+    ) -> np.ndarray:
+        n = len(mean_ret)
+        if long_only:
+            ones = np.ones(n)
+            try:
+                inv_cov = np.linalg.inv(cov)
+                numerator = inv_cov @ (mean_ret - self._rf)
+                denominator = ones @ numerator
+                if abs(denominator) < 1e-12:
+                    return self._min_variance(cov, long_only, max_weight, min_weight)
+                w = numerator / denominator
+                w = np.clip(w, min_weight, max_weight)
+                total = w.sum()
+                if total > 0:
+                    w = w / total
+                else:
+                    return np.ones(n) / n
+                return np.array(w, dtype=float)
+            except np.linalg.LinAlgError:
+                ratios = (mean_ret - self._rf) / np.diag(cov)
+                w = np.maximum(ratios, 0)
+                total = w.sum()
+                if total > 0:
+                    return np.array(w / total, dtype=float)
+                return np.ones(n) / n
+        else:
+            try:
+                inv_cov = np.linalg.inv(cov)
+                target = mean_ret - self._rf
+                w = inv_cov @ target
+                s = w.sum()
+                if s != 0:
+                    return np.array(w / s, dtype=float)
+                return np.ones(n) / n
+            except np.linalg.LinAlgError:
+                ratios = (mean_ret - self._rf) / np.diag(cov)
+                w = np.maximum(ratios, 0)
+                total = w.sum()
+                if total > 0:
+                    return np.array(w / total, dtype=float)
+                return np.ones(n) / n
+        return np.ones(n) / n
+
+    def _markowitz(
+        self,
+        mean_ret: np.ndarray,
+        cov: np.ndarray,
+        target_return: float | None,
+        long_only: bool,
+        max_weight: float,
+        min_weight: float,
+    ) -> np.ndarray:
+        n = len(mean_ret)
+        if target_return is None:
+            target_return = float(np.mean(mean_ret) * 252)
+        try:
+            inv_cov = np.linalg.inv(cov)
+            ones = np.ones(n)
+            numerator = inv_cov @ ones
+            denominator = ones @ numerator
+            if abs(denominator) < 1e-12:
+                return np.ones(n) / n
+            w_min_var = numerator / denominator
+            w_min_var = np.clip(w_min_var, min_weight, max_weight)
+            t = w_min_var.sum()
+            if t > 0:
+                w_min_var = w_min_var / t
+            min_ret = float(np.dot(w_min_var, mean_ret) * 252)
+            max_ret = float(np.max(mean_ret) * 252)
+            if target_return < min_ret or target_return > max_ret:
+                target_return = min_ret
+            ret_diff = target_return - min_ret
+            if ret_diff < 1e-12:
+                return w_min_var
+            target_excess = (target_return / 252) - (min_ret / 252)
+            min_var_ret = float(np.dot(w_min_var, mean_ret))
+            diff = target_excess / (float(np.dot(mean_ret, inv_cov @ mean_ret)) / (ones @ inv_cov @ mean_ret) - min_var_ret)
+            diff = np.clip(diff, 0, 1)
+            tangency = inv_cov @ mean_ret
+            denom_t = ones @ tangency
+            if abs(denom_t) < 1e-12:
+                return w_min_var
+            w_tangency = tangency / denom_t
+            w_target = (1 - diff) * w_min_var + diff * w_tangency
+            w_target = np.clip(w_target, min_weight, max_weight)
+            t = w_target.sum()
+            if t > 0:
+                w_target = w_target / t
+            return np.array(w_target, dtype=float)
+        except np.linalg.LinAlgError:
+            logger.warning("Covariance matrix singular, falling back to equal weights")
+            return np.ones(n) / n
+
+    def _build_frontier(
+        self,
+        mean_ret: np.ndarray,
+        cov: np.ndarray,
+        long_only: bool,
+        max_weight: float,
+        min_weight: float,
+    ) -> list[dict]:
+        frontier = []
+        min_ret = float(np.min(mean_ret) * 252)
+        max_ret = float(np.max(mean_ret) * 252)
+        for target in np.linspace(min_ret, max_ret, 20):
+            try:
+                w = self._markowitz(mean_ret, cov, target, long_only, max_weight, min_weight)
+                exp_r = float(np.dot(w, mean_ret)) * 252
+                vol = float(np.sqrt(w @ cov @ w)) * np.sqrt(252)
+                sharpe = (exp_r - self._rf) / vol if vol > 1e-12 else 0.0
+                frontier.append({
+                    "return": round(exp_r, 4),
+                    "volatility": round(vol, 4),
+                    "sharpe": round(sharpe, 4),
+                })
+            except Exception as e:
+                logger.debug("Frontier point failed: %s", e)
+        return frontier

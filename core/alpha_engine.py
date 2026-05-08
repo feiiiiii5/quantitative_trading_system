@@ -1,12 +1,12 @@
 import logging
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from core.factor_pipeline import winsorize, zscore_normalize, rank_normalize
+from core.factor_pipeline import winsorize, zscore_normalize
+from core.memory_guard import memory_guard
 
 logger = logging.getLogger(__name__)
 
@@ -108,22 +108,20 @@ class AlphaPrimitive:
         result = pd.Series(np.nan, index=y.index, dtype=float)
         if len(y) < period or len(x) < period:
             return result
-        for i in range(period - 1, len(y)):
-            y_w = y.iloc[i - period + 1:i + 1].values
-            x_w = x.iloc[i - period + 1:i + 1].values
-            mask = np.isfinite(y_w) & np.isfinite(x_w)
-            if mask.sum() < 3:
-                continue
-            y_c = y_w[mask]
-            x_c = x_w[mask]
-            x_mean = x_c.mean()
-            y_mean = y_c.mean()
-            denom = np.sum((x_c - x_mean) ** 2)
-            if denom < 1e-12:
-                continue
-            beta = np.sum((x_c - x_mean) * (y_c - y_mean)) / denom
-            alpha = y_mean - beta * x_mean
-            result.iloc[i] = y_w[-1] - (alpha + beta * x_w[-1])
+        # 向量化滚动回归：使用滚动统计量避免Python循环
+        y_vals = y.values.astype(float)
+        x_vals = x.values.astype(float)
+        # 预计算滚动统计量
+        x_mean = pd.Series(x_vals).rolling(period, min_periods=3).mean().values
+        y_mean = pd.Series(y_vals).rolling(period, min_periods=3).mean().values
+        xy_mean = pd.Series(x_vals * y_vals).rolling(period, min_periods=3).mean().values
+        x2_mean = pd.Series(x_vals ** 2).rolling(period, min_periods=3).mean().values
+        denom = x2_mean - x_mean ** 2
+        valid = denom > 1e-12
+        beta = np.where(valid, (xy_mean - x_mean * y_mean) / np.where(valid, denom, 1.0), np.nan)
+        alpha = y_mean - beta * x_mean
+        residual = y_vals - (alpha + beta * x_vals)
+        result = pd.Series(np.where(valid, residual, np.nan), index=y.index, dtype=float)
         return result
 
     @staticmethod
@@ -157,12 +155,29 @@ class AlphaPrimitive:
         dea = dif.ewm(span=signal, adjust=False).mean()
         return (dif - dea) * 2
 
+    @staticmethod
+    def _price_efficiency(close: pd.Series, period: int = 20) -> pd.Series:
+        net_move = (close - close.shift(period)).abs()
+        total_move = (close - close.shift(1)).abs().rolling(period).sum()
+        return net_move / total_move.replace(0, np.nan)
+
+    @staticmethod
+    def _volume_pressure(close: pd.Series, volume: pd.Series, period: int = 10) -> pd.Series:
+        signed_vol = volume * np.sign(close - close.shift(1))
+        return signed_vol.rolling(period).sum() / volume.rolling(period).sum().replace(0, np.nan)
+
+    @staticmethod
+    def _trend_persistence(close: pd.Series, period: int = 20) -> pd.Series:
+        direction = np.sign(close - close.shift(1))
+        same_direction = (direction == direction.shift(1)).astype(float)
+        return same_direction.rolling(period).mean()
+
 
 class AlphaGenerator:
-    def __init__(self, config: dict = None):
+    def __init__(self, config: dict | None = None):
         self._config = config or {}
         self._primitives = AlphaPrimitive()
-        self._registry: Dict[str, AlphaExpression] = {}
+        self._registry: dict[str, AlphaExpression] = {}
         self._build_default_alphas()
 
     def _build_default_alphas(self):
@@ -290,20 +305,48 @@ class AlphaGenerator:
             ),
             description="5日收益对波动率回归残差因子",
         ))
+        self.register(AlphaExpression(
+            name="alpha_price_efficiency",
+            expression="abs(close - close.shift(20)) / ts_sum(abs(close - close.shift(1)), 20)",
+            category="efficiency",
+            compute_fn=lambda df: AlphaPrimitive._price_efficiency(df["close"], 20),
+            description="价格效率因子（Kaufman效率比率）",
+        ))
+        self.register(AlphaExpression(
+            name="alpha_volume_pressure",
+            expression="ts_sum(volume * sign(close - close.shift(1)), 10) / ts_sum(volume, 10)",
+            category="volume_price",
+            compute_fn=lambda df: AlphaPrimitive._volume_pressure(df["close"], df["volume"], 10),
+            description="成交量压力因子（买卖力量对比）",
+        ))
+        self.register(AlphaExpression(
+            name="alpha_trend_persistence",
+            expression="ts_sum(sign(close - close.shift(1)) == sign(close.shift(1) - close.shift(2)), 20) / 20",
+            category="trend",
+            compute_fn=lambda df: AlphaPrimitive._trend_persistence(df["close"], 20),
+            description="趋势持续性因子",
+        ))
+        self.register(AlphaExpression(
+            name="alpha_volatility_skew",
+            expression="ts_std(close, 5) / ts_std(close, 20)",
+            category="volatility",
+            compute_fn=lambda df: AlphaPrimitive.ts_std(df["close"], 5) / AlphaPrimitive.ts_std(df["close"], 20).replace(0, np.nan),
+            description="波动率偏斜因子（短期/长期波动比）",
+        ))
 
     def register(self, alpha: AlphaExpression) -> None:
         self._registry[alpha.name] = alpha
 
-    def list_alphas(self) -> List[AlphaExpression]:
+    def list_alphas(self) -> list[AlphaExpression]:
         return list(self._registry.values())
 
-    def list_alpha_names(self) -> List[str]:
+    def list_alpha_names(self) -> list[str]:
         return list(self._registry.keys())
 
-    def compute_alpha(self, name: str, df: pd.DataFrame) -> Optional[pd.Series]:
+    def compute_alpha(self, name: str, df: pd.DataFrame) -> pd.Series | None:
         alpha = self._registry.get(name)
         if alpha is None:
-            logger.warning(f"Alpha {name} not found in registry")
+            logger.warning("Alpha %s not found in registry", name)
             return None
         try:
             values = alpha.compute_fn(df)
@@ -311,15 +354,16 @@ class AlphaGenerator:
             values = zscore_normalize(values)
             return values
         except Exception as e:
-            logger.debug(f"Alpha {name} computation failed: {e}")
+            logger.debug("Alpha %s computation failed: %s", name, e)
             return None
 
-    def compute_all_alphas(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
+    def compute_all_alphas(self, df: pd.DataFrame) -> dict[str, pd.Series]:
         results = {}
-        for name in self._registry:
-            values = self.compute_alpha(name, df)
-            if values is not None and values.notna().sum() > 10:
-                results[name] = values
+        with memory_guard("AlphaComputation", max_mb=1024):
+            for name in self._registry:
+                values = self.compute_alpha(name, df)
+                if values is not None and values.notna().sum() > 10:
+                    results[name] = values
         return results
 
     def generate_custom_alpha(
@@ -343,9 +387,9 @@ class AlphaGenerator:
     def generate_parametric_alphas(
         self,
         df: pd.DataFrame,
-        base_alphas: List[str] = None,
-        periods: List[int] = None,
-    ) -> Dict[str, pd.Series]:
+        base_alphas: list[str] = None,
+        periods: list[int] = None,
+    ) -> dict[str, pd.Series]:
         base_alphas = base_alphas or ["momentum", "mean_reversion", "volatility"]
         periods = periods or [5, 10, 20, 40, 60]
         results = {}
@@ -360,16 +404,20 @@ class AlphaGenerator:
                     continue
 
                 if base == "momentum":
-                    fn = lambda df_, pp=p: AlphaPrimitive.rank(AlphaPrimitive.momentum(df_["close"], pp))
+                    def fn(df_, pp=p):
+                        return AlphaPrimitive.rank(AlphaPrimitive.momentum(df_["close"], pp))
                     desc = f"{p}日动量排名因子"
                 elif base == "mean_reversion":
-                    fn = lambda df_, pp=p: AlphaPrimitive.zscore(AlphaPrimitive.mean_reversion(df_["close"], pp))
+                    def fn(df_, pp=p):
+                        return AlphaPrimitive.zscore(AlphaPrimitive.mean_reversion(df_["close"], pp))
                     desc = f"{p}日均值回归Z-Score因子"
                 elif base == "volatility":
-                    fn = lambda df_, pp=p: -AlphaPrimitive.rank(AlphaPrimitive.volatility(df_["close"], pp))
+                    def fn(df_, pp=p):
+                        return -AlphaPrimitive.rank(AlphaPrimitive.volatility(df_["close"], pp))
                     desc = f"{p}日低波动因子（波动率越低排名越高）"
                 elif base == "breakout":
-                    fn = lambda df_, pp=p: AlphaPrimitive.breakout(df_["close"], df_["high"], df_["low"], pp)
+                    def fn(df_, pp=p):
+                        return AlphaPrimitive.breakout(df_["close"], df_["high"], df_["low"], pp)
                     desc = f"{p}日突破位置因子"
                 else:
                     continue

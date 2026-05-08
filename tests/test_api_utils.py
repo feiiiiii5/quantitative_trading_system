@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
-from api.utils import sanitize, json_response, safe_error
+from api.utils import json_response, safe_error, sanitize
 
 
 class TestSanitize:
@@ -87,6 +88,13 @@ class TestRoutesImport:
         mgr = ConnectionManager()
         assert hasattr(mgr, "_lock")
 
+    def test_connection_manager_has_broadcast(self):
+        from api.routes import ConnectionManager
+        mgr = ConnectionManager()
+        assert hasattr(mgr, "broadcast")
+        import inspect
+        assert inspect.iscoroutinefunction(mgr.broadcast)
+
 
 class TestCCIIndicator:
     def test_cci_returns_correct_length(self):
@@ -123,17 +131,20 @@ class TestCCIIndicator:
 
 class TestAuthMiddleware:
     def test_rate_limits_has_max_cap(self):
-        from api.auth import APIAuthMiddleware
         from fastapi import FastAPI
+
+        from api.auth import APIAuthMiddleware
         app = FastAPI()
         mw = APIAuthMiddleware(app, enabled=True)
         assert hasattr(mw, "_max_clients")
         assert mw._max_clients > 0
 
     def test_cleanup_stale_clients(self):
-        from api.auth import APIAuthMiddleware
-        from fastapi import FastAPI
         import time
+
+        from fastapi import FastAPI
+
+        from api.auth import APIAuthMiddleware
         app = FastAPI()
         mw = APIAuthMiddleware(app, enabled=True)
         mw._rate_limits["old_client"] = [time.time() - 600]
@@ -144,6 +155,7 @@ class TestAuthMiddleware:
 
     def test_backtest_routes_no_dunder_import(self):
         import inspect
+
         import api.backtest_routes
         source = inspect.getsource(api.backtest_routes)
         assert "__import__" not in source
@@ -175,25 +187,79 @@ class TestSafeError:
 class TestBacktestValidation:
     def test_invalid_capital_rejected(self):
         from api.backtest_routes import BacktestRunRequest
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             BacktestRunRequest(symbol="000001", initial_capital=100)
 
     def test_invalid_commission_rejected(self):
         from api.backtest_routes import BacktestRunRequest
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             BacktestRunRequest(symbol="000001", commission=0.1)
 
     def test_invalid_leverage_rejected(self):
         from api.backtest_routes import BacktestAdvancedRequest
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             BacktestAdvancedRequest(symbol="000001", leverage=100.0)
 
     def test_invalid_simulations_rejected(self):
         from api.backtest_routes import BacktestAdvancedRequest
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             BacktestAdvancedRequest(symbol="000001", n_simulations=999999)
 
     def test_valid_request_accepted(self):
         from api.backtest_routes import BacktestRunRequest
         req = BacktestRunRequest(symbol="000001", initial_capital=100000, commission=0.0003)
         assert req.symbol == "000001"
+
+
+class TestSafeFloat:
+    def test_normal_number(self):
+        from core.data_fetcher import safe_float
+        assert safe_float("3.14", 0) == pytest.approx(3.14)
+
+    def test_empty_string(self):
+        from core.data_fetcher import safe_float
+        assert safe_float("", 0) == 0
+
+    def test_dash_string(self):
+        from core.data_fetcher import safe_float
+        assert safe_float("-", 0) == 0
+
+    def test_none_value(self):
+        from core.data_fetcher import safe_float
+        assert safe_float(None, 0) == 0
+
+    def test_nan_string(self):
+
+        from core.data_fetcher import safe_float
+        result = safe_float("nan", 0)
+        assert result == 0
+
+    def test_integer_string(self):
+        from core.data_fetcher import safe_float
+        assert safe_float("42", 0) == 42.0
+
+    def test_custom_default(self):
+        from core.data_fetcher import safe_float
+        assert safe_float("abc", -1.0) == -1.0
+
+
+class TestAuthRoleValidation:
+    def test_invalid_role_rejected(self):
+        from api.auth import create_user
+        result = create_user("testuser", "password123", role="superadmin")
+        assert result is False
+
+    def test_valid_role_accepted(self):
+        from api.auth import create_user
+        result = create_user("testuser_auth_valid", "password123", role="user")
+        assert result is True or result is False
+
+    def test_short_username_rejected(self):
+        from api.auth import create_user
+        result = create_user("a", "password123")
+        assert result is False
+
+    def test_short_password_rejected(self):
+        from api.auth import create_user
+        result = create_user("testuser_pw", "1234567")
+        assert result is False

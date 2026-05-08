@@ -1,214 +1,561 @@
 <template>
   <div class="sector-page">
-    <div class="page-hero">
-      <h1 class="page-title">板块轮动</h1>
-      <p class="page-subtitle">追踪板块资金轮动，把握市场节奏</p>
-    </div>
-
     <div class="tab-bar">
-      <button class="apple-tab" :class="{ active: activeTab === 'strength' }" @click="activeTab = 'strength'; fetchStrength()">板块强度</button>
-      <button class="apple-tab" :class="{ active: activeTab === 'rotation' }" @click="activeTab = 'rotation'; fetchRotation()">轮动信号</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'strength' }" @click="switchTab('strength')">STRENGTH RANKING</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'rotation' }" @click="switchTab('rotation')">ROTATION SIGNALS</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'snapshot' }" @click="switchTab('snapshot')">SNAPSHOT</button>
     </div>
 
-    <div v-show="activeTab === 'strength'" class="strength-panel">
-      <div v-if="loading" class="loading-state">
-        <div class="loading-spinner" /><span>加载中...</span>
-      </div>
-      <div v-else-if="sectorList.length" class="sector-grid">
-        <div v-for="s in sectorList" :key="s.code" class="sector-card apple-card apple-card-interactive" @click="showSectorDetail(s.code)">
-          <div class="sector-rank" :class="s.rank <= 3 ? 'top' : ''">{{ s.rank }}</div>
-          <div class="sector-info">
-            <div class="sector-name">{{ s.name }}</div>
-            <div class="sector-meta">
-              <span class="mono" :class="s.change_pct >= 0 ? 'text-rise' : 'text-fall'">
-                {{ s.change_pct >= 0 ? '+' : '' }}{{ s.change_pct.toFixed(2) }}%
+    <div v-show="activeTab === 'strength'">
+      <div class="surface-panel">
+        <div class="panel-header">
+          <span class="panel-title">SECTOR STRENGTH</span>
+          <span class="count-tag mono" v-if="sectors.length">{{ sectors.length }} SECTORS</span>
+        </div>
+        <div v-if="loading" class="panel-empty">LOADING<span class="blink-cursor">_</span></div>
+        <div v-else-if="sectors.length" class="strength-list">
+          <div
+            v-for="(s, idx) in sectors"
+            :key="s.name"
+            class="strength-row"
+            @click="openDetail(s.name)"
+          >
+            <div class="sr-rank">
+              <span class="rank-num mono" :class="idx < 3 ? 'rank-top' : ''">{{ idx + 1 }}</span>
+            </div>
+            <div class="sr-info">
+              <span class="sr-name">{{ s.name }}</span>
+              <span class="sr-change mono" :class="s.change_pct >= 0 ? 'val-rise' : 'val-fall'">
+                {{ s.change_pct >= 0 ? '+' : '' }}{{ safeToFixed(s.change_pct, 2) }}%
               </span>
-              <span class="sector-flow mono" :class="s.main_net_inflow >= 0 ? 'text-rise' : 'text-fall'">
+              <span class="sr-flow mono" :class="s.main_net_inflow >= 0 ? 'val-rise' : 'val-fall'">
                 {{ formatFlow(s.main_net_inflow) }}
               </span>
             </div>
-          </div>
-          <div class="momentum-bar">
-            <div class="m-bar-track">
-              <div class="m-bar-fill" :style="{ width: Math.min(Math.max(s.momentum_score / maxMomentum * 100, 2), 100) + '%' }" :class="s.momentum_score > 0 ? 'positive' : 'negative'" />
+            <div class="sr-momentum">
+              <div class="momentum-track">
+                <div class="momentum-zero" />
+                <div
+                  class="momentum-fill"
+                  :class="s.momentum_score >= 0 ? 'mom-rise' : 'mom-fall'"
+                  :style="momentumStyle(s.momentum_score)"
+                />
+              </div>
+            </div>
+            <div class="sr-leader">
+              <span class="leader-text" @click.stop="goToStock(s.leading_stock)">{{ s.leading_stock }}</span>
             </div>
           </div>
-          <div class="momentum-score mono">{{ s.momentum_score.toFixed(1) }}</div>
         </div>
+        <div v-else class="panel-empty">NO DATA</div>
       </div>
-      <div v-else class="empty-state"><div class="empty-icon">🌐</div><p>暂无数据</p></div>
     </div>
 
-    <div v-show="activeTab === 'rotation'" class="rotation-panel">
-      <div v-if="loadingRotation" class="loading-state">
-        <div class="loading-spinner" /><span>加载中...</span>
+    <div v-show="activeTab === 'rotation'">
+      <div class="surface-panel">
+        <div class="panel-header"><span class="panel-title">ROTATION SIGNALS</span></div>
+        <div v-if="loading" class="panel-empty">LOADING...</div>
+        <div v-else-if="rotationSignals.length" class="rotation-list">
+          <div v-for="r in rotationSignals" :key="r.sector + r.type" class="rotation-row">
+            <div class="rr-sector">{{ r.sector }}</div>
+            <div class="rr-signal" :class="r.signal === 'entering' || r.signal === 'bullish' ? 'sig-rise' : r.signal === 'exiting' || r.signal === 'bearish' ? 'sig-fall' : 'sig-neutral'">
+              {{ r.signal.toUpperCase() }}
+            </div>
+            <div class="rr-type">{{ r.type.toUpperCase() }}</div>
+          </div>
+        </div>
+        <div v-else class="panel-empty">NO ROTATION SIGNALS</div>
       </div>
-      <template v-else-if="rotationData">
-        <div v-if="rotationData.signals?.length" class="signals-section">
-          <h3 class="section-title">轮动信号</h3>
-          <div class="signal-grid">
-            <div v-for="(sig, idx) in rotationData.signals" :key="idx" class="signal-card apple-card" :class="sig.type">
-              <div class="signal-type">
-                <span class="apple-badge" :class="sig.type === 'sector_entering_top' ? 'apple-badge-rise' : 'apple-badge-fall'">
-                  {{ sig.type === 'sector_entering_top' ? '↑ 进入前列' : '↓ 退出前列' }}
-                </span>
-              </div>
-              <div class="signal-sector">{{ sig.sector }}</div>
-              <div class="signal-text">{{ sig.signal }}</div>
-            </div>
-          </div>
-        </div>
-        <div v-else class="empty-state"><div class="empty-icon">📡</div><p>暂无轮动信号</p></div>
+    </div>
 
-        <div class="snapshot-section" v-if="rotationData.snapshot">
-          <h3 class="section-title">当前快照</h3>
-          <div class="snapshot-grid">
-            <div class="snapshot-col apple-card">
-              <div class="col-title text-rise">领涨板块</div>
-              <div v-for="s in rotationData.snapshot.top_sectors" :key="s.name" class="snapshot-item">
-                <span>{{ s.name }}</span>
-                <span class="mono" :class="s.change_pct >= 0 ? 'text-rise' : 'text-fall'">{{ s.change_pct >= 0 ? '+' : '' }}{{ s.change_pct.toFixed(2) }}%</span>
-              </div>
-            </div>
-            <div class="snapshot-col apple-card">
-              <div class="col-title text-fall">领跌板块</div>
-              <div v-for="s in rotationData.snapshot.bottom_sectors" :key="s.name" class="snapshot-item">
-                <span>{{ s.name }}</span>
-                <span class="mono" :class="s.change_pct >= 0 ? 'text-rise' : 'text-fall'">{{ s.change_pct >= 0 ? '+' : '' }}{{ s.change_pct.toFixed(2) }}%</span>
-              </div>
-            </div>
-          </div>
+    <div v-show="activeTab === 'snapshot'">
+      <div class="snapshot-grid">
+        <div class="surface-panel">
+          <div class="panel-header"><span class="panel-title">TOP GAINERS</span></div>
+          <DataTable
+            v-if="topGainers.length"
+            :columns="snapshotColumns"
+            :rows="topGainers as unknown as Record<string, unknown>[]"
+            row-key="symbol"
+            @row-click="(row: Record<string, unknown>) => goToStock(row.symbol as string)"
+          >
+            <template #cell-symbol="{ value }">
+              <span class="code-text">{{ value }}</span>
+            </template>
+            <template #cell-change_pct="{ value }">
+              <span class="mono val-rise">{{ formatPct((value as number) ?? 0) }}</span>
+            </template>
+          </DataTable>
+          <div v-else class="panel-empty">NO DATA</div>
         </div>
-      </template>
+        <div class="surface-panel">
+          <div class="panel-header"><span class="panel-title">TOP LOSERS</span></div>
+          <DataTable
+            v-if="topLosers.length"
+            :columns="snapshotColumns"
+            :rows="topLosers as unknown as Record<string, unknown>[]"
+            row-key="symbol"
+            @row-click="(row: Record<string, unknown>) => goToStock(row.symbol as string)"
+          >
+            <template #cell-symbol="{ value }">
+              <span class="code-text">{{ value }}</span>
+            </template>
+            <template #cell-change_pct="{ value }">
+              <span class="mono val-fall">{{ formatPct((value as number) ?? 0) }}</span>
+            </template>
+          </DataTable>
+          <div v-else class="panel-empty">NO DATA</div>
+        </div>
+      </div>
     </div>
 
     <teleport to="body">
-      <transition name="fade">
-        <div v-if="detailVisible" class="detail-overlay" @click.self="detailVisible = false">
-          <div class="detail-modal">
-            <div class="detail-header">
-              <h3>{{ detailData?.sector?.name || '板块详情' }}</h3>
-              <button class="close-btn" @click="detailVisible = false">✕</button>
-            </div>
-            <div v-if="detailData?.stocks?.length" class="detail-stocks">
-              <table class="apple-table">
-                <thead><tr><th>代码</th><th>名称</th><th>最新价</th><th>涨跌幅</th><th>换手率</th></tr></thead>
-                <tbody>
-                  <tr v-for="s in detailData.stocks" :key="s.symbol" @click="goToStock(s.symbol)">
-                    <td class="mono">{{ s.symbol }}</td>
-                    <td>{{ s.name }}</td>
-                    <td class="mono">{{ s.price.toFixed(2) }}</td>
-                    <td class="mono" :class="s.change_pct >= 0 ? 'text-rise' : 'text-fall'">{{ s.change_pct >= 0 ? '+' : '' }}{{ s.change_pct.toFixed(2) }}%</td>
-                    <td class="mono">{{ (s.turnover_rate || 0).toFixed(2) }}%</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-else class="empty-state">加载中...</div>
+      <div v-if="detailVisible" class="modal-overlay" @click.self="detailVisible = false">
+        <div class="modal-content surface-panel">
+          <div class="modal-header">
+            <span class="modal-title">{{ detailSector }} — CONSTITUENTS</span>
+            <button class="modal-close" @click="detailVisible = false">ESC</button>
           </div>
+          <DataTable
+            v-if="detailStocks.length"
+            :columns="detailColumns"
+            :rows="detailStocks as unknown as Record<string, unknown>[]"
+            row-key="symbol"
+            @row-click="(row: Record<string, unknown>) => goToStock(row.symbol as string)"
+          >
+            <template #cell-symbol="{ value }">
+              <span class="code-text">{{ value }}</span>
+            </template>
+            <template #cell-change_pct="{ value }">
+              <span class="mono" :class="((value as number) ?? 0) >= 0 ? 'val-rise' : 'val-fall'">
+                {{ formatPct((value as number) ?? 0) }}
+              </span>
+            </template>
+          </DataTable>
+          <div v-else class="panel-empty">LOADING...</div>
         </div>
-      </transition>
+      </div>
     </teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { useQuery, invalidateQuery } from '@/composables/useQuery'
+import { useApiError } from '@/composables/useApiError'
 import { api } from '@/api'
+import { formatPct, safeToFixed } from '@/utils/format'
+import DataTable from '@/components/ui/DataTable.vue'
+import type { ColumnDef } from '@/components/ui/DataTable.vue'
 import type { SectorStrengthItem, SectorRotationData, SectorDetail } from '@/types'
+
+const { handleApiError } = useApiError()
+
+interface RotationSignalItem {
+  type: string
+  sector: string
+  signal: string
+  change_pct?: number
+}
 
 const router = useRouter()
 const activeTab = ref('strength')
-const sectorList = ref<SectorStrengthItem[]>([])
-const rotationData = ref<SectorRotationData | null>(null)
-const detailData = ref<SectorDetail | null>(null)
-const detailVisible = ref(false)
-const loading = ref(false)
-const loadingRotation = ref(false)
 
-const maxMomentum = computed(() => {
-  if (!sectorList.value.length) return 1
-  return Math.max(...sectorList.value.map(s => Math.abs(s.momentum_score)), 1)
+const {
+  data: strengthData,
+  isLoading: strengthLoading,
+} = useQuery<SectorStrengthItem[]>({
+  key: 'sector/strength',
+  fetcher: () => api.sector.strength() as Promise<SectorStrengthItem[]>,
 })
 
-async function fetchStrength() {
-  loading.value = true
-  try { sectorList.value = await api.sector.strength(30) } catch { sectorList.value = [] }
-  finally { loading.value = false }
+const rotationEnabled = computed(() => activeTab.value === 'rotation')
+const {
+  data: rotationResult,
+} = useQuery<SectorRotationData>({
+  key: 'sector/rotation',
+  fetcher: () => api.sector.rotation() as Promise<SectorRotationData>,
+  enabled: rotationEnabled,
+})
+
+const sectors = computed(() => strengthData.value ?? [])
+const rotationData = computed(() => rotationResult.value ?? null)
+const rotationSignals = computed<RotationSignalItem[]>(() => {
+  const rd = rotationData.value
+  if (!rd) return []
+  return ('signals' in rd ? (rd as unknown as { signals: RotationSignalItem[] }).signals : []) ?? []
+})
+const loading = strengthLoading
+
+const topGainers = ref<{ symbol: string; name: string; change_pct: number }[]>([])
+const topLosers = ref<{ symbol: string; name: string; change_pct: number }[]>([])
+
+const detailVisible = ref(false)
+const detailSector = ref('')
+const detailStocks = ref<SectorDetail['stocks']>([])
+
+const snapshotColumns: ColumnDef[] = [
+  { key: 'symbol', label: 'CODE', width: '90px', code: true },
+  { key: 'name', label: 'NAME', width: '100px' },
+  { key: 'change_pct', label: 'CHG%', align: 'right', width: '80px' },
+]
+
+const detailColumns: ColumnDef[] = [
+  { key: 'symbol', label: 'CODE', width: '90px', code: true },
+  { key: 'name', label: 'NAME', width: '100px' },
+  { key: 'change_pct', label: 'CHG%', align: 'right', width: '80px' },
+]
+
+function momentumStyle(momentum: number): Record<string, string> {
+  const maxMom = 100
+  const pct = Math.min(Math.abs(momentum) / maxMom * 50, 50)
+  if (momentum >= 0) {
+    return { left: '50%', width: pct + '%' }
+  }
+  return { right: '50%', width: pct + '%' }
 }
 
-async function fetchRotation() {
-  loadingRotation.value = true
-  try { rotationData.value = await api.sector.rotation() } catch { rotationData.value = null }
-  finally { loadingRotation.value = false }
+function formatFlow(v: number): string {
+  if (v == null || isNaN(v)) return '-'
+  const abs = Math.abs(v)
+  const sign = v >= 0 ? '+' : '-'
+  if (abs >= 1e8) return sign + safeToFixed(abs / 1e8, 2) + 'B'
+  if (abs >= 1e4) return sign + safeToFixed(abs / 1e4, 1) + 'W'
+  return sign + safeToFixed(abs, 0)
 }
 
-async function showSectorDetail(code: string) {
+function switchTab(tab: string) {
+  activeTab.value = tab
+  if (tab === 'snapshot' && !topGainers.value.length) computeSnapshot()
+}
+
+function computeSnapshot() {
+  const allSectors = sectors.value
+  const sorted = [...allSectors].sort((a, b) => b.change_pct - a.change_pct)
+  topGainers.value = sorted.slice(0, 5).map(s => ({
+    symbol: s.leading_stock,
+    name: s.name,
+    change_pct: s.change_pct,
+  }))
+  topLosers.value = sorted.slice(-5).reverse().map(s => ({
+    symbol: s.leading_stock,
+    name: s.name,
+    change_pct: s.change_pct,
+  }))
+}
+
+async function openDetail(sectorName: string) {
+  detailSector.value = sectorName
   detailVisible.value = true
-  try { detailData.value = await api.sector.detail(code) } catch { detailData.value = null }
+  detailStocks.value = []
+  try {
+    const data = await api.sector.detail(sectorName)
+    detailStocks.value = data?.stocks ?? []
+  } catch (err) {
+    handleApiError(err, '获取板块详情失败')
+    detailStocks.value = []
+  }
 }
 
 function goToStock(symbol: string) {
-  detailVisible.value = false
   router.push(`/stock/${symbol}`)
 }
-
-function formatFlow(v: number) {
-  if (!v) return '-'
-  const abs = Math.abs(v)
-  const sign = v >= 0 ? '+' : '-'
-  if (abs >= 1e8) return sign + (abs / 1e8).toFixed(1) + '亿'
-  if (abs >= 1e4) return sign + (abs / 1e4).toFixed(0) + '万'
-  return sign + abs.toFixed(0)
-}
-
-onMounted(fetchStrength)
 </script>
 
 <style scoped>
-.sector-page { max-width: 1100px; margin: 0 auto; }
-.page-hero { margin-bottom: var(--space-6); }
-.page-title { font-size: var(--text-3xl); font-weight: 700; letter-spacing: -0.03em; color: var(--text-primary); line-height: var(--leading-tight); }
-.page-subtitle { font-size: var(--text-md); color: var(--text-secondary); margin-top: var(--space-2); }
-.tab-bar { display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-elevated); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); margin-bottom: var(--space-6); }
-.sector-grid { display: flex; flex-direction: column; gap: var(--space-2); }
-.sector-card { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-3) var(--space-5); }
-.sector-rank { width: 32px; height: 32px; border-radius: 50%; background: var(--bg-elevated); display: flex; align-items: center; justify-content: center; font-size: var(--text-sm); font-weight: 700; color: var(--text-secondary); flex-shrink: 0; }
-.sector-rank.top { background: var(--bg-gradient-accent); color: white; box-shadow: var(--glow-accent); }
-.sector-info { flex: 1; min-width: 0; }
-.sector-name { font-size: var(--text-md); font-weight: 600; color: var(--text-primary); }
-.sector-meta { display: flex; gap: var(--space-3); font-size: var(--text-xs); margin-top: 2px; }
-.momentum-bar { width: 140px; flex-shrink: 0; }
-.m-bar-track { height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
-.m-bar-fill { height: 100%; border-radius: 3px; transition: width var(--duration-slow) var(--ease-out); }
-.m-bar-fill.positive { background: linear-gradient(90deg, var(--accent), var(--rise)); }
-.m-bar-fill.negative { background: linear-gradient(90deg, var(--fall), var(--accent)); }
-.momentum-score { width: 50px; font-size: var(--text-sm); font-weight: 600; text-align: right; flex-shrink: 0; }
-.signals-section { margin-bottom: var(--space-6); }
-.section-title { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-4); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-.signal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--space-3); }
-.signal-card { padding: var(--space-4); }
-.signal-card.sector_entering_top { border-left: 3px solid var(--rise); }
-.signal-card.sector_leaving_top { border-left: 3px solid var(--fall); }
-.signal-type { margin-bottom: var(--space-2); }
-.signal-sector { font-size: var(--text-md); font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-1); }
-.signal-text { font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.5; }
-.snapshot-section { }
-.snapshot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
-.snapshot-col { padding: var(--space-4); }
-.col-title { font-size: var(--text-sm); font-weight: 600; margin-bottom: var(--space-3); }
-.snapshot-item { display: flex; justify-content: space-between; padding: var(--space-2) 0; font-size: var(--text-sm); border-bottom: 1px solid var(--border-subtle); }
-.detail-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
-.detail-modal { width: 620px; max-height: 80vh; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-float); overflow-y: auto; }
-.detail-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-5); border-bottom: 1px solid var(--border-subtle); }
-.detail-header h3 { font-size: var(--text-lg); font-weight: 600; color: var(--text-primary); }
-.close-btn { background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: var(--text-lg); padding: var(--space-1); border-radius: var(--radius-xs); transition: all var(--transition-fast); }
-.close-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
-.detail-stocks { }
-.loading-state { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); padding: var(--space-16); color: var(--text-tertiary); }
-.loading-spinner { width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.empty-state { text-align: center; padding: var(--space-16); color: var(--text-tertiary); }
-.empty-icon { font-size: 40px; margin-bottom: var(--space-3); }
+.sector-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: grid;
+  gap: var(--u4);
+}
+
+.tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-hair);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.tab-btn {
+  padding: var(--u2) var(--u6);
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  position: relative;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transition: color var(--dur-fast) var(--ease-mechanical);
+}
+
+.tab-btn::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  transform: scaleX(0);
+  will-change: transform;
+  transition: transform var(--dur-fast) var(--ease-mechanical);
+}
+
+.tab-btn:hover { color: var(--text-primary); }
+.tab-btn.active { color: var(--accent); }
+.tab-btn.active::after { transform: scaleX(1); }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--u3) var(--u4);
+  border-bottom: 1px solid var(--border-hair);
+}
+
+.panel-title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+}
+
+.panel-empty {
+  padding: var(--u8) var(--u4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.blink-cursor { animation: blink 1s step-end infinite; }
+
+.code-text {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+}
+
+.val-rise { color: var(--rise); }
+.val-fall { color: var(--fall); }
+
+.count-tag {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.strength-list { display: grid; }
+
+.strength-row {
+  display: flex;
+  align-items: center;
+  height: 56px;
+  padding: 0 var(--u4);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-hair);
+  transition: background var(--dur-fast) var(--ease-mechanical);
+}
+
+.strength-row:last-child { border-bottom: none; }
+.strength-row:hover { background: var(--bg-overlay); }
+
+.sr-rank { width: 44px; flex-shrink: 0; }
+
+.rank-num {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.rank-top { color: var(--warn); }
+
+.sr-info {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sr-name {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.sr-change {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-flow {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-momentum { width: 180px; flex-shrink: 0; padding: 0 var(--u3); }
+
+.momentum-track {
+  position: relative;
+  height: 4px;
+  background: var(--bg-plate);
+  border-radius: 2px;
+}
+
+.momentum-zero {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--text-muted);
+  transform: translateX(-50%);
+}
+
+.momentum-fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 2px;
+  transition: all var(--dur-normal) var(--ease-mechanical);
+}
+
+.mom-rise { background: var(--accent); opacity: 0.7; }
+.mom-fall { background: var(--accent); opacity: 0.35; }
+
+.sr-leader { width: 80px; flex-shrink: 0; text-align: right; }
+
+.leader-text {
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  cursor: pointer;
+  transition: opacity var(--dur-fast) var(--ease-mechanical);
+}
+
+.leader-text:hover { opacity: 0.7; }
+
+.rotation-list { display: grid; }
+
+.rotation-row {
+  display: flex;
+  align-items: center;
+  gap: var(--u4);
+  padding: var(--u3) var(--u4);
+  border-bottom: 1px solid var(--border-hair);
+}
+
+.rotation-row:last-child { border-bottom: none; }
+
+.rr-sector {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 100px;
+}
+
+.rr-signal {
+  font-size: var(--fs-3xs);
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.sig-rise { background: var(--rise-bg); color: var(--rise); }
+.sig-fall { background: var(--fall-bg); color: var(--fall); }
+.sig-neutral { background: var(--accent-muted); color: var(--accent); }
+
+.rr-type {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  flex: 1;
+}
+
+.snapshot-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--u4);
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  width: 600px;
+  max-height: 80vh;
+  overflow: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--u3) var(--u4);
+  border-bottom: 1px solid var(--border-hair);
+}
+
+.modal-title {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.modal-close {
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid var(--border-dim);
+  border-radius: var(--r-md);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-mechanical),
+              color var(--dur-fast) var(--ease-mechanical);
+}
+
+.modal-close:hover { border-color: var(--accent); color: var(--accent); }
+
+@media (max-width: 768px) {
+  .snapshot-grid { grid-template-columns: 1fr; }
+  .strength-row { height: auto; padding: var(--u2) var(--u3); flex-wrap: wrap; gap: var(--u2); }
+  .sr-momentum { width: 100%; }
+}
 </style>

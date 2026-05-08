@@ -1,6 +1,5 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -15,16 +14,16 @@ class OverfittingReport:
     train_test_sharpe_gap: float
     sharpe_degradation_pct: float
     consistency_score: float
-    details: Dict = field(default_factory=dict)
+    details: dict = field(default_factory=dict)
 
 
 @dataclass
 class AnomalyReport:
     has_anomaly: bool
     anomaly_score: float
-    anomaly_dates: List[str]
-    anomaly_types: List[str]
-    details: Dict = field(default_factory=dict)
+    anomaly_dates: list[str]
+    anomaly_types: list[str]
+    details: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -33,7 +32,7 @@ class SignalAnomalyReport:
     concentration_score: float
     turnover_anomaly: bool
     stale_signal: bool
-    details: Dict = field(default_factory=dict)
+    details: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -43,7 +42,7 @@ class FullAuditReport:
     signal_anomaly: SignalAnomalyReport
     overall_score: float
     passed: bool
-    recommendations: List[str]
+    recommendations: list[str]
 
 
 class OverfittingDetector:
@@ -59,9 +58,9 @@ class OverfittingDetector:
 
     def detect(
         self,
-        train_metrics: Dict,
-        test_metrics: Dict,
-        walk_forward_results: List[Dict] = None,
+        train_metrics: dict,
+        test_metrics: dict,
+        walk_forward_results: list[dict] = None,
     ) -> OverfittingReport:
         train_sharpe = train_metrics.get("sharpe_ratio", 0)
         test_sharpe = test_metrics.get("sharpe_ratio", 0)
@@ -124,7 +123,7 @@ class ReturnAnomalyDetector:
     def detect(
         self,
         returns: pd.Series,
-        equity_curve: List[float] = None,
+        equity_curve: list[float] | None = None,
     ) -> AnomalyReport:
         if returns is None or len(returns) < 10:
             return AnomalyReport(
@@ -171,17 +170,20 @@ class ReturnAnomalyDetector:
             score += 0.2
 
         if equity_curve and len(equity_curve) > 20:
-            eq = pd.Series(equity_curve)
-            eq_returns = eq.pct_change().dropna()
-            if len(eq_returns) > 10:
-                skew = float(eq_returns.skew())
-                kurt = float(eq_returns.kurtosis())
-                if abs(skew) > 2:
-                    anomaly_types.append("skewness_anomaly")
-                    score += 0.1
-                if kurt > 7:
-                    anomaly_types.append("kurtosis_anomaly")
-                    score += 0.1
+            try:
+                eq = pd.Series(equity_curve, dtype=float)
+                eq_returns = eq.pct_change().dropna()
+                if len(eq_returns) > 10:
+                    skew = float(eq_returns.skew())
+                    kurt = float(eq_returns.kurtosis())
+                    if abs(skew) > 2:
+                        anomaly_types.append("skewness_anomaly")
+                        score += 0.1
+                    if kurt > 7:
+                        anomaly_types.append("kurtosis_anomaly")
+                        score += 0.1
+            except (ValueError, TypeError) as e:
+                logger.debug("Equity curve anomaly detection skipped: %s", e)
 
         has_anomaly = score > 0.3
         return AnomalyReport(
@@ -212,7 +214,7 @@ class SignalAnomalyDetector:
     def detect(
         self,
         signals: pd.Series,
-        factor_values: pd.Series = None,
+        factor_values: pd.Series | None = None,
     ) -> SignalAnomalyReport:
         if signals is None or len(signals) < 10:
             return SignalAnomalyReport(
@@ -244,15 +246,14 @@ class SignalAnomalyDetector:
             stale_signal = True
 
         last_signal_idx = signals[signals != 0].last_valid_index()
-        if last_signal_idx is not None:
-            if hasattr(signals.index, "get_loc"):
-                try:
-                    last_pos = signals.index.get_loc(last_signal_idx)
-                    bars_since = len(signals) - last_pos - 1
-                    if bars_since > self._stale_threshold:
-                        stale_signal = True
-                except Exception:
-                    pass
+        if last_signal_idx is not None and hasattr(signals.index, "get_loc"):
+            try:
+                last_pos = signals.index.get_loc(last_signal_idx)
+                bars_since = len(signals) - last_pos - 1
+                if bars_since > self._stale_threshold:
+                    stale_signal = True
+            except Exception as e:
+                logger.debug("信号索引查找失败: %s", e)
 
         has_anomaly = concentration_score > self._max_concentration or turnover_anomaly or stale_signal
 
@@ -276,13 +277,13 @@ class AutoAuditor:
 
     def audit(
         self,
-        train_metrics: Dict,
-        test_metrics: Dict,
+        train_metrics: dict,
+        test_metrics: dict,
         returns: pd.Series,
-        signals: pd.Series = None,
-        factor_values: pd.Series = None,
-        walk_forward_results: List[Dict] = None,
-        equity_curve: List[float] = None,
+        signals: pd.Series | None = None,
+        factor_values: pd.Series | None = None,
+        walk_forward_results: list[dict] | None = None,
+        equity_curve: list[float] | None = None,
     ) -> FullAuditReport:
         overfitting = self._overfitting_detector.detect(
             train_metrics, test_metrics, walk_forward_results,

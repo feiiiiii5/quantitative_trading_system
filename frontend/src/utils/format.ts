@@ -27,9 +27,12 @@ export function formatPct(p: number, digits = 2): string {
 
 export function formatPrice(p: number): string {
   if (p == null || isNaN(p)) return '-'
-  if (p >= 10000) return p.toFixed(2)
-  if (p >= 100) return p.toFixed(2)
   return p.toFixed(2)
+}
+
+export function safeToFixed(v: unknown, digits = 2, fallback = '-'): string {
+  const n = Number(v)
+  return (v != null && !isNaN(n)) ? n.toFixed(digits) : fallback
 }
 
 export function formatDate(d: string | number | Date): string {

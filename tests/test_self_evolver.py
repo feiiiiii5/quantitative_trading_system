@@ -1,8 +1,5 @@
-import numpy as np
-import pandas as pd
-import pytest
 
-from core.self_evolver import SelfEvolver, EvolutionConfig, EvolutionResult
+from core.self_evolver import EvolutionConfig, EvolutionResult, SelfEvolver
 
 
 class TestSelfEvolver:

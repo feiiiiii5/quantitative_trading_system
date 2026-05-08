@@ -6,7 +6,6 @@ QuantCore 筹码分布模块
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -85,7 +84,7 @@ class ChipDistributionAnalyzer:
         high: np.ndarray,
         low: np.ndarray,
         volume: np.ndarray,
-        current_price: Optional[float] = None,
+        current_price: float | None = None,
     ) -> ChipDistribution:
         if len(close) < 10:
             return ChipDistribution(
@@ -111,10 +110,10 @@ class ChipDistributionAnalyzer:
         avg_cost = float(np.average(prices, weights=distribution))
 
         profit_mask = prices <= current_price
-        profit_ratio = float(distribution[profit_mask].sum()) if distribution[profit_mask].sum() > 0 else 0.0
+        profit_sum = float(distribution[profit_mask].sum())
+        profit_ratio = profit_sum if profit_sum > 0 else 0.0
 
         sorted_idx = np.argsort(distribution)[::-1]
-        top_70_pct = 0.0
         concentration_range = 0.0
         cumsum = 0.0
         peak_prices = []
@@ -219,7 +218,7 @@ class ChipDistributionAnalyzer:
         }
 
 
-_analyzer: Optional[ChipDistributionAnalyzer] = None
+_analyzer: ChipDistributionAnalyzer | None = None
 _analyzer_lock = threading.Lock()
 
 

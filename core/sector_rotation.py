@@ -10,9 +10,6 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
-
-import numpy as np
 
 from core.data_fetcher import http_get_json
 
@@ -44,14 +41,14 @@ async def fetch_sector_list() -> list[dict]:
     now = time.time()
     with _SECTOR_CACHE_LOCK:
         if _SECTOR_CACHE and now - _SECTOR_CACHE_TS < _SECTOR_CACHE_TTL:
-            return _SECTOR_CACHE
+            return list(_SECTOR_CACHE)
 
     try:
         import akshare as ak
         df = await asyncio.to_thread(ak.stock_board_industry_name_em)
         if df is not None and not df.empty:
             result = []
-            for _, row in df.iterrows():
+            for row in df.to_dict("records"):
                 result.append({
                     "code": str(row.get("板块代码", "")),
                     "name": str(row.get("板块名称", "")),
@@ -70,7 +67,7 @@ async def fetch_sector_list() -> list[dict]:
                 _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug(f"AKShare sector list error: {e}")
+        logger.debug("AKShare sector list error: %s", e)
 
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -108,7 +105,7 @@ async def fetch_sector_list() -> list[dict]:
                 _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug(f"Sector list fetch error: {e}")
+        logger.debug("Sector list fetch error: %s", e)
 
     try:
         url2 = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -146,7 +143,7 @@ async def fetch_sector_list() -> list[dict]:
                 _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug(f"Sector list fetch error (concept): {e}")
+        logger.debug("Sector list fetch error (concept): %s", e)
 
     try:
         from core.data_fetcher import get_fetcher
@@ -174,7 +171,7 @@ async def fetch_sector_list() -> list[dict]:
                 _SECTOR_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug(f"Market overview sector fallback error: {e}")
+        logger.debug("Market overview sector fallback error: %s", e)
 
     try:
         url = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
@@ -188,7 +185,7 @@ async def fetch_sector_list() -> list[dict]:
             if m:
                 data = json.loads(m.group(1))
                 result = []
-                for key, val in data.items():
+                for _key, val in data.items():
                     parts = val.split(',')
                     if len(parts) >= 6:
                         name = parts[1]
@@ -215,7 +212,7 @@ async def fetch_sector_list() -> list[dict]:
                         _SECTOR_CACHE_TS = now
                     return result
     except Exception as e:
-        logger.debug(f"Sina sector fallback error: {e}")
+        logger.debug("Sina sector fallback error: %s", e)
 
     with _SECTOR_CACHE_LOCK:
         return _SECTOR_CACHE
@@ -227,7 +224,7 @@ async def fetch_sector_stocks(sector_code: str, count: int = 20) -> list[dict]:
         df = await asyncio.to_thread(ak.stock_board_industry_cons_em, symbol=sector_code)
         if df is not None and not df.empty:
             result = []
-            for _, row in df.head(count).iterrows():
+            for row in df.head(count).to_dict("records"):
                 result.append({
                     "symbol": str(row.get("代码", "")),
                     "name": str(row.get("名称", "")),
@@ -241,7 +238,7 @@ async def fetch_sector_stocks(sector_code: str, count: int = 20) -> list[dict]:
                 })
             return result
     except Exception as e:
-        logger.debug(f"AKShare sector stocks error for {sector_code}: {e}")
+        logger.debug("AKShare sector stocks error for %s: %s", sector_code, e)
 
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -274,7 +271,7 @@ async def fetch_sector_stocks(sector_code: str, count: int = 20) -> list[dict]:
                 })
             return result
     except Exception as e:
-        logger.debug(f"Sector stocks fetch error for {sector_code}: {e}")
+        logger.debug("Sector stocks fetch error for %s: %s", sector_code, e)
 
     try:
         sector_name = ""
@@ -304,7 +301,7 @@ async def fetch_sector_stocks(sector_code: str, count: int = 20) -> list[dict]:
                     })
                 return result
     except Exception as e:
-        logger.debug(f"Sector stocks by name fallback error: {e}")
+        logger.debug("Sector stocks by name fallback error: %s", e)
 
     return []
 
@@ -382,7 +379,7 @@ class SectorRotationAnalyzer:
             "stocks": stocks,
         }
 
-    def detect_rotation_signal(self, current: list[dict], previous: Optional[list[dict]] = None) -> list[dict]:
+    def detect_rotation_signal(self, current: list[dict], previous: list[dict] | None = None) -> list[dict]:
         if not current:
             return []
         if previous is None and len(self._history) >= 2:
@@ -418,7 +415,7 @@ class SectorRotationAnalyzer:
         return signals
 
 
-_analyzer: Optional[SectorRotationAnalyzer] = None
+_analyzer: SectorRotationAnalyzer | None = None
 _analyzer_lock = threading.Lock()
 
 

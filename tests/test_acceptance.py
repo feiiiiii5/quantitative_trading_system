@@ -3,22 +3,28 @@
 参考 freqtrade 3000+ 测试用例和 rqalpha 回归测试标准
 覆盖：策略引擎、回测引擎、风控系统、API端点、数据管道、前后端集成
 """
-import pytest
-import pandas as pd
-import numpy as np
 import time
-from core.strategies import (
-    BaseStrategy, DualMAStrategy, MACDStrategy, KDJStrategy,
-    BollingerBreakoutStrategy, SignalType, STRATEGY_REGISTRY,
-)
+
+import numpy as np
+import pandas as pd
+import pytest
+
 from core.backtest import BacktestEngine
-from core.events import EventBus, Event, EventType
-from core.orders import Order, OrderSide, OrderType, OrderStatus
-from core.risk_manager import EnhancedRiskManager, TrailingStopManager, ROITable
-from core.config import validate_config, DEFAULT_CONFIG
+from core.config import DEFAULT_CONFIG, validate_config
+from core.events import Event, EventBus, EventType
+from core.orders import Order, OrderSide, OrderStatus, OrderType
+from core.risk_manager import EnhancedRiskManager, ROITable, TrailingStopManager
+from core.strategies import (
+    STRATEGY_REGISTRY,
+    BollingerBreakoutStrategy,
+    DualMAStrategy,
+    KDJStrategy,
+    MACDStrategy,
+    SignalType,
+)
 
 
-class TestAcceptance_StrategyEngine:
+class TestAcceptanceStrategyEngine:
     """策略引擎验收测试"""
 
     def test_all_strategies_instantiable(self):
@@ -31,7 +37,7 @@ class TestAcceptance_StrategyEngine:
 
     def test_all_strategies_generate_signal(self, sample_ohlcv):
         tested = set()
-        for name, cls in STRATEGY_REGISTRY.items():
+        for _name, cls in STRATEGY_REGISTRY.items():
             simple_name = cls.__name__
             if simple_name in tested:
                 continue
@@ -73,13 +79,13 @@ class TestAcceptance_StrategyEngine:
             pass
 
 
-class TestAcceptance_BacktestEngine:
+class TestAcceptanceBacktestEngine:
     """回测引擎验收测试"""
 
     def test_backtest_completes_for_all_market_conditions(self, sample_ohlcv, trending_up_ohlcv, trending_down_ohlcv, sideways_ohlcv):
         engine = BacktestEngine(initial_capital=1000000)
         strategy = DualMAStrategy(short_period=5, long_period=20)
-        for name, df in [("normal", sample_ohlcv), ("up", trending_up_ohlcv), ("down", trending_down_ohlcv), ("sideways", sideways_ohlcv)]:
+        for _name, df in [("normal", sample_ohlcv), ("up", trending_up_ohlcv), ("down", trending_down_ohlcv), ("sideways", sideways_ohlcv)]:
             result = engine.run(strategy, df)
             assert result is not None
             assert result.strategy_name == "DualMAStrategy"
@@ -90,12 +96,12 @@ class TestAcceptance_BacktestEngine:
         engine_v = BacktestEngine(initial_capital=1000000, use_vectorized=True)
         start = time.time()
         result_v = engine_v.run(strategy, sample_ohlcv)
-        time_v = time.time() - start
+        time.time() - start
 
         engine_i = BacktestEngine(initial_capital=1000000, use_vectorized=False)
         start = time.time()
         result_i = engine_i.run(strategy, sample_ohlcv)
-        time_i = time.time() - start
+        time.time() - start
 
         assert result_v.strategy_name == result_i.strategy_name
 
@@ -112,11 +118,11 @@ class TestAcceptance_BacktestEngine:
         bus.subscribe(EventType.INIT, lambda e: events_received.append("init"))
         engine = BacktestEngine(initial_capital=1000000, event_bus=bus)
         strategy = DualMAStrategy(short_period=5, long_period=20)
-        result = engine.run(strategy, sample_ohlcv)
+        engine.run(strategy, sample_ohlcv)
         assert "init" in events_received
 
 
-class TestAcceptance_RiskManagement:
+class TestAcceptanceRiskManagement:
     """风控系统验收测试"""
 
     def test_full_risk_pipeline(self, risk_manager):
@@ -161,7 +167,7 @@ class TestAcceptance_RiskManagement:
         assert order.is_done
 
 
-class TestAcceptance_ConfigSystem:
+class TestAcceptanceConfigSystem:
     """配置系统验收测试"""
 
     def test_default_config_valid(self):
@@ -182,7 +188,7 @@ class TestAcceptance_ConfigSystem:
         assert any("port" in e for e in errors)
 
 
-class TestAcceptance_EventBus:
+class TestAcceptanceEventBus:
     """事件总线验收测试"""
 
     def test_event_driven_risk_check(self, event_bus):
@@ -199,7 +205,7 @@ class TestAcceptance_EventBus:
         assert len(trades) == 1
 
 
-class TestAcceptance_DataIntegrity:
+class TestAcceptanceDataIntegrity:
     """数据完整性验收测试"""
 
     def test_ohlcv_data_consistency(self, sample_ohlcv):

@@ -1,7 +1,6 @@
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -29,7 +28,7 @@ class RiskMetrics:
     exposure: float = 0.0
     concentration: float = 0.0
     risk_level: RiskLevel = RiskLevel.LOW
-    warnings: List[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -43,7 +42,7 @@ class PositionLimit:
 class EnhancedRiskMonitor:
     def __init__(
         self,
-        position_limit: PositionLimit = None,
+        position_limit: PositionLimit | None = None,
         max_drawdown_threshold: float = 0.15,
         volatility_threshold: float = 0.30,
         var_threshold: float = 0.05,
@@ -54,8 +53,8 @@ class EnhancedRiskMonitor:
         self._vol_threshold = volatility_threshold
         self._var_threshold = var_threshold
         self._lookback = lookback_window
-        self._equity_curve: List[float] = []
-        self._position_history: List[Dict] = []
+        self._equity_curve: list[float] = []
+        self._position_history: list[dict] = []
         self._history_max = 252
 
     def update_equity(self, equity: float) -> None:
@@ -63,12 +62,12 @@ class EnhancedRiskMonitor:
         if len(self._equity_curve) > self._history_max:
             self._equity_curve = self._equity_curve[-self._history_max:]
 
-    def update_positions(self, positions: Dict[str, float]) -> None:
+    def update_positions(self, positions: dict[str, float]) -> None:
         self._position_history.append(positions)
         if len(self._position_history) > self._history_max:
             self._position_history = self._position_history[-self._history_max:]
 
-    def calc_volatility(self, returns: pd.Series = None) -> float:
+    def calc_volatility(self, returns: pd.Series | None = None) -> float:
         if returns is not None and len(returns) > 1:
             return float(returns.iloc[-self._lookback:].std() * np.sqrt(252))
         if len(self._equity_curve) < 2:
@@ -83,19 +82,27 @@ class EnhancedRiskMonitor:
         if len(self._equity_curve) < 2:
             return 0.0
         eq = pd.Series(self._equity_curve)
+        if not np.all(np.isfinite(eq)):
+            eq = eq.replace([np.inf, -np.inf], np.nan).ffill().bfill()
         cummax = eq.cummax()
-        drawdown = (eq - cummax) / cummax
-        return float(drawdown.min())
+        drawdown = (eq - cummax) / cummax.replace(0, np.nan)
+        result = float(drawdown.min())
+        return result if np.isfinite(result) else 0.0
 
     def calc_current_drawdown(self) -> float:
         if len(self._equity_curve) < 2:
             return 0.0
         eq = pd.Series(self._equity_curve)
+        if not np.all(np.isfinite(eq)):
+            eq = eq.replace([np.inf, -np.inf], np.nan).ffill().bfill()
         peak = eq.cummax().iloc[-1]
         current = eq.iloc[-1]
-        return float((current - peak) / peak)
+        if peak <= 0:
+            return 0.0
+        result = float((current - peak) / peak)
+        return result if np.isfinite(result) else 0.0
 
-    def calc_var(self, returns: pd.Series = None, confidence: float = 0.95) -> float:
+    def calc_var(self, returns: pd.Series | None = None, confidence: float = 0.95) -> float:
         if returns is not None:
             r = returns.iloc[-self._lookback:]
         elif len(self._equity_curve) >= 2:
@@ -107,7 +114,7 @@ class EnhancedRiskMonitor:
             return 0.0
         return float(np.percentile(r, (1 - confidence) * 100))
 
-    def calc_cvar(self, returns: pd.Series = None, confidence: float = 0.95) -> float:
+    def calc_cvar(self, returns: pd.Series | None = None, confidence: float = 0.95) -> float:
         if returns is not None:
             r = returns.iloc[-self._lookback:]
         elif len(self._equity_curve) >= 2:
@@ -165,13 +172,13 @@ class EnhancedRiskMonitor:
             return 0.0
         return float(cov[0, 1] / cov[1, 1])
 
-    def calc_exposure(self, positions: Dict[str, float], total_equity: float) -> float:
+    def calc_exposure(self, positions: dict[str, float], total_equity: float) -> float:
         if total_equity <= 0:
             return 0.0
         total_position_value = sum(abs(v) for v in positions.values())
         return total_position_value / total_equity
 
-    def calc_concentration(self, positions: Dict[str, float]) -> float:
+    def calc_concentration(self, positions: dict[str, float]) -> float:
         if not positions:
             return 0.0
         total = sum(abs(v) for v in positions.values())
@@ -182,11 +189,11 @@ class EnhancedRiskMonitor:
 
     def check_position_limits(
         self,
-        positions: Dict[str, float],
+        positions: dict[str, float],
         total_equity: float,
-        sector_map: Dict[str, str] = None,
-    ) -> List[str]:
-        violations = []
+        sector_map: dict[str, str] | None = None,
+    ) -> list[str]:
+        violations: list[str] = []
         if total_equity <= 0:
             return violations
 
@@ -198,7 +205,7 @@ class EnhancedRiskMonitor:
                 )
 
         if sector_map:
-            sector_exposure = {}
+            sector_exposure: dict[str, float] = {}
             for symbol, value in positions.items():
                 sector = sector_map.get(symbol, "unknown")
                 sector_exposure[sector] = sector_exposure.get(sector, 0) + abs(value)
@@ -219,13 +226,13 @@ class EnhancedRiskMonitor:
 
     def get_risk_metrics(
         self,
-        positions: Dict[str, float] = None,
+        positions: dict[str, float] | None = None,
         total_equity: float = 0,
-        returns: pd.Series = None,
-        benchmark_returns: pd.Series = None,
-        sector_map: Dict[str, str] = None,
+        returns: pd.Series | None = None,
+        benchmark_returns: pd.Series | None = None,
+        sector_map: dict[str, str] | None = None,
     ) -> RiskMetrics:
-        warnings = []
+        warnings: list[str] = []
 
         vol = self.calc_volatility(returns)
         max_dd = self.calc_max_drawdown()
@@ -273,7 +280,7 @@ class EnhancedRiskMonitor:
             warnings=warnings,
         )
 
-    def should_force_liquidate(self, metrics: RiskMetrics) -> Tuple[bool, str]:
+    def should_force_liquidate(self, metrics: RiskMetrics) -> tuple[bool, str]:
         if metrics.risk_level == RiskLevel.CRITICAL:
             return True, "风险等级为CRITICAL，强制清仓"
         if abs(metrics.current_drawdown) > 0.25:
@@ -282,7 +289,7 @@ class EnhancedRiskMonitor:
             return True, f"VaR(95%) = {metrics.var_95:.4f} 超过10%强制清仓线"
         return False, ""
 
-    def should_reduce_position(self, metrics: RiskMetrics) -> Tuple[bool, float, str]:
+    def should_reduce_position(self, metrics: RiskMetrics) -> tuple[bool, float, str]:
         if metrics.risk_level == RiskLevel.HIGH:
             return True, 0.5, "风险等级为HIGH，建议减仓50%"
         if abs(metrics.current_drawdown) > 0.15:

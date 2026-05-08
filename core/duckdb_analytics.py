@@ -1,0 +1,189 @@
+__all__ = ["DuckDBAnalytics"]
+
+"""DuckDB-powered analytical queries for portfolio analytics.
+
+This module provides high-performance analytical capabilities using DuckDB's
+SQL engine with zero-copy pandas DataFrame integration. Falls back gracefully
+to pandas-based computation if DuckDB is unavailable.
+"""
+
+import logging
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+try:
+    import duckdb
+
+    DUCKDB_AVAILABLE = True
+except ImportError:
+    DUCKDB_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
+
+
+class DuckDBAnalytics:
+    def __init__(self) -> None:
+        if not DUCKDB_AVAILABLE:
+            raise ImportError(
+                "DuckDB is not installed. Install with: pip install duckdb"
+            )
+        self._conn: duckdb.DuckDBPyConnection = duckdb.connect(database=":memory:")
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> "DuckDBAnalytics":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
+
+    def register_portfolio_trades(self, trades: pd.DataFrame, table_name: str = "trades") -> None:
+        self._conn.register(trades, table_name)
+
+    def register_price_data(
+        self, prices: pd.DataFrame, table_name: str = "prices"
+    ) -> None:
+        self._conn.register(prices, table_name)
+
+    def query(self, sql: str, **kwargs: Any) -> pd.DataFrame | None:
+        try:
+            result = self._conn.sql(sql, **kwargs).fetchdf()
+            return result
+        except Exception as e:
+            logger.error("DuckDB query failed: %s\nSQL: %s", e, sql)
+            return None
+
+    def correlation_matrix(
+        self, prices: pd.DataFrame, method: str = "pearson"
+    ) -> pd.DataFrame | None:
+        if DUCKDB_AVAILABLE:
+            try:
+                self.register_price_data(prices, "price_data")
+                col_list = ", ".join(
+                    f'"{col}"' for col in prices.columns if col != "date"
+                )
+                result = self._conn.sql(
+                    f"SELECT CORR_MATRIX({col_list}) FROM price_data"
+                ).fetchdf()
+                return result
+            except Exception as e:
+                logger.warning(
+                    "DuckDB CORR_MATRIX failed (%s), falling back to pandas for %s correlation",
+                    e, method,
+                )
+        return self._correlation_matrix_pandas(prices, method)
+
+    def _correlation_matrix_pandas(
+        self, prices: pd.DataFrame, method: str
+    ) -> pd.DataFrame:
+        symbol_cols = [c for c in prices.columns if c != "date"]
+        returns = prices[symbol_cols].pct_change().dropna()
+        return returns.corr(method=method)
+
+    def rolling_correlation(
+        self,
+        symbol_a: str,
+        symbol_b: str,
+        prices: pd.DataFrame,
+        window: int = 30,
+    ) -> pd.Series | None:
+        if DUCKDB_AVAILABLE:
+            try:
+                self.register_price_data(prices, "price_data")
+                result = self._conn.sql(
+                    f"""
+                    SELECT date,
+                           CORR(
+                               "{symbol_a}_ret",
+                               "{symbol_b}_ret"
+                           ) OVER (ORDER BY date ROWS BETWEEN {window - 1} PRECEDING AND CURRENT ROW) AS rolling_corr
+                    FROM (
+                        SELECT date,
+                               "{symbol_a}" - LAG("{symbol_a}") OVER (ORDER BY date) AS "{symbol_a}_ret",
+                               "{symbol_b}" - LAG("{symbol_b}") OVER (ORDER BY date) AS "{symbol_b}_ret"
+                        FROM price_data
+                    )
+                    """
+                ).fetchdf()
+                return result.set_index("date")["rolling_corr"]
+            except Exception as e:
+                logger.warning(
+                    "DuckDB rolling correlation failed (%s), falling back to pandas loop for %s vs %s",
+                    e, symbol_a, symbol_b,
+                )
+        a_returns = prices[symbol_a].pct_change().dropna()
+        b_returns = prices[symbol_b].pct_change().dropna()
+        min_len = min(len(a_returns), len(b_returns))
+        a = a_returns.iloc[-min_len:].values
+        b = b_returns.iloc[-min_len:].values
+        n = len(a)
+        result = []
+        for i in range(window - 1, n):
+            window_a = a[i - window + 1 : i + 1]
+            window_b = b[i - window + 1 : i + 1]
+            if len(window_a) == window and np.std(window_a) > 0 and np.std(window_b) > 0:
+                corr = np.corrcoef(window_a, window_b)[0, 1]
+                result.append(corr if np.isfinite(corr) else np.nan)
+            else:
+                result.append(np.nan)
+        dates = prices["date"].iloc[window:].iloc[-len(result) :].reset_index(drop=True)
+        return pd.Series(result, index=dates, name=f"rolling_corr_{symbol_a}_{symbol_b}")
+
+    def portfolio_volatility(
+        self, weights: np.ndarray, prices: pd.DataFrame
+    ) -> float | None:
+        if DUCKDB_AVAILABLE:
+            try:
+                returns_df = prices.drop(columns=["date"]).pct_change().dropna()
+                cov_matrix = returns_df.cov().values
+                portfolio_var = weights @ cov_matrix @ weights
+                return float(np.sqrt(portfolio_var * 252))
+            except Exception as e:
+                logger.warning(
+                    "DuckDB portfolio_volatility failed (%s), returning None",
+                    e,
+                )
+        return None
+
+    def sql_aggregation(
+        self,
+        table_name: str,
+        group_by: str,
+        agg_expressions: dict[str, str],
+        where_clause: str | None = None,
+    ) -> pd.DataFrame | None:
+        if not DUCKDB_AVAILABLE:
+            return None
+        aggs = ", ".join(
+            f"{func}('{col}') AS {alias}"
+            for col, (func, alias) in agg_expressions.items()
+        )
+        sql = f"SELECT {group_by}, {aggs} FROM {table_name}"
+        if where_clause:
+            sql += f" WHERE {where_clause}"
+        sql += f" GROUP BY {group_by}"
+        return self.query(sql)
+
+    def run_parquet_analytics(
+        self, parquet_path: str, sql: str
+    ) -> pd.DataFrame | None:
+        if not DUCKDB_AVAILABLE:
+            return None
+        try:
+            self._conn.sql(f"SELECT * FROM read_parquet('{parquet_path}')").fetchdf()
+            return self.query(sql)
+        except Exception as e:
+            logger.error("Parquet analytics failed: %s", e)
+            return None
+
+    def get_table_info(self, table_name: str) -> list[tuple[str, str, str]] | None:
+        if not DUCKDB_AVAILABLE:
+            return None
+        try:
+            return self._conn.sql(f"DESCRIBE {table_name}").fetchall()
+        except Exception as e:
+            logger.warning("DuckDB DESCRIBE failed (%s) for table %s", e, table_name)
+            return None

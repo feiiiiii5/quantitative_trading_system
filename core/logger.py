@@ -4,7 +4,6 @@ import logging.handlers
 import time
 from collections import deque
 from pathlib import Path
-from typing import Optional
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 LOG_DIR = DATA_DIR / "logs"
@@ -82,13 +81,13 @@ def setup_logger(level: int = logging.INFO) -> None:
     _LOGGER_INITIALIZED = True
 
 
-def get_recent_logs(limit: int = 100, level: Optional[str] = None) -> list[dict]:
+def get_recent_logs(limit: int = 100, level: str | None = None) -> list[dict]:
     if not APP_LOG_PATH.exists():
         return []
 
     rows: deque[dict] = deque(maxlen=limit)
     try:
-        with open(APP_LOG_PATH, "r", encoding="utf-8", errors="ignore") as f:
+        with open(APP_LOG_PATH, encoding="utf-8", errors="ignore") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -100,8 +99,8 @@ def get_recent_logs(limit: int = 100, level: Optional[str] = None) -> list[dict]
                     rows.append(log_entry)
                 except json.JSONDecodeError:
                     pass
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to read log file: %s", e)
     return list(rows)[-limit:]
 
 
@@ -120,7 +119,7 @@ def log_with_context(logger: logging.Logger, level: int, message: str, **kwargs)
     logger.log(level, message, extra={"extra": extra})
 
 
-def log_error(logger: logging.Logger, message: str, error: Exception = None, **kwargs) -> None:
+def log_error(logger: logging.Logger, message: str, error: Exception | None = None, **kwargs) -> None:
     """记录错误日志"""
     extra = kwargs
     if error:

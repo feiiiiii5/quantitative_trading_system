@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import pytest
 
 from core.risk_monitor import (
     EnhancedRiskMonitor,
@@ -85,7 +84,7 @@ class TestEnhancedRiskMonitor:
     def test_get_risk_metrics(self):
         np.random.seed(42)
         monitor = EnhancedRiskMonitor()
-        for i in range(60):
+        for _i in range(60):
             monitor.update_equity(100000 * (1 + np.random.randn() * 0.01))
         positions = {"A": 30000, "B": 20000}
         metrics = monitor.get_risk_metrics(positions, 100000)

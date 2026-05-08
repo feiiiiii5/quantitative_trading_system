@@ -1,18 +1,17 @@
 import numpy as np
 import pandas as pd
-import pytest
 
+from core.alpha_engine import AlphaResult
 from core.strategy_fusion import (
-    StrategyFusion,
     FusionConfig,
     FusionResult,
-    ic_vol_weight,
+    StrategyFusion,
     equal_weight,
+    ic_vol_weight,
     ic_weight,
-    sharpe_weight,
     rank_weight,
+    sharpe_weight,
 )
-from core.alpha_engine import AlphaResult
 
 
 def _make_alpha_result(name, ic_val, n=100):

@@ -1,7 +1,21 @@
+import asyncio
+import sys
+from collections.abc import Generator
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
-from datetime import datetime, timedelta
+
+ROOT_DIR = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT_DIR))
+
+
+@pytest.fixture(scope="session")
+def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 
 @pytest.fixture
@@ -85,3 +99,25 @@ def event_bus():
 def risk_manager():
     from core.risk_manager import EnhancedRiskManager
     return EnhancedRiskManager(initial_capital=1000000)
+
+
+@pytest.fixture
+def sample_kline_data():
+    return [
+        {"date": "2024-01-01", "open": 100.0, "high": 105.0, "low": 99.0, "close": 103.0, "volume": 1000000, "amount": 102000000.0},
+        {"date": "2024-01-02", "open": 103.0, "high": 108.0, "low": 102.0, "close": 106.0, "volume": 1200000, "amount": 125000000.0},
+        {"date": "2024-01-03", "open": 106.0, "high": 110.0, "low": 105.0, "close": 108.0, "volume": 1500000, "amount": 160000000.0},
+        {"date": "2024-01-04", "open": 108.0, "high": 112.0, "low": 107.0, "close": 110.0, "volume": 1800000, "amount": 195000000.0},
+        {"date": "2024-01-05", "open": 110.0, "high": 108.0, "low": 104.0, "close": 105.0, "volume": 2000000, "amount": 210000000.0},
+    ]
+
+
+@pytest.fixture
+def sample_equity_curve():
+    return [100000.0, 101000.0, 102500.0, 104000.0, 103000.0]
+
+
+@pytest.fixture
+def sample_returns():
+    dates = pd.date_range("2024-01-01", periods=20, freq="D")
+    return pd.Series(np.random.randn(20) * 0.02 + 0.001, index=dates)

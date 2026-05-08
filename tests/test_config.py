@@ -1,4 +1,4 @@
-from core.config import validate_config, load_config, DEFAULT_CONFIG, get_config
+from core.config import DEFAULT_CONFIG, get_config, load_config, validate_config
 
 
 class TestConfigValidation:

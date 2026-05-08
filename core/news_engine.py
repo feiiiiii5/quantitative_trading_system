@@ -10,8 +10,6 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
 
 import numpy as np
 
@@ -137,14 +135,15 @@ async def _fetch_eastmoney_news(page: int = 1, count: int = 40) -> list[dict]:
                 })
             return result
     except Exception as e:
-        logger.debug(f"EastMoney news fetch error: {e}")
+        logger.debug("EastMoney news fetch error: %s", e)
     return []
 
 
 async def _fetch_sina_news() -> list[dict]:
     try:
-        from core.data_fetcher import async_http_get
         from urllib.parse import urlencode
+
+        from core.data_fetcher import async_http_get
         base_url = "https://feed.mix.sina.com.cn/api/roll/get"
         query_params = urlencode({
             "pageid": "153",
@@ -182,7 +181,7 @@ async def _fetch_sina_news() -> list[dict]:
             })
         return result
     except Exception as e:
-        logger.debug(f"Sina news fetch error: {e}")
+        logger.debug("Sina news fetch error: %s", e)
     return []
 
 
@@ -190,8 +189,8 @@ async def _fetch_stock_news_eastmoney(symbol: str, count: int = 20) -> list[dict
     try:
         from core.data_fetcher import get_aiohttp_session
         session = await get_aiohttp_session()
-        secid = f"0.{symbol}" if symbol.startswith(("0", "3")) else f"1.{symbol}"
-        url = f"https://search-api-web.eastmoney.com/search/jsonp"
+        f"0.{symbol}" if symbol.startswith(("0", "3")) else f"1.{symbol}"
+        url = "https://search-api-web.eastmoney.com/search/jsonp"
         params = {
             "cb": "jQuery",
             "param": json.dumps({
@@ -233,7 +232,7 @@ async def _fetch_stock_news_eastmoney(symbol: str, count: int = 20) -> list[dict
                 })
             return result
     except Exception as e:
-        logger.debug(f"Stock news fetch error for {symbol}: {e}")
+        logger.debug("Stock news fetch error for %s: %s", symbol, e)
     return []
 
 
@@ -260,7 +259,7 @@ class NewsEngine:
                 asyncio.gather(*tasks, return_exceptions=True),
                 timeout=10.0,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("新闻获取超时（10秒），使用已有缓存")
             return self._cache[:count] if self._cache else []
         for r in results:
@@ -291,10 +290,11 @@ class NewsEngine:
     def compute_market_sentiment(
         self,
         news_items: list[dict],
-        market_stocks: Optional[list[dict]] = None,
-        indices_data: Optional[dict] = None,
+        market_stocks: list[dict] | None = None,
+        indices_data: dict | None = None,
     ) -> MarketSentiment:
         news_scores = [n.get("sentiment", 0) for n in news_items if n.get("sentiment")]
+        news_scores = [s for s in news_scores if np.isfinite(s)]
         news_sentiment = float(np.mean(news_scores)) if news_scores else 0.0
 
         volume_sentiment = 0.0
@@ -308,7 +308,7 @@ class NewsEngine:
         momentum_sentiment = 0.0
         if indices_data:
             changes = []
-            for key, val in indices_data.items():
+            for _key, val in indices_data.items():
                 if isinstance(val, dict):
                     pct = float(val.get("change_pct", 0) or 0)
                     changes.append(pct)
@@ -373,7 +373,7 @@ class NewsEngine:
         }
 
 
-_news_engine: Optional[NewsEngine] = None
+_news_engine: NewsEngine | None = None
 _news_engine_lock = threading.Lock()
 
 

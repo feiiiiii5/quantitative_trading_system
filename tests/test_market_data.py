@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 
 
 class TestGetAllAStocksSync:
@@ -9,19 +8,16 @@ class TestGetAllAStocksSync:
         assert isinstance(result, list)
 
     def test_returns_cached_data_when_loop_running(self):
-        from core.market_data import _all_a_stocks_cache, _all_a_stocks_ts
-        import time
+        from core.market_data import _all_a_stocks_cache
 
         cached = [{"symbol": "000001", "name": "Test"}]
         _all_a_stocks_cache[:] = cached
-        _all_a_stocks_ts = time.time()
 
         from core.market_data import get_all_a_stocks_sync
         result = get_all_a_stocks_sync()
         assert result == cached
 
         _all_a_stocks_cache.clear()
-        _all_a_stocks_ts = 0.0
 
     def test_no_runtime_error_in_running_loop(self):
         from core.market_data import get_all_a_stocks_sync

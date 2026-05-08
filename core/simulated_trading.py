@@ -1,14 +1,15 @@
-from bisect import insort
-from collections import OrderedDict
 import json
 import logging
 import random
 import threading
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, date
+from bisect import insort
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +97,10 @@ class OrderBook:
         entry = {"price": price, "shares": shares}
         insort(self._ask_orders, entry, key=lambda x: x["price"])
 
-    def get_best_bid(self) -> Optional[float]:
+    def get_best_bid(self) -> float | None:
         return self._bid_orders[0]["price"] if self._bid_orders else None
 
-    def get_best_ask(self) -> Optional[float]:
+    def get_best_ask(self) -> float | None:
         return self._ask_orders[0]["price"] if self._ask_orders else None
 
     def get_spread(self) -> float:
@@ -154,6 +155,9 @@ class SimulatedTrading:
         self._audit_logger = self._init_audit_logger()
         from core.risk_manager import EnhancedRiskManager
         self._risk_manager = EnhancedRiskManager()
+        self._daily_pnl: list[dict] = []
+        self._max_daily_pnl = 365
+        self._last_pnl_date = ""
 
     @staticmethod
     def _init_audit_logger() -> logging.Logger:
@@ -165,8 +169,8 @@ class SimulatedTrading:
                 handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
                 audit_logger.addHandler(handler)
                 audit_logger.setLevel(logging.INFO)
-            except Exception as e:
-                logger.warning(f"Audit logger init failed: {e}")
+            except (OSError, ValueError) as e:  # pragma: no cover
+                logger.warning("Audit logger init failed: %s", e)
         return audit_logger
 
     def _register_order_id(self, order_id: str) -> bool:
@@ -179,9 +183,9 @@ class SimulatedTrading:
 
     def _write_audit(self, action: str, detail: dict) -> None:
         try:
-            self._audit_logger.info(f"{action} | {json.dumps(detail, ensure_ascii=False, default=str)}")
-        except Exception as e:
-            logger.warning(f"Audit log write failed for {action}: {e}")
+            self._audit_logger.info("%s | %s", action, json)
+        except (OSError, ValueError, TypeError) as e:  # pragma: no cover
+            logger.warning("Audit log write failed for %s: %s", action, e)
 
     def _get_order_book(self, symbol: str) -> OrderBook:
         if symbol not in self._order_books:
@@ -190,15 +194,10 @@ class SimulatedTrading:
 
     def _simulate_slippage(self, price: float, action: str, market: str) -> float:
         slippage = price * self._slippage_rate
-        if action == "buy":
-            filled_price = price + random.uniform(0, slippage)
-        else:
-            filled_price = price - random.uniform(0, slippage)
+        filled_price = price + random.uniform(0, slippage) if action == "buy" else price - random.uniform(0, slippage)
 
         if market == "A" and price > 0:
-            if price < 5:
-                tick = 0.01
-            elif price < 10:
+            if price < 5 or price < 10:
                 tick = 0.01
             elif price < 20:
                 tick = 0.02
@@ -310,6 +309,10 @@ class SimulatedTrading:
             if order_id and not self._register_order_id(order_id):
                 return {"success": False, "error": "重复订单"}
 
+            if not isinstance(price, (int, float)) or not isinstance(shares, (int, float)):
+                return {"success": False, "error": "价格和数量必须为数字"}
+            if not (np.isfinite(price) and np.isfinite(shares)):
+                return {"success": False, "error": "价格和数量不能为NaN或无穷"}
             if price <= 0 or shares <= 0:
                 return {"success": False, "error": "无效的价格或数量"}
 
@@ -335,7 +338,8 @@ class SimulatedTrading:
 
             if total_cost > self._cash:
                 fee_rate = self._commission_rate + (self._stamp_tax_rate if market == "A" else 0.001 if market == "HK" else 0)
-                max_shares = int(self._cash / (filled_price * (1 + fee_rate)))
+                denom = filled_price * (1 + fee_rate)
+                max_shares = int(self._cash / denom) if denom > 0 else 0
                 if market == "A":
                     max_shares = (max_shares // 100) * 100
                 return {
@@ -421,19 +425,12 @@ class SimulatedTrading:
             })
 
             return {
-                "success": True,
-                "trade": {
-                    "id": trade.id,
-                    "action": "buy",
-                    "symbol": symbol,
-                    "name": name,
-                    "order_price": price,
-                    "filled_price": round(filled_price, 3),
-                    "shares": shares,
-                    "amount": round(amount, 2),
-                    "fee": round(commission, 2),
-                    "time": trade.time,
-                    "slippage": round(filled_price - price, 3),
+                "success": True, "trade": {
+                    "id": trade.id, "action": "buy",
+                    "symbol": symbol, "name": name, "order_price": price,
+                    "filled_price": round(filled_price, 3), "shares": shares,
+                    "amount": round(amount, 2), "fee": round(commission, 2),
+                    "time": trade.time, "slippage": round(filled_price - price, 3),
                 },
             }
 
@@ -442,13 +439,18 @@ class SimulatedTrading:
         symbol: str,
         price: float,
         reason: str = "manual",
-        shares: Optional[int] = None,
+        shares: int | None = None,
         market_price: float = 0,
         order_id: str = "",
     ) -> dict:
         with self._trade_lock:
             if order_id and not self._register_order_id(order_id):
                 return {"success": False, "error": "重复订单"}
+
+            if not isinstance(price, (int, float)) or not np.isfinite(price):
+                return {"success": False, "error": "无效的卖出价格"}
+            if price <= 0:
+                return {"success": False, "error": "无效的卖出价格"}
 
             if symbol not in self._positions:
                 return {"success": False, "error": f"未持有 {symbol}"}
@@ -521,20 +523,12 @@ class SimulatedTrading:
             })
 
             return {
-                "success": True,
-                "trade": {
-                    "id": trade.id,
-                    "action": "sell",
-                    "symbol": symbol,
-                    "name": pos.name,
-                    "order_price": price,
-                    "filled_price": round(filled_price, 3),
-                    "shares": sell_shares,
-                    "amount": round(amount, 2),
-                    "fee": round(total_fee, 2),
-                    "pnl": round(pnl, 2),
-                    "time": trade.time,
-                    "reason": reason,
+                "success": True, "trade": {
+                    "id": trade.id, "action": "sell",
+                    "symbol": symbol, "name": pos.name, "order_price": price,
+                    "filled_price": round(filled_price, 3), "shares": sell_shares,
+                    "amount": round(amount, 2), "fee": round(total_fee, 2),
+                    "pnl": round(pnl, 2), "time": trade.time, "reason": reason,
                     "slippage": round(price - filled_price, 3),
                 },
             }
@@ -590,16 +584,11 @@ class SimulatedTrading:
             self._pending_orders.append(order)
 
             return {
-                "success": True,
-                "order": {
-                    "id": order.id,
-                    "symbol": symbol,
-                    "name": name,
-                    "action": action,
-                    "order_type": order_type,
-                    "price": price,
-                    "shares": shares,
-                    "status": "pending",
+                "success": True, "order": {
+                    "id": order.id, "symbol": symbol,
+                    "name": name, "action": action,
+                    "order_type": order_type, "price": price,
+                    "shares": shares, "status": "pending",
                     "created_at": order.created_at,
                 },
             }
@@ -632,8 +621,7 @@ class SimulatedTrading:
                     "take_profit": o.take_profit,
                     "strategy": o.strategy,
                 }
-                for o in self._pending_orders
-                if o.status == "pending"
+                for o in self._pending_orders if o.status == "pending"
             ]
 
     def check_pending_orders(self, price_map: dict[str, float]) -> list[dict]:
@@ -643,7 +631,6 @@ class SimulatedTrading:
 
             for order in self._pending_orders:
                 if order.status != "pending":
-                    remaining.append(order)
                     continue
 
                 current_price = price_map.get(order.symbol, 0)
@@ -654,7 +641,7 @@ class SimulatedTrading:
                 filled = False
 
                 if order.action == "buy":
-                    if order.order_type == "limit" and current_price <= order.price:
+                    if (order.order_type == "limit" and current_price <= order.price) or order.order_type == "market":
                         result = self.execute_buy(
                             symbol=order.symbol,
                             name=order.name,
@@ -672,31 +659,8 @@ class SimulatedTrading:
                             order.filled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             order.filled_price = current_price
                             executed.append({"order": self._order_to_dict(order), "result": result})
-                        else:
-                            remaining.append(order)
-                    elif order.order_type == "market":
-                        result = self.execute_buy(
-                            symbol=order.symbol,
-                            name=order.name,
-                            market=order.market,
-                            price=order.price,
-                            shares=order.shares,
-                            stop_loss=order.stop_loss,
-                            take_profit=order.take_profit,
-                            strategy=order.strategy,
-                            market_price=current_price,
-                        )
-                        if result.get("success"):
-                            filled = True
-                            order.status = "filled"
-                            order.filled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            order.filled_price = current_price
-                            executed.append({"order": self._order_to_dict(order), "result": result})
-                        else:
-                            remaining.append(order)
 
-                elif order.action == "sell":
-                    if order.order_type == "limit" and current_price >= order.price:
+                elif order.action == "sell" and ((order.order_type == "limit" and current_price >= order.price) or (order.order_type == "market")):
                         result = self.execute_sell(
                             symbol=order.symbol,
                             price=order.price,
@@ -710,24 +674,6 @@ class SimulatedTrading:
                             order.filled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             order.filled_price = current_price
                             executed.append({"order": self._order_to_dict(order), "result": result})
-                        else:
-                            remaining.append(order)
-                    elif order.order_type == "market":
-                        result = self.execute_sell(
-                            symbol=order.symbol,
-                            price=order.price,
-                            reason=order.strategy,
-                            shares=order.shares,
-                            market_price=current_price,
-                        )
-                        if result.get("success"):
-                            filled = True
-                            order.status = "filled"
-                            order.filled_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            order.filled_price = current_price
-                            executed.append({"order": self._order_to_dict(order), "result": result})
-                        else:
-                            remaining.append(order)
 
                 if not filled:
                     remaining.append(order)
@@ -737,17 +683,11 @@ class SimulatedTrading:
 
     def _order_to_dict(self, order: Order) -> dict:
         return {
-            "id": order.id,
-            "symbol": order.symbol,
-            "name": order.name,
-            "action": order.action,
-            "order_type": order.order_type,
-            "price": order.price,
-            "shares": order.shares,
-            "status": order.status,
-            "created_at": order.created_at,
-            "filled_at": order.filled_at,
-            "filled_price": order.filled_price,
+            "id": order.id, "symbol": order.symbol, "name": order.name,
+            "action": order.action, "order_type": order.order_type,
+            "price": order.price, "shares": order.shares,
+            "status": order.status, "created_at": order.created_at,
+            "filled_at": order.filled_at, "filled_price": order.filled_price,
         }
 
     def update_position_prices(self, price_map: dict[str, float]):
@@ -758,7 +698,7 @@ class SimulatedTrading:
                     self._prev_close_map[symbol] = price
 
             today = self._today_str()
-            for symbol, pos in self._positions.items():
+            for _symbol, pos in self._positions.items():
                 if pos.buy_date != today:
                     pos.available_shares = pos.shares
 
@@ -774,7 +714,7 @@ class SimulatedTrading:
             for symbol, price, reason in auto_sells:
                 result = self.execute_sell(symbol, price, reason=reason, market_price=price)
                 if result.get("success"):
-                    logger.info(f"Auto {reason} executed for {symbol} at {price}")
+                    logger.info("Auto %s executed for %s at %s", reason, symbol, price)
 
     def get_account_info(self) -> dict:
         with self._trade_lock:
@@ -783,21 +723,17 @@ class SimulatedTrading:
             total_assets = self._cash + total_market_value
 
             positions = []
-            for symbol, pos in self._positions.items():
+            for _symbol, pos in self._positions.items():
                 positions.append({
-                    "symbol": pos.symbol,
-                    "name": pos.name,
-                    "market": pos.market,
-                    "shares": pos.shares,
-                    "available_shares": pos.available_shares,
+                    "symbol": pos.symbol, "name": pos.name, "market": pos.market,
+                    "shares": pos.shares, "available_shares": pos.available_shares,
                     "frozen_shares": pos.shares - pos.available_shares,
                     "avg_cost": round(pos.avg_cost, 3),
                     "current_price": round(pos.current_price, 3),
                     "market_value": round(pos.market_value, 2),
                     "profit": round(pos.profit, 2),
                     "profit_pct": round(pos.profit_pct, 2),
-                    "stop_loss": pos.stop_loss,
-                    "take_profit": pos.take_profit,
+                    "stop_loss": pos.stop_loss, "take_profit": pos.take_profit,
                     "buy_date": pos.buy_date,
                 })
 
@@ -808,8 +744,7 @@ class SimulatedTrading:
                 "total_profit": round(total_profit, 2),
                 "initial_capital": self._initial_capital,
                 "return_pct": round((total_assets - self._initial_capital) / self._initial_capital * 100, 2) if self._initial_capital > 0 else 0,
-                "positions": positions,
-                "position_count": len(positions),
+                "positions": positions, "position_count": len(positions),
                 "risk_report": self._risk_manager.get_risk_report(),
             }
 
@@ -819,26 +754,49 @@ class SimulatedTrading:
         return {
             "trades": [
                 {
-                    "id": t.id,
-                    "symbol": t.symbol,
-                    "name": t.name,
-                    "market": t.market,
-                    "action": t.action,
-                    "price": t.price,
-                    "shares": t.shares,
-                    "amount": t.amount,
-                    "fee": t.fee,
-                    "stamp_tax": t.stamp_tax,
+                    "id": t.id, "symbol": t.symbol, "name": t.name,
+                    "market": t.market, "action": t.action,
+                    "price": t.price, "shares": t.shares,
+                    "amount": t.amount, "fee": t.fee, "stamp_tax": t.stamp_tax,
                     "total_fee": round(t.fee + t.stamp_tax, 2),
                     "pnl": round((t.price - t.entry_price) * t.shares - (t.fee + t.stamp_tax), 2) if t.action == "sell" else None,
-                    "time": t.time,
-                    "strategy": t.strategy,
-                    "reason": t.reason,
+                    "time": t.time, "strategy": t.strategy, "reason": t.reason,
                 }
                 for t in trades
             ],
             "total": len(self._trade_history),
         }
+
+    def get_positions(self) -> dict[str, SimPosition]:
+        with self._trade_lock:
+            return dict(self._positions)
+
+    def record_daily_pnl(self) -> dict:
+        with self._trade_lock:
+            today = self._today_str()
+            total_assets = self._cash + sum(p.market_value for p in self._positions.values())
+            total_profit = total_assets - self._initial_capital
+            daily = {
+                "date": today,
+                "total_assets": round(total_assets, 2),
+                "cash": round(self._cash, 2),
+                "market_value": round(total_assets - self._cash, 2),
+                "total_profit": round(total_profit, 2),
+                "return_pct": round(total_profit / self._initial_capital * 100, 4) if self._initial_capital > 0 else 0,
+                "position_count": len(self._positions),
+            }
+            if self._last_pnl_date == today and self._daily_pnl:
+                self._daily_pnl[-1] = daily
+            else:
+                self._daily_pnl.append(daily)
+                self._last_pnl_date = today
+            if len(self._daily_pnl) > self._max_daily_pnl:
+                self._daily_pnl = self._daily_pnl[-self._max_daily_pnl:]
+            return daily
+
+    def get_daily_pnl(self, limit: int = 30) -> list[dict]:
+        with self._trade_lock:
+            return list(self._daily_pnl[-limit:])
 
     def _get_entry_price(self, symbol: str, action: str) -> float:
         if action == "sell":
@@ -856,3 +814,146 @@ class SimulatedTrading:
             self._order_books.clear()
             self._order_ids.clear()
             return {"success": True, "message": "Account reset"}
+
+    def export_portfolio(self) -> dict:
+        with self._trade_lock:
+            positions = []
+            for _symbol, pos in self._positions.items():
+                positions.append({
+                    "symbol": pos.symbol,
+                    "name": pos.name,
+                    "market": pos.market,
+                    "shares": pos.shares,
+                    "available_shares": pos.available_shares,
+                    "avg_cost": pos.avg_cost,
+                    "current_price": pos.current_price,
+                    "stop_loss": pos.stop_loss,
+                    "take_profit": pos.take_profit,
+                    "buy_date": pos.buy_date,
+                    "buy_fees": pos.buy_fees,
+                })
+
+            pending_orders = []
+            for order in self._pending_orders:
+                pending_orders.append({
+                    "id": order.id,
+                    "symbol": order.symbol,
+                    "name": order.name,
+                    "market": order.market,
+                    "action": order.action,
+                    "order_type": order.order_type,
+                    "price": order.price,
+                    "shares": order.shares,
+                    "strategy": order.strategy,
+                    "status": order.status,
+                    "created_at": order.created_at,
+                    "filled_at": order.filled_at,
+                    "filled_price": order.filled_price,
+                    "stop_loss": order.stop_loss,
+                    "take_profit": order.take_profit,
+                })
+
+            trade_history = []
+            for t in self._trade_history:
+                trade_history.append({
+                    "id": t.id,
+                    "symbol": t.symbol,
+                    "name": t.name,
+                    "market": t.market,
+                    "action": t.action,
+                    "price": t.price,
+                    "shares": t.shares,
+                    "amount": t.amount,
+                    "fee": t.fee,
+                    "stamp_tax": t.stamp_tax,
+                    "time": t.time,
+                    "strategy": t.strategy,
+                    "reason": t.reason,
+                    "entry_price": t.entry_price,
+                })
+
+            return {
+                "version": "1.0",
+                "initial_capital": self._initial_capital,
+                "cash": self._cash,
+                "positions": positions,
+                "pending_orders": pending_orders,
+                "trade_history": trade_history,
+                "prev_close_map": self._prev_close_map,
+                "entry_price_map": self._entry_price_map,
+                "daily_pnl": self._daily_pnl,
+                "export_time": datetime.now().isoformat(),
+            }
+
+    def import_portfolio(self, data: dict) -> dict:
+        with self._trade_lock:
+            try:
+                if data.get("version") != "1.0":
+                    return {"success": False, "error": "Invalid portfolio version"}
+
+                self._initial_capital = data.get("initial_capital", 1000000)
+                self._cash = data.get("cash", self._initial_capital)
+
+                self._positions.clear()
+                for pos_data in data.get("positions", []):
+                    self._positions[pos_data["symbol"]] = SimPosition(
+                        symbol=pos_data["symbol"],
+                        name=pos_data["name"],
+                        market=pos_data["market"],
+                        shares=pos_data["shares"],
+                        available_shares=pos_data["available_shares"],
+                        avg_cost=pos_data["avg_cost"],
+                        current_price=pos_data["current_price"],
+                        stop_loss=pos_data["stop_loss"],
+                        take_profit=pos_data["take_profit"],
+                        buy_date=pos_data["buy_date"],
+                        buy_fees=pos_data["buy_fees"],
+                    )
+
+                self._pending_orders.clear()
+                for order_data in data.get("pending_orders", []):
+                    self._pending_orders.append(Order(
+                        id=order_data["id"],
+                        symbol=order_data["symbol"],
+                        name=order_data["name"],
+                        market=order_data["market"],
+                        action=order_data["action"],
+                        order_type=order_data["order_type"],
+                        price=order_data["price"],
+                        shares=order_data["shares"],
+                        strategy=order_data["strategy"],
+                        status=order_data.get("status", "pending"),
+                        created_at=order_data.get("created_at", ""),
+                        filled_at=order_data.get("filled_at", ""),
+                        filled_price=order_data.get("filled_price", 0),
+                        stop_loss=order_data.get("stop_loss", 0),
+                        take_profit=order_data.get("take_profit", 0),
+                    ))
+
+                self._trade_history.clear()
+                for t_data in data.get("trade_history", []):
+                    self._trade_history.append(TradeRecord(
+                        id=t_data["id"],
+                        symbol=t_data["symbol"],
+                        name=t_data["name"],
+                        market=t_data["market"],
+                        action=t_data["action"],
+                        price=t_data["price"],
+                        shares=t_data["shares"],
+                        amount=t_data["amount"],
+                        fee=t_data["fee"],
+                        stamp_tax=t_data["stamp_tax"],
+                        time=t_data["time"],
+                        strategy=t_data["strategy"],
+                        reason=t_data["reason"],
+                        entry_price=t_data["entry_price"],
+                    ))
+
+                self._prev_close_map = data.get("prev_close_map", {})
+                self._entry_price_map = data.get("entry_price_map", {})
+
+                return {"success": True, "message": "Portfolio imported successfully"}
+
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError) as e:
+                logger.error("Portfolio import failed: %s", e)
+                return {"success": False, "error": str(e)}

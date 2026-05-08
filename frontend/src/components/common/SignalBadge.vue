@@ -1,44 +1,49 @@
 <template>
-  <span class="signal-badge" :class="type">{{ label }}</span>
+  <span class="signal-badge" :class="type">
+    <span class="sb-line" />
+    <span class="sb-text">{{ type.toUpperCase() }}</span>
+  </span>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-
-const props = defineProps<{
+defineProps<{
   type: 'buy' | 'sell' | 'hold'
 }>()
-
-const label = computed(() => {
-  const map = { buy: '买', sell: '卖', hold: '持' }
-  return map[props.type] || props.type
-})
 </script>
 
 <style scoped>
 .signal-badge {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 3px;
-  line-height: 1.4;
+  gap: 6px;
+  padding: 0;
+  border-radius: 0;
+  border: none;
+  background: none;
 }
 
-.signal-badge.buy {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--rise);
+.sb-line {
+  display: block;
+  width: 2px;
+  height: 10px;
+  background: var(--text-tertiary);
 }
 
-.signal-badge.sell {
-  background: rgba(34, 197, 94, 0.15);
-  color: var(--fall);
-}
-
-.signal-badge.hold {
-  background: var(--bg-elevated);
+.sb-text {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   color: var(--text-tertiary);
 }
+
+.buy .sb-line { background: var(--rise); }
+.buy .sb-text { color: var(--rise); }
+
+.sell .sb-line { background: var(--fall); }
+.sell .sb-text { color: var(--fall); }
+
+.hold .sb-line { background: var(--text-tertiary); }
+.hold .sb-text { color: var(--text-tertiary); }
 </style>

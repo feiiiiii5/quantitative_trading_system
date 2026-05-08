@@ -1,3 +1,7 @@
+"""
+价格预测模块 - 基于技术分析和统计指标的价格预测
+提供多时间尺度的涨跌概率和预期收益率预测
+"""
 import logging
 
 import numpy as np
@@ -5,6 +9,7 @@ import pandas as pd
 from scipy import stats
 
 from core.indicators import TechnicalIndicators
+from core.ml_utils import optimize_numpy_memory
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +25,31 @@ class PricePredictor:
 
     @staticmethod
     def predict(df: pd.DataFrame, symbol: str) -> dict:
+        """
+        执行价格预测
+
+        Args:
+            df: K线数据DataFrame，需包含close列
+            symbol: 股票代码
+
+        Returns:
+            包含多时间尺度预测结果的字典
+        """
+        # 基础校验：数据长度不足返回空预测
         if df is None or len(df) < 60:
             return PricePredictor._empty_prediction()
+
+        # 计算技术指标
         indicators = TechnicalIndicators.compute_all(df)
         if not indicators:
             return PricePredictor._empty_prediction()
-        c = df["close"].values.astype(float)
-        v = df["volume"].values.astype(float) if "volume" in df.columns else np.ones(len(df))
 
+        # 提取价格和成交量数据，优化内存使用
+        c = optimize_numpy_memory(df["close"].values.astype(float))
+        v = df["volume"].values.astype(float) if "volume" in df.columns else np.ones(len(df))
+        v = optimize_numpy_memory(v)
+
+        # 计算各个维度的得分
         trend_score = PricePredictor._trend_momentum_score(c, indicators)
         momentum_score = PricePredictor._overbought_oversold_score(indicators)
         volume_score = PricePredictor._volume_price_score(c, v)
@@ -83,8 +105,20 @@ class PricePredictor:
 
     @staticmethod
     def _trend_momentum_score(c: np.ndarray, ind: dict) -> float:
+        """
+        计算趋势动量得分
+
+        Args:
+            c: 收盘价数组
+            ind: 技术指标字典
+
+        Returns:
+            趋势得分，正值看多，负值看空
+        """
         score = 0
         ma = ind.get("ma", {})
+
+        # MA5 vs MA20
         if 5 in ma and 20 in ma:
             ma5 = ma[5][-1] if ma[5] else 0
             ma20 = ma[20][-1] if ma[20] else 0
@@ -111,8 +145,19 @@ class PricePredictor:
 
     @staticmethod
     def _overbought_oversold_score(ind: dict) -> float:
+        """
+        计算超买超卖得分
+
+        Args:
+            ind: 技术指标字典
+
+        Returns:
+            超买超卖得分
+        """
         score = 0
         rsi = ind.get("rsi", {})
+
+        # RSI多周期分析
         for p in [6, 12, 24]:
             if p in rsi and rsi[p]:
                 val = rsi[p][-1]
@@ -149,9 +194,21 @@ class PricePredictor:
 
     @staticmethod
     def _volume_price_score(c: np.ndarray, v: np.ndarray) -> float:
+        """
+        计算量价配合得分
+
+        Args:
+            c: 收盘价数组
+            v: 成交量数组
+
+        Returns:
+            量价配合得分
+        """
         score = 0
         if len(c) < 5 or len(v) < 5:
             return 0
+
+        # 分析价格上涨/下跌与成交量变化的配合
         price_up = c[-1] > c[-2]
         vol_change = v[-1] / (np.mean(v[-6:-1]) + 1e-10)
         if price_up and vol_change > 1.5:
@@ -170,13 +227,36 @@ class PricePredictor:
 
     @staticmethod
     def _hurst_exponent(c: np.ndarray, max_lag: int = 20) -> float:
+        """
+        计算Hurst指数，用于判断市场的趋势性/均值回归特性
+
+        Args:
+            c: 收盘价数组
+            max_lag: 最大滞后阶数
+
+        Returns:
+            Hurst指数，0.5表示随机游走，>0.5表示趋势性，<0.5表示均值回归
+        """
         if len(c) < max_lag * 2:
             return 0.5
-        returns = np.diff(np.log(c[c > 0]))
+
+        positive = c[c > 0]
+        if len(positive) < max_lag * 2:
+            return 0.5
+
+        returns = np.diff(np.log(positive))
         if len(returns) < max_lag:
             return 0.5
+
+        if not np.all(np.isfinite(returns)):
+            returns = returns[np.isfinite(returns)]
+            if len(returns) < max_lag:
+                return 0.5
+
         lags = range(2, max_lag)
         tau = []
+
+        # 计算不同滞后期的标准差
         for lag in lags:
             diff = returns[lag:] - returns[:-lag]
             if len(diff) > 0:
@@ -192,13 +272,26 @@ class PricePredictor:
             log_tau = np.log(tau[valid])
             slope, _, _, _, _ = stats.linregress(log_lags, log_tau)
             return max(0.0, min(1.0, slope / 2))
-        except Exception:
+        except Exception as e:
+            logger.debug("Hurst计算失败: %s", e)
             return 0.5
 
     @staticmethod
     def _volatility_score(c: np.ndarray, ind: dict) -> float:
+        """
+        计算波动率得分
+
+        Args:
+            c: 收盘价数组
+            ind: 技术指标字典
+
+        Returns:
+            波动率得分
+        """
         score = 0
         bb_pos = ind.get("bb_position", 0.5)
+
+        # 布林带位置判断
         if bb_pos > 0.85:
             score -= 8
         elif bb_pos < 0.15:
@@ -216,8 +309,20 @@ class PricePredictor:
 
     @staticmethod
     def _detect_signals(c: np.ndarray, ind: dict) -> list:
+        """
+        检测技术指标买卖信号
+
+        Args:
+            c: 收盘价数组
+            ind: 技术指标字典
+
+        Returns:
+            信号列表
+        """
         signals = []
         ma = ind.get("ma", {})
+
+        # MA金叉/死叉信号
         if 5 in ma and 20 in ma and len(ma[5]) >= 2 and len(ma[20]) >= 2:
             prev_diff = ma[5][-2] - ma[20][-2]
             curr_diff = ma[5][-1] - ma[20][-1]
@@ -258,11 +363,26 @@ class PricePredictor:
 
     @staticmethod
     def _sigmoid(x: float) -> float:
-        x = max(-10, min(10, x))
+        """
+        Sigmoid激活函数，用于将得分转换为概率
+
+        Args:
+            x: 输入值
+
+        Returns:
+            0-1之间的概率值
+        """
+        x = max(-10, min(10, x))  # 防止溢出
         return 1 / (1 + np.exp(-x))
 
     @staticmethod
     def _empty_prediction() -> dict:
+        """
+        创建空预测结果（用于数据不足时）
+
+        Returns:
+            空预测字典
+        """
         result = {}
         for horizon in HORIZON_MAP:
             result[horizon] = {

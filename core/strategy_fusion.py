@@ -1,6 +1,5 @@
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -22,13 +21,13 @@ class FusionConfig:
 @dataclass
 class FusionResult:
     combined_signal: pd.Series
-    strategy_weights: Dict[str, float]
+    strategy_weights: dict[str, float]
     n_strategies: int
     method: str
-    contribution: Dict[str, float]
+    contribution: dict[str, float]
 
 
-def ic_vol_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
+def ic_vol_weight(alpha_results: dict[str, AlphaResult]) -> dict[str, float]:
     if not alpha_results:
         return {}
     ics = {name: abs(r.ic) for name, r in alpha_results.items()}
@@ -44,19 +43,19 @@ def ic_vol_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
     total = sum(raw_weights.values())
     if total < 1e-12:
         n = len(alpha_results)
-        return {name: 1.0 / n for name in alpha_results}
+        return dict.fromkeys(alpha_results, 1.0 / n)
 
     return {name: round(w / total, 6) for name, w in raw_weights.items()}
 
 
-def equal_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
+def equal_weight(alpha_results: dict[str, AlphaResult]) -> dict[str, float]:
     if not alpha_results:
         return {}
     n = len(alpha_results)
     return {name: round(1.0 / n, 6) for name in alpha_results}
 
 
-def ic_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
+def ic_weight(alpha_results: dict[str, AlphaResult]) -> dict[str, float]:
     if not alpha_results:
         return {}
     abs_ics = {name: abs(r.ic) for name, r in alpha_results.items()}
@@ -66,7 +65,7 @@ def ic_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
     return {name: round(w / total, 6) for name, w in abs_ics.items()}
 
 
-def sharpe_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
+def sharpe_weight(alpha_results: dict[str, AlphaResult]) -> dict[str, float]:
     if not alpha_results:
         return {}
     sharpes = {}
@@ -80,7 +79,7 @@ def sharpe_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
     return {name: round(w / total, 6) for name, w in sharpes.items()}
 
 
-def rank_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
+def rank_weight(alpha_results: dict[str, AlphaResult]) -> dict[str, float]:
     if not alpha_results:
         return {}
     ics = {name: r.ic for name, r in alpha_results.items()}
@@ -98,13 +97,13 @@ def rank_weight(alpha_results: Dict[str, AlphaResult]) -> Dict[str, float]:
 class StrategyFusion:
     def __init__(self, config: FusionConfig = None):
         self._config = config or FusionConfig()
-        self._weight_history: List[Dict[str, float]] = []
+        self._weight_history: list[dict[str, float]] = []
         self._weight_history_max = 120
 
     def fuse(
         self,
-        alpha_results: Dict[str, AlphaResult],
-        method: str = None,
+        alpha_results: dict[str, AlphaResult],
+        method: str | None = None,
     ) -> FusionResult:
         method = method or self._config.method
 
@@ -123,7 +122,13 @@ class StrategyFusion:
         }
 
         if not filtered:
-            filtered = dict(list(alpha_results.items())[:self._config.max_strategies])
+            return FusionResult(
+                combined_signal=pd.Series(dtype=float),
+                strategy_weights={},
+                n_strategies=0,
+                method=method,
+                contribution={},
+            )
 
         if len(filtered) > self._config.max_strategies:
             sorted_alphas = sorted(filtered.items(), key=lambda x: abs(x[1].ic_ir), reverse=True)
@@ -166,7 +171,7 @@ class StrategyFusion:
             contribution=contribution,
         )
 
-    def get_fusion_report(self, result: FusionResult) -> Dict:
+    def get_fusion_report(self, result: FusionResult) -> dict:
         return {
             "method": result.method,
             "n_strategies": result.n_strategies,
@@ -180,7 +185,7 @@ class StrategyFusion:
             },
         }
 
-    def get_weight_stability(self) -> Dict[str, float]:
+    def get_weight_stability(self) -> dict[str, float]:
         if len(self._weight_history) < 2:
             return {}
         all_names = set()

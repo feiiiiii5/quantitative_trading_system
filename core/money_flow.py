@@ -7,8 +7,6 @@ import asyncio
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 
@@ -37,7 +35,7 @@ async def _try_akshare(func_name: str, **kwargs):
         if func:
             return await asyncio.to_thread(func, **kwargs)
     except Exception as e:
-        logger.debug(f"AKShare {func_name} error: {e}")
+        logger.debug("AKShare %s error: %s", func_name, e)
     return None
 
 
@@ -86,7 +84,7 @@ async def fetch_stock_capital_flow(symbol: str, days: int = 10) -> list[dict]:
                     _FLOW_CACHE[cache_key] = (result, now)
                 return result
     except Exception as e:
-        logger.debug(f"EastMoney stock flow error for {symbol}: {e}")
+        logger.debug("EastMoney stock flow error for %s: %s", symbol, e)
 
     try:
         from core.data_fetcher import get_fetcher
@@ -94,10 +92,8 @@ async def fetch_stock_capital_flow(symbol: str, days: int = 10) -> list[dict]:
         df = await fetcher.get_history(symbol, period="3m", kline_type="daily", adjust="qfq")
         if df is not None and not df.empty and len(df) >= days:
             result = []
-            for _, row in df.tail(days).iterrows():
-                vol = float(row.get("volume", 0) or 0)
+            for row in df.tail(days).to_dict("records"):
                 amt = float(row.get("amount", 0) or 0)
-                close = float(row.get("close", 0) or 0)
                 result.append({
                     "date": str(row.get("date", "")),
                     "main_inflow": amt * 0.3,
@@ -112,13 +108,13 @@ async def fetch_stock_capital_flow(symbol: str, days: int = 10) -> list[dict]:
                 _FLOW_CACHE[cache_key] = (result, now)
             return result
     except Exception as e:
-        logger.debug(f"K-line fallback flow error for {symbol}: {e}")
+        logger.debug("K-line fallback flow error for %s: %s", symbol, e)
 
     with _FLOW_CACHE_LOCK:
         return _FLOW_CACHE.get(cache_key, ([], 0))[0]
 
 
-async def fetch_realtime_capital_flow(symbol: str) -> Optional[dict]:
+async def fetch_realtime_capital_flow(symbol: str) -> dict | None:
     try:
         secid = f"0.{symbol}" if symbol.startswith(("0", "3")) else f"1.{symbol}"
         flow_url = "https://push2.eastmoney.com/api/qt/ulist.np/get"
@@ -147,7 +143,7 @@ async def fetch_realtime_capital_flow(symbol: str) -> Optional[dict]:
                     "main_pct": float(item.get("f84", 0) or 0),
                 }
     except Exception as e:
-        logger.debug(f"Realtime capital flow error for {symbol}: {e}")
+        logger.debug("Realtime capital flow error for %s: %s", symbol, e)
 
     try:
         from core.data_fetcher import get_fetcher
@@ -169,7 +165,7 @@ async def fetch_realtime_capital_flow(symbol: str) -> Optional[dict]:
                 "main_pct": 0,
             }
     except Exception as e:
-        logger.debug(f"Realtime fallback error for {symbol}: {e}")
+        logger.debug("Realtime fallback error for %s: %s", symbol, e)
     return None
 
 
@@ -222,7 +218,7 @@ async def fetch_capital_flow_ranking(
                 _RANKING_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug(f"EastMoney ranking error: {e}")
+        logger.debug("EastMoney ranking error: %s", e)
 
     try:
         from core.market_data import fetch_all_a_stocks_async
@@ -252,7 +248,7 @@ async def fetch_capital_flow_ranking(
             _RANKING_CACHE_TS = now
         return result
     except Exception as e2:
-        logger.debug(f"Fallback ranking error: {e2}")
+        logger.debug("Fallback ranking error: %s", e2)
     with _RANKING_CACHE_LOCK:
         return _RANKING_CACHE
 
@@ -269,7 +265,7 @@ async def fetch_sector_capital_flow() -> list[dict]:
         df = await asyncio.to_thread(ak.stock_fund_flow_industry, symbol="即时")
         if df is not None and not df.empty:
             result = []
-            for _, row in df.iterrows():
+            for row in df.to_dict("records"):
                 name = str(row.get("行业", ""))
                 change_pct = float(row.get("行业-涨跌幅", 0) or 0)
                 net_amount = float(row.get("净额", 0) or 0)
@@ -292,7 +288,7 @@ async def fetch_sector_capital_flow() -> list[dict]:
                 _SECTOR_FLOW_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug(f"AKShare sector fund flow error: {e}")
+        logger.debug("AKShare sector fund flow error: %s", e)
 
     try:
         url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
@@ -326,7 +322,7 @@ async def fetch_sector_capital_flow() -> list[dict]:
                 _SECTOR_FLOW_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug(f"Datacenter sector capital flow error: {e}")
+        logger.debug("Datacenter sector capital flow error: %s", e)
 
     try:
         url = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -363,7 +359,7 @@ async def fetch_sector_capital_flow() -> list[dict]:
                 _SECTOR_FLOW_CACHE_TS = now
             return result
     except Exception as e:
-        logger.debug(f"Push2 sector capital flow error: {e}")
+        logger.debug("Push2 sector capital flow error: %s", e)
 
     try:
         from core.sector_rotation import fetch_sector_list
@@ -385,7 +381,7 @@ async def fetch_sector_capital_flow() -> list[dict]:
                 _SECTOR_FLOW_CACHE_TS = now
             return result
     except Exception as e2:
-        logger.debug(f"Sector flow from sector_rotation error: {e2}")
+        logger.debug("Sector flow from sector_rotation error: %s", e2)
     with _SECTOR_FLOW_LOCK:
         return _SECTOR_FLOW_CACHE
 
@@ -444,7 +440,7 @@ class MoneyFlowAnalyzer:
         }
 
 
-_analyzer: Optional[MoneyFlowAnalyzer] = None
+_analyzer: MoneyFlowAnalyzer | None = None
 _analyzer_lock = threading.Lock()
 
 

@@ -2,13 +2,10 @@
 QuantCore 股票搜索模块
 使用东方财富API构建全量A股索引，支持代码/名称/拼音模糊搜索
 """
-import asyncio
+import json
 import logging
 import threading
 from difflib import SequenceMatcher
-from typing import Optional
-
-from core.market_data import fetch_all_a_stocks_async
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +69,10 @@ def _get_pinyin_map() -> dict[str, str]:
         from pathlib import Path
         json_path = Path(__file__).parent / "data" / "pinyin_map.json"
         try:
-            import json
-            with open(json_path, "r", encoding="utf-8") as f:
+            with open(json_path, encoding="utf-8") as f:
                 _PINYIN_MAP = json.load(f)
-        except Exception as e:
-            logger.debug(f"Failed to load pinyin map from {json_path}: {e}")
+        except (OSError, json.JSONDecodeError) as e:
+            logger.debug("Failed to load pinyin map from %s: %s", json_path, e)
             _PINYIN_MAP = {}
         return _PINYIN_MAP
 
@@ -117,9 +113,9 @@ def _build_inverted_index() -> None:
                             "market": "A",
                             "sector": s.get("industry", s.get("sector", "")),
                         }
-                logger.info(f"Loaded {len(_all_a_stocks_cache)} stocks from EastMoney cache into search index")
+                logger.info("Loaded %s stocks from EastMoney cache into search index", len)
         except Exception as e:
-            logger.debug(f"Load from EastMoney cache error: {e}")
+            logger.debug("Load from EastMoney cache error: %s", e)
 
         for key, info in _STOCK_INDEX.items():
             mk = f"{info.get('market', 'A')}:{key}"
@@ -143,10 +139,10 @@ def _build_inverted_index() -> None:
                                         "market": market,
                                         "sector": s.get("industry", s.get("sector", "")),
                                     }
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception as e:
+                        logger.debug("获取市场 %s 股票列表失败: %s", market, e)
+            except Exception as e:
+                logger.debug("导入股票列表模块失败: %s", e)
 
         if len(all_stocks) < 100:
             try:
@@ -157,8 +153,8 @@ def _build_inverted_index() -> None:
                     mk = f"{r.get('market', 'A')}:{r.get('code', '')}"
                     if mk not in all_stocks and r.get("code"):
                         all_stocks[mk] = dict(r)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("从数据库加载股票列表失败: %s", e)
 
         _all_stocks = all_stocks
 
@@ -186,10 +182,10 @@ def _build_inverted_index() -> None:
         _name_index = local_name
         _pinyin_index = local_pinyin
         _index_built = True
-        logger.info(f"Search index built: {len(all_stocks)} stocks, {len(local_code)} code prefixes, {len(local_name)} name chars, {len(local_pinyin)} pinyin prefixes")
+        logger.info("Search index built: %s stocks, %s code prefixes, %s name chars, %s pinyin prefixes", len, len, len, len)
 
 
-def build_search_index():
+def build_search_index() -> None:
     _build_inverted_index()
 
 
@@ -198,17 +194,17 @@ async def build_search_index_async() -> int:
         from core.market_data import fetch_all_a_stocks_async
         await fetch_all_a_stocks_async()
     except Exception as e:
-        logger.debug(f"Pre-fetch stocks for index error: {e}")
+        logger.debug("Pre-fetch stocks for index error: %s", e)
     _build_inverted_index()
     return len(_all_stocks)
 
 
-def _ensure_index():
+def _ensure_index() -> None:
     if not _index_built:
         _build_inverted_index()
 
 
-def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> list[dict]:
+def search_stocks(query: str, limit: int = 10, market: str | None = None) -> list[dict]:
     _ensure_index()
 
     if not query or not query.strip():
@@ -232,15 +228,14 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
     for mk, s in _all_stocks.items():
         name = s.get("name", "")
         code = s.get("code", "")
-        if name == raw_q or name == q:
+        if name in (raw_q, q):
             if mk not in results:
                 counter += 1
                 results[mk] = (1, 1.0, s)
-        elif raw_q in name or q in name:
-            if mk not in results:
-                counter += 1
-                score = 0.8 if len(raw_q) == 1 else 0.85
-                results[mk] = (2, score, s)
+        elif (raw_q in name or q in name) and mk not in results:
+            counter += 1
+            score = 0.8 if len(raw_q) == 1 else 0.85
+            results[mk] = (2, score, s)
 
     if is_pinyin_input:
         py_key = q.upper()
@@ -310,7 +305,7 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
     sorted_results = sorted(results.items(), key=lambda x: (x[1][0], -x[1][1]))
 
     output = []
-    for mk, (priority, _score, s) in sorted_results:
+    for _mk, (priority, _score, s) in sorted_results:
         if market and s.get("market", "A") != market:
             continue
         output.append({
@@ -327,10 +322,10 @@ def search_stocks(query: str, limit: int = 10, market: Optional[str] = None) -> 
     return output
 
 
-def get_stock_info(symbol: str) -> Optional[dict]:
+def get_stock_info(symbol: str) -> dict | None:
     _ensure_index()
     symbol_upper = symbol.upper()
-    for mk, s in _all_stocks.items():
+    for _mk, s in _all_stocks.items():
         if s.get("code", "").upper() == symbol_upper:
             return {
                 "code": s.get("code", ""),
@@ -341,7 +336,7 @@ def get_stock_info(symbol: str) -> Optional[dict]:
     return None
 
 
-def get_stock_name(symbol: str) -> Optional[str]:
+def get_stock_name(symbol: str) -> str | None:
     info = get_stock_info(symbol)
     return info.get("name", "") if info else None
 

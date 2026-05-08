@@ -1,16 +1,15 @@
 import numpy as np
 import pandas as pd
-import pytest
 
 from core.auto_auditor import (
+    AnomalyReport,
+    AutoAuditor,
+    FullAuditReport,
     OverfittingDetector,
+    OverfittingReport,
     ReturnAnomalyDetector,
     SignalAnomalyDetector,
-    AutoAuditor,
-    OverfittingReport,
-    AnomalyReport,
     SignalAnomalyReport,
-    FullAuditReport,
 )
 
 

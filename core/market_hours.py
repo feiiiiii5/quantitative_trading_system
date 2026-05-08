@@ -1,5 +1,7 @@
 import logging
 from datetime import date, datetime, time, timedelta
+from typing import Any
+
 import pytz
 
 logger = logging.getLogger(__name__)
@@ -95,7 +97,7 @@ US_HOLIDAYS = _US_HOLIDAYS_2024 | _US_HOLIDAYS_2025 | _US_HOLIDAYS_2026
 
 class MarketHours:
     @staticmethod
-    def get_market_status(market: str) -> dict:
+    def get_market_status(market: str) -> dict[str, Any]:
         if market == "A":
             return MarketHours._a_status()
         elif market == "HK":
@@ -271,4 +273,4 @@ class MarketHours:
     @staticmethod
     def should_fetch_realtime(market: str) -> bool:
         status = MarketHours.get_market_status(market)
-        return status.get("is_open", False)
+        return bool(status.get("is_open", False))

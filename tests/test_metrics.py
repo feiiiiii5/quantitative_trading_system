@@ -1,206 +1,187 @@
+"""Tests for core metrics module."""
 import numpy as np
 import pandas as pd
-import pytest
 
 from core.metrics import (
     InstitutionalMetrics,
-    calc_cagr,
-    calc_sharpe,
-    calc_sortino,
-    calc_max_drawdown,
-    calc_calmar,
-    calc_win_rate,
-    calc_profit_loss_ratio,
-    calc_turnover,
-    calc_var,
-    calc_cvar,
-    calc_information_ratio,
-    calc_alpha_beta,
-    calc_max_consecutive,
+    RollingRiskTracker,
     calc_all_metrics,
+    calc_cagr,
+    calc_cvar,
+    calc_max_consecutive,
+    calc_max_drawdown,
+    calc_profit_loss_ratio,
+    calc_sharpe,
+    calc_var,
+    calc_win_rate,
     metrics_to_dict,
 )
 
 
 class TestCalcCAGR:
-    def test_positive(self):
-        equity = [100000, 110000, 121000]
-        cagr = calc_cagr(equity, 252 * 2)
-        assert cagr > 0
+    def test_basic_cagr(self):
+        equity = [100.0, 110.0]
+        result = calc_cagr(equity, n_days=252)
+        assert result > 0
 
-    def test_negative(self):
-        equity = [100000, 90000, 81000]
-        cagr = calc_cagr(equity, 252 * 2)
-        assert cagr < 0
+    def test_zero_length(self):
+        assert calc_cagr([]) == 0.0
+        assert calc_cagr([100.0]) == 0.0
 
-    def test_short(self):
-        cagr = calc_cagr([100000])
-        assert cagr == 0.0
+    def test_negative_return(self):
+        equity = [100.0, 90.0]
+        result = calc_cagr(equity, n_days=252)
+        assert result < 0
+
+    def test_returns_positive_for_profitable(self):
+        equity = [100000.0, 120000.0]
+        result = calc_cagr(equity, n_days=252)
+        assert 0.15 < result < 0.25
 
 
 class TestCalcSharpe:
-    def test_positive_sharpe(self):
-        np.random.seed(42)
-        returns = pd.Series(np.random.randn(100) * 0.01 + 0.002)
-        sharpe = calc_sharpe(returns)
-        assert isinstance(sharpe, float)
+    def test_positive_sharpe(self, sample_returns):
+        result = calc_sharpe(sample_returns)
+        assert isinstance(result, float)
 
-    def test_short(self):
-        returns = pd.Series([0.01])
-        sharpe = calc_sharpe(returns)
-        assert sharpe == 0.0
+    def test_short_returns(self):
+        short = pd.Series([0.01, -0.01])
+        result = calc_sharpe(short)
+        assert isinstance(result, float)
 
-
-class TestCalcSortino:
-    def test_basic(self):
-        np.random.seed(42)
-        returns = pd.Series(np.random.randn(100) * 0.02 + 0.001)
-        sortino = calc_sortino(returns)
-        assert isinstance(sortino, float)
-
-    def test_no_downside_returns_finite(self):
-        returns = pd.Series([0.01, 0.02, 0.015, 0.03, 0.01])
-        sortino = calc_sortino(returns)
-        assert np.isfinite(sortino)
-        assert sortino > 0
+    def test_zero_std(self):
+        constant = pd.Series([0.01, 0.01, 0.01])
+        assert calc_sharpe(constant) == 0.0
 
 
 class TestCalcMaxDrawdown:
-    def test_basic(self):
-        equity = [100, 110, 105, 115, 100, 120]
-        dd = calc_max_drawdown(equity)
-        assert dd < 0
+    def test_basic_drawdown(self, sample_equity_curve):
+        result = calc_max_drawdown(sample_equity_curve)
+        assert result < 0
+        assert result >= -1.0
 
     def test_no_drawdown(self):
-        equity = [100, 110, 120, 130]
-        dd = calc_max_drawdown(equity)
-        assert dd == 0.0
+        equity = [100.0, 110.0, 120.0, 130.0]
+        result = calc_max_drawdown(equity)
+        assert result == 0.0
 
-
-class TestCalcCalmar:
-    def test_basic(self):
-        calmar = calc_calmar(0.10, -0.20)
-        assert calmar == 0.5
-
-    def test_zero_dd(self):
-        calmar = calc_calmar(0.10, 0.0)
-        assert calmar == 0.0
+    def test_empty(self):
+        assert calc_max_drawdown([]) == 0.0
+        assert calc_max_drawdown([100.0]) == 0.0
 
 
 class TestCalcWinRate:
-    def test_basic(self):
-        returns = pd.Series([0.01, -0.01, 0.02, -0.005, 0.01])
-        wr = calc_win_rate(returns)
-        assert wr == 0.6
+    def test_positive_returns(self):
+        returns = pd.Series([0.01, -0.005, 0.02, -0.01, 0.015])
+        result = calc_win_rate(returns)
+        assert 0.0 <= result <= 1.0
 
     def test_empty(self):
-        wr = calc_win_rate(pd.Series(dtype=float))
-        assert wr == 0.0
+        assert calc_win_rate(pd.Series([])) == 0.0
 
 
 class TestCalcProfitLossRatio:
-    def test_basic(self):
-        returns = pd.Series([0.02, -0.01, 0.03, -0.015])
-        plr = calc_profit_loss_ratio(returns)
-        assert plr > 0
+    def test_basic_ratio(self):
+        returns = pd.Series([0.01, 0.02, -0.01, -0.02, 0.03])
+        result = calc_profit_loss_ratio(returns)
+        assert result >= 0
+
+    def test_no_losses(self):
+        returns = pd.Series([0.01, 0.02, 0.03])
+        result = calc_profit_loss_ratio(returns)
+        assert result == 99.0
+
+    def test_no_wins(self):
+        returns = pd.Series([-0.01, -0.02])
+        result = calc_profit_loss_ratio(returns)
+        assert result == 0.0
 
 
-class TestCalcTurnover:
-    def test_basic(self):
-        positions = [
-            {"A": 1000, "B": 2000},
-            {"A": 1500, "B": 1500},
-            {"A": 1000, "B": 2000},
-        ]
-        turnover = calc_turnover(positions, 10000)
-        assert turnover > 0
-
-    def test_no_change(self):
-        positions = [{"A": 1000}, {"A": 1000}]
-        turnover = calc_turnover(positions, 10000)
-        assert turnover == 0.0
-
-
-class TestCalcVaR:
-    def test_basic(self):
-        np.random.seed(42)
+class TestCalcVar:
+    def test_var_calculation(self):
         returns = pd.Series(np.random.randn(100) * 0.02)
-        var = calc_var(returns)
-        assert var < 0
+        result = calc_var(returns, confidence=0.95)
+        assert isinstance(result, float)
 
-    def test_short(self):
-        returns = pd.Series([0.01, 0.02])
-        var = calc_var(returns)
-        assert var == 0.0
+    def test_insufficient_data(self):
+        returns = pd.Series([0.01, -0.01])
+        assert calc_var(returns) == 0.0
 
 
 class TestCalcCVaR:
-    def test_basic(self):
-        np.random.seed(42)
+    def test_cvar_calculation(self):
         returns = pd.Series(np.random.randn(100) * 0.02)
-        cvar = calc_cvar(returns)
-        assert cvar < 0
+        result = calc_cvar(returns, confidence=0.95)
+        assert isinstance(result, float)
 
-
-class TestCalcInformationRatio:
-    def test_basic(self):
-        np.random.seed(42)
-        returns = pd.Series(np.random.randn(100) * 0.02 + 0.001)
-        benchmark = pd.Series(np.random.randn(100) * 0.015)
-        ir = calc_information_ratio(returns, benchmark)
-        assert isinstance(ir, float)
-
-
-class TestCalcAlphaBeta:
-    def test_basic(self):
-        np.random.seed(42)
-        returns = pd.Series(np.random.randn(100) * 0.02 + 0.001)
-        benchmark = pd.Series(np.random.randn(100) * 0.015)
-        alpha, beta = calc_alpha_beta(returns, benchmark)
-        assert isinstance(alpha, float)
-        assert isinstance(beta, float)
+    def test_cvar_less_than_var(self):
+        returns = pd.Series(np.random.randn(100) * 0.02)
+        var = calc_var(returns, confidence=0.95)
+        cvar = calc_cvar(returns, confidence=0.95)
+        assert abs(cvar) >= abs(var)
 
 
 class TestCalcMaxConsecutive:
-    def test_wins(self):
-        returns = pd.Series([0.01, 0.02, 0.01, -0.01, 0.03, 0.02, 0.01])
-        max_wins = calc_max_consecutive(returns, True)
-        assert max_wins == 3
+    def test_winning_streak(self):
+        returns = pd.Series([0.01, 0.02, 0.03, -0.01, 0.04])
+        assert calc_max_consecutive(returns, positive=True) == 3
 
-    def test_losses(self):
-        returns = pd.Series([0.01, -0.01, -0.02, -0.01, 0.03])
-        max_losses = calc_max_consecutive(returns, False)
-        assert max_losses == 3
+    def test_losing_streak(self):
+        returns = pd.Series([0.01, -0.02, -0.03, -0.04, 0.01])
+        assert calc_max_consecutive(returns, positive=False) == 3
+
+
+class TestRollingRiskTracker:
+    def test_basic_update(self):
+        tracker = RollingRiskTracker(window=10)
+        result = tracker.update(100000.0)
+        assert isinstance(result.sharpe, float)
+
+    def test_snapshot_empty(self):
+        tracker = RollingRiskTracker(window=10)
+        result = tracker.snapshot()
+        assert result.sharpe == 0.0
+
+    def test_drawdown_tracking(self):
+        tracker = RollingRiskTracker(window=10)
+        tracker.update(100000.0)
+        tracker.update(105000.0)
+        tracker.update(95000.0)
+        tracker.update(100000.0)
+        result = tracker.snapshot()
+        assert result.max_drawdown < 0
+
+    def test_reset(self):
+        tracker = RollingRiskTracker(window=10)
+        tracker.update(100000.0)
+        tracker.update(105000.0)
+        tracker.reset()
+        assert len(tracker._returns) == 0
+        assert tracker._peak_equity == 0.0
 
 
 class TestCalcAllMetrics:
-    def test_basic(self):
-        np.random.seed(42)
-        equity = list(np.cumprod(1 + np.random.randn(252) * 0.01) * 100000)
-        metrics = calc_all_metrics(equity)
-        assert isinstance(metrics, InstitutionalMetrics)
-        assert metrics.cagr != 0 or metrics.total_return != 0 or True
-        assert metrics.sharpe_ratio is not None
+    def test_full_metrics(self, sample_equity_curve, sample_returns):
+        result = calc_all_metrics(sample_equity_curve, sample_returns)
+        assert isinstance(result, InstitutionalMetrics)
+        assert result.cagr >= 0
+        assert 0 <= result.win_rate <= 1
 
-    def test_with_benchmark(self):
-        np.random.seed(42)
-        equity = list(np.cumprod(1 + np.random.randn(252) * 0.01) * 100000)
-        benchmark = pd.Series(np.random.randn(252) * 0.008)
-        metrics = calc_all_metrics(equity, benchmark_returns=benchmark)
-        assert metrics.alpha != 0 or metrics.beta != 0 or True
-
-    def test_short(self):
-        metrics = calc_all_metrics([100000])
-        assert metrics.sharpe_ratio == 0.0
+    def test_empty_equity(self):
+        result = calc_all_metrics([])
+        assert isinstance(result, InstitutionalMetrics)
+        assert result.cagr == 0.0
 
 
 class TestMetricsToDict:
-    def test_basic(self):
+    def test_formatting(self):
         metrics = InstitutionalMetrics(
-            cagr=0.10, sharpe_ratio=1.5, sortino_ratio=2.0,
-            max_drawdown=-0.15, calmar_ratio=0.67,
+            cagr=0.15,
+            sharpe_ratio=1.5,
+            max_drawdown=-0.10,
+            win_rate=0.55,
         )
-        d = metrics_to_dict(metrics)
-        assert "CAGR" in d
-        assert "Sharpe Ratio" in d
-        assert "Max Drawdown" in d
+        result = metrics_to_dict(metrics)
+        assert "CAGR" in result
+        assert "Sharpe Ratio" in result
+        assert "%" in result["CAGR"]

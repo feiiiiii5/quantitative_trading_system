@@ -1,51 +1,40 @@
 import logging
-from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
+from core.indicators import calc_adx, calc_atr, calc_chandelier_exit, calc_kelly_fraction
 from core.strategies import (
-    BaseStrategy,
-    BollingerBreakoutStrategy,
+    AdaptiveTrendFollowingStrategy,
+    ATRChannelBreakoutStrategy,
+    ChandeKrollStopStrategy,
+    DonchianChannelStrategy,
     DualMAStrategy,
+    DualThrustStrategy,
+    ElliottWaveAIStrategy,
     KDJStrategy,
     MACDStrategy,
+    MarketMicrostructureStrategy,
+    MeanReversionProStrategy,
     MomentumStrategy,
     MultiFactorConfluenceStrategy,
-    AdaptiveTrendFollowingStrategy,
-    MeanReversionProStrategy,
-    VolatilitySqueezeBreakoutStrategy,
+    OrderFlowImbalanceStrategy,
     RSIMeanReversionStrategy,
     SuperTrendStrategy,
-    IchimokuCloudStrategy,
-    VWAPDeviationStrategy,
-    OrderFlowImbalanceStrategy,
-    RegimeSwitchingStrategy,
-    FractalBreakoutStrategy,
-    WyckoffAccumulationStrategy,
-    ElliottWaveAIStrategy,
-    MarketMicrostructureStrategy,
-    CopulaCorrelationStrategy,
-    QuantileRegressionStrategy,
     TurtleTradingStrategy,
-    DualThrustStrategy,
-    ATRChannelBreakoutStrategy,
-    DonchianChannelStrategy,
-    ChandeKrollStopStrategy,
+    VolatilitySqueezeBreakoutStrategy,
     VolumeWeightedMACDStrategy,
-    SignalType,
-    StrategyResult,
-    TradeSignal,
+    WyckoffAccumulationStrategy,
 )
-from core.backtest import BacktestResult
-from core.indicators import calc_atr, calc_adx, calc_chandelier_exit, calc_kelly_fraction
 
 logger = logging.getLogger(__name__)
 
 
 class MarketRegime(Enum):
+    """策略分配用市场状态（8态细粒度分类），用于自适应策略引擎的仓位和策略权重分配。
+    与 regime_detector.MarketRegime（7态通用分类）不同，本分类更细粒度地
+    区分趋势强度和特殊形态（如空头陷阱、派发顶部）。"""
     STRONG_TREND_UP = "strong_trend_up"
     MILD_TREND_UP = "mild_trend_up"
     HIGH_VOLATILITY_RANGE = "high_volatility_range"
@@ -129,7 +118,7 @@ class QLearningWeightAdapter:
     def __init__(self, n_strategies: int, learning_rate: float = Q_LEARNING_RATE,
                  discount: float = Q_DISCOUNT, epsilon_start: float = 0.3,
                  epsilon_end: float = 0.05, epsilon_decay: float = 0.995,
-                 seed: Optional[int] = None):
+                 seed: int | None = None):
         self._n = n_strategies
         self._lr = learning_rate
         self._discount = discount
@@ -137,10 +126,10 @@ class QLearningWeightAdapter:
         self._epsilon_start = epsilon_start
         self._epsilon_end = epsilon_end
         self._epsilon_decay = epsilon_decay
-        self._q_table: Dict[str, np.ndarray] = {}
+        self._q_table: dict[str, np.ndarray] = {}
         self._rng = np.random.RandomState(seed)
-        self._last_state: Optional[str] = None
-        self._last_action: Optional[int] = None
+        self._last_state: str | None = None
+        self._last_action: int | None = None
         self._trade_count = 0
 
     def _discretize_state(self, regime: MarketRegime, volatility: float, trend: float) -> str:
@@ -149,7 +138,7 @@ class QLearningWeightAdapter:
         return f"{regime.value}_{vol_bin}_{trend_bin}"
 
     def select_weights(self, regime: MarketRegime, volatility: float, trend: float,
-                       base_weights: List[float]) -> List[float]:
+                       base_weights: list[float]) -> list[float]:
         state = self._discretize_state(regime, volatility, trend)
         if state not in self._q_table:
             self._q_table[state] = np.zeros(self._n)
@@ -244,10 +233,9 @@ class MultiTimeframeAnalyzer:
                     score += 0.3
                 elif wma5 < wma10 and wlast < wma5:
                     score -= 0.3
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Weekly trend analysis failed: %s", e)
 
-        # 月线趋势
         try:
             monthly = MultiTimeframeAnalyzer.resample_monthly(daily_df)
             if len(monthly) >= 6:
@@ -258,8 +246,8 @@ class MultiTimeframeAnalyzer:
                     score += 0.3
                 elif mlast < mma3:
                     score -= 0.3
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Monthly trend analysis failed: %s", e)
 
         return max(-1.0, min(1.0, score))
 
@@ -276,7 +264,7 @@ def calc_cvar(returns: np.ndarray, confidence: float = CVAR_CONFIDENCE) -> float
     return float(np.mean(tail)) if len(tail) > 0 else 0.0
 
 
-def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketRegime]:
+def classify_market_regime(df: pd.DataFrame, window: int = 20) -> list[MarketRegime]:
     n = len(df)
     regimes = [MarketRegime.LOW_VOLATILITY_CONSOLIDATION] * n
 
@@ -305,7 +293,7 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
         try:
             segment_c = c[i - window:i]
             segment_v = v[i - window:i]
-            segment_atr = atr_full[i - window:i]
+            atr_full[i - window:i]
 
             adx_val = adx_full[i] if not np.isnan(adx_full[i]) else 0
             returns = np.diff(segment_c) / segment_c[:-1]
@@ -314,9 +302,9 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
 
             vol_x = np.arange(len(segment_v))
             if len(segment_v) > 1:
-                vol_slope = float(np.polyfit(vol_x, segment_v, 1)[0])
+                float(np.polyfit(vol_x, segment_v, 1)[0])
             else:
-                vol_slope = 0
+                pass
 
             ma20 = float(np.mean(segment_c))
             ma10 = float(np.mean(segment_c[-10:])) if len(segment_c) >= 10 else ma20
@@ -332,7 +320,7 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
             if i >= window + 10:
                 support = float(np.min(low_arr[i - window:i - 5]))
                 recent_low = float(np.min(low_arr[i - 5:i + 1]))
-                recent_high = float(np.max(h[i - 3:i + 1]))
+                float(np.max(h[i - 3:i + 1]))
                 recent_vol = float(np.mean(v[i - 3:i + 1]))
                 avg_vol = float(np.mean(v[i - window:i - 5])) if i > window + 5 else 1
                 vol_shrink = avg_vol > 0 and recent_vol < avg_vol * 0.8
@@ -353,13 +341,9 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
                     continue
 
             if is_strong_trend:
-                if deviation > 0.02:
+                if deviation > 0.02 or deviation > 0 or short_deviation > 0:
                     regimes[i] = MarketRegime.STRONG_TREND_UP
-                elif deviation > 0 or short_deviation > 0:
-                    regimes[i] = MarketRegime.STRONG_TREND_UP
-                elif deviation < -0.03:
-                    regimes[i] = MarketRegime.STRONG_TREND_DOWN
-                elif deviation < -0.01:
+                elif deviation < -0.03 or deviation < -0.01:
                     regimes[i] = MarketRegime.STRONG_TREND_DOWN
                 else:
                     if short_deviation > 0:
@@ -391,7 +375,7 @@ def classify_market_regime(df: pd.DataFrame, window: int = 20) -> List[MarketReg
                 else:
                     regimes[i] = MarketRegime.LOW_VOLATILITY_CONSOLIDATION
         except Exception as e:
-            logger.debug(f"Regime classification failed at index {i}: {e}")
+            logger.debug("Regime classification failed at index %s: %s", i, e)
             regimes[i] = MarketRegime.LOW_VOLATILITY_CONSOLIDATION
 
     return regimes
@@ -404,16 +388,16 @@ class AdaptiveStrategyEngine:
         self._stamp_tax = stamp_tax
         self._strategy_perf = {}
         self._dynamic_weights = {}
-        self._q_adapters: Dict[str, QLearningWeightAdapter] = {}
+        self._q_adapters: dict[str, QLearningWeightAdapter] = {}
         self._mtf_analyzer = MultiTimeframeAnalyzer()
-        self._returns_history: List[float] = []
+        self._returns_history: list[float] = []
         self._returns_history_max = 120
 
     def _kelly_position(self, c: np.ndarray, lookback: int = 60) -> float:
         return calc_kelly_fraction(c, lookback, half_kelly=KELLY_FRACTION)
 
     def _calc_chandelier(self, h: np.ndarray, low_arr: np.ndarray, c: np.ndarray,
-                          atr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+                          atr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return calc_chandelier_exit(h, low_arr, c, atr, CHANDELIER_PERIOD, CHANDELIER_MULT)
 
     def _get_q_adapter(self, regime: MarketRegime, n_strategies: int) -> QLearningWeightAdapter:
@@ -446,7 +430,7 @@ class AdaptiveStrategyEngine:
         if len(self._returns_history) < 30:
             return 1.0
         new_rets = np.array(self._returns_history[-60:])
-        for sym, pos_info in existing_positions.items():
+        for _sym, pos_info in existing_positions.items():
             pos_rets = pos_info.get("returns_history")
             if pos_rets is None or len(pos_rets) < 30:
                 continue
@@ -477,9 +461,12 @@ class AdaptiveStrategyEngine:
                     try:
                         score = strategy.generate_score(df.iloc[:i + 1])
                         last_score = score if np.isfinite(score) else last_score
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Regime score generation failed at bar %s: %s", i, e)
                     bar_scores[i:min(i + step, n)] = last_score
+                # 填充初始区间 0..step，使用第一个有效分数避免零值信号
+                if last_score != 0.0:
+                    bar_scores[:step] = last_score
                 regime_scores[name] = bar_scores
             scores[regime] = regime_scores
         return scores
@@ -554,6 +541,9 @@ class AdaptiveStrategyEngine:
         if df is None or len(df) < 50:
             return {"error": "数据不足，至少需要50个交易日"}
 
+        from core.memory_guard import check_and_reclaim_if_needed
+        check_and_reclaim_if_needed()
+
         df = df.copy()
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -624,38 +614,37 @@ class AdaptiveStrategyEngine:
                     "strategies": alloc_items,
                 })
 
-            if regime == MarketRegime.LOW_VOLATILITY_CONSOLIDATION:
-                if position is not None:
-                    current_price = c[i]
-                    atr_val = atr_full[i] if not np.isnan(atr_full[i]) else c[i] * 0.02
-                    ch_stop_val = chandelier_long[i] if not np.isnan(chandelier_long[i]) else 0
-                    trailing_stop = current_price - ATR_STOP_MULTIPLIER * 1.5 * atr_val
-                    if trailing_stop > position.get("trailing_stop", 0):
-                        position["trailing_stop"] = trailing_stop
-                    if ch_stop_val > position.get("chandelier_stop", 0):
-                        position["chandelier_stop"] = ch_stop_val
+            if regime == MarketRegime.LOW_VOLATILITY_CONSOLIDATION and position is not None:
+                current_price = c[i]
+                atr_val = atr_full[i] if not np.isnan(atr_full[i]) else c[i] * 0.02
+                ch_stop_val = chandelier_long[i] if not np.isnan(chandelier_long[i]) else 0
+                trailing_stop = current_price - ATR_STOP_MULTIPLIER * 1.5 * atr_val
+                if trailing_stop > position.get("trailing_stop", 0):
+                    position["trailing_stop"] = trailing_stop
+                if ch_stop_val > position.get("chandelier_stop", 0):
+                    position["chandelier_stop"] = ch_stop_val
 
-                    should_sell = False
-                    sell_reason = ""
-                    if current_price <= position["trailing_stop"]:
-                        should_sell = True
-                        sell_reason = f"低波动收紧止损(止损价={position['trailing_stop']:.2f})"
-                    elif position.get("chandelier_stop") and current_price <= position["chandelier_stop"]:
-                        should_sell = True
-                        sell_reason = f"Chandelier止损(止损价={position['chandelier_stop']:.2f})"
+                should_sell = False
+                sell_reason = ""
+                if current_price <= position["trailing_stop"]:
+                    should_sell = True
+                    sell_reason = f"低波动收紧止损(止损价={position['trailing_stop']:.2f})"
+                elif position.get("chandelier_stop") and current_price <= position["chandelier_stop"]:
+                    should_sell = True
+                    sell_reason = f"Chandelier止损(止损价={position['chandelier_stop']:.2f})"
 
-                    if should_sell:
-                        date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
-                        result = self._record_trade(
-                            trades, "sell", current_price, shares,
-                            self._commission, self._stamp_tax, date_str, i,
-                            sell_reason, position["entry_price"])
-                        cash += result["revenue"] - result["total_fee"]
-                        trades[-1]["hold_days"] = i - position["entry_idx"]
-                        sell_bar_set.add(i)
-                        last_sell_bar = i
-                        shares = 0
-                        position = None
+                if should_sell:
+                    date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
+                    result = self._record_trade(
+                        trades, "sell", current_price, shares,
+                        self._commission, self._stamp_tax, date_str, i,
+                        sell_reason, position["entry_price"])
+                    cash += result["revenue"] - result["total_fee"]
+                    trades[-1]["hold_days"] = i - position["entry_idx"]
+                    sell_bar_set.add(i)
+                    last_sell_bar = i
+                    shares = 0
+                    position = None
 
             buy_score = 0.0
             sell_score = 0.0
@@ -769,7 +758,7 @@ class AdaptiveStrategyEngine:
                                 if max_shares_by_amount > 0 and sell_shares > max_shares_by_amount:
                                     sell_shares = max_shares_by_amount
 
-                    revenue = sell_shares * fill_price
+                    sell_shares * fill_price
                     date_str = str(dates_col[i])[:10] if i < len(dates_col) else ""
                     result = self._record_trade(
                         trades, "sell", fill_price, sell_shares,
@@ -921,12 +910,37 @@ class AdaptiveStrategyEngine:
             shares = 0
             position = None
 
+        stats = self._compute_backtest_stats(
+            trades, equity_curve, c, dates_col,
+            buy_bar_set, sell_bar_set, df,
+            opens, h, low_arr, mtf_score,
+            market_regime_labels, strategy_allocation_records,
+        )
+        return stats
+
+    def _compute_backtest_stats(
+        self,
+        trades: list,
+        equity_curve: list,
+        c: np.ndarray,
+        dates_col,
+        buy_bar_set: set,
+        sell_bar_set: set,
+        df: pd.DataFrame,
+        opens: np.ndarray,
+        h: np.ndarray,
+        low_arr: np.ndarray,
+        mtf_score: float,
+        market_regime_labels: dict,
+        strategy_allocation_records: list,
+    ) -> dict:
+        """从回测交易记录中计算统计指标，与run()方法解耦"""
         dates_list = []
         for d in dates_col:
             ds = str(d)[:10] if hasattr(d, "__str__") else str(d)[:10]
             dates_list.append(ds)
 
-        peak = equity_curve[0]
+        equity_curve[0]
         eq_arr = np.array(equity_curve)
         peak_arr = np.maximum.accumulate(eq_arr)
         drawdown_curve = ((peak_arr - eq_arr) / np.where(peak_arr > 0, peak_arr, 1) * 100).tolist()
@@ -942,8 +956,8 @@ class AdaptiveStrategyEngine:
         total_loss = sum(abs(t.get("pnl", 0)) for t in sell_trades if t.get("pnl", 0) <= 0)
         profit_factor = (total_win / total_loss) if total_loss > 0 else 999 if total_win > 0 else 0
 
-        avg_profit = np.mean([t["pnl"] for t in sell_trades if t.get("pnl", 0) > 0]) if win_trades > 0 else 0
-        avg_loss = np.mean([abs(t["pnl"]) for t in sell_trades if t.get("pnl", 0) <= 0]) if loss_trades > 0 else 0
+        np.mean([t["pnl"] for t in sell_trades if t.get("pnl", 0) > 0]) if win_trades > 0 else 0
+        np.mean([abs(t["pnl"]) for t in sell_trades if t.get("pnl", 0) <= 0]) if loss_trades > 0 else 0
 
         hold_days_list = [t.get("hold_days", 0) for t in sell_trades if t.get("hold_days")]
         avg_hold_days = np.mean(hold_days_list) if hold_days_list else 0

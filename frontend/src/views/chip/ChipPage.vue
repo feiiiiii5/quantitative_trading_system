@@ -1,284 +1,783 @@
 <template>
   <div class="chip-page">
-    <div class="page-hero">
-      <h1 class="page-title">筹码分布</h1>
-      <p class="page-subtitle">分析持仓成本结构，判断支撑阻力</p>
-    </div>
-
-    <div class="search-bar">
-      <div class="search-wrap">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-        </svg>
-        <input v-model="symbolInput" class="apple-input" placeholder="输入股票代码" @keydown.enter="fetchChip" />
-        <button class="apple-btn apple-btn-primary" @click="fetchChip">分析</button>
-      </div>
-      <div class="quick-picks">
-        <span class="pick-label">热门</span>
-        <button v-for="p in quickPicks" :key="p.code" class="pick-btn" :class="{ active: symbolInput === p.code }" @click="symbolInput = p.code; fetchChip()">{{ p.name }}</button>
-      </div>
-    </div>
-
-    <div v-if="loading" class="loading-state">
-      <div class="loading-spinner" /><span>分析中...</span>
-    </div>
-    <div v-else-if="!chipData" class="empty-state">
-      <div class="empty-icon">📊</div>
-      <p>输入股票代码查看筹码分布</p>
-    </div>
-    <template v-else>
-      <div class="chip-overview">
-        <div class="overview-card apple-card">
-          <div class="apple-metric">
-            <div class="apple-metric-label">当前价</div>
-            <div class="apple-metric-value mono">{{ chipData.current_price.toFixed(2) }}</div>
+    <div class="chip-top">
+      <div class="chart-col">
+        <div class="surface-panel chart-panel">
+          <div class="panel-header">
+            <span class="panel-title">{{ symbol ? `CHIP DIST — ${symbol}` : 'CHIP DISTRIBUTION' }}</span>
+            <div class="symbol-input-bar">
+              <input
+                v-model="inputSymbol"
+                placeholder="ENTER CODE"
+                class="term-input"
+                @keyup.enter="loadChip"
+              />
+              <button class="term-btn" @click="loadChip" :disabled="!inputSymbol.trim()">LOAD</button>
+            </div>
           </div>
-        </div>
-        <div class="overview-card apple-card">
-          <div class="apple-metric">
-            <div class="apple-metric-label">平均成本</div>
-            <div class="apple-metric-value mono" :class="chipData.current_price > chipData.avg_cost ? 'text-rise' : 'text-fall'">{{ chipData.avg_cost.toFixed(2) }}</div>
+          <div v-if="loading" class="panel-empty">LOADING<span class="blink-cursor">_</span></div>
+          <div v-else-if="chipData" ref="canvasContainerRef" class="canvas-wrap">
+            <canvas ref="canvasRef" @mousemove="onCanvasMouseMove" @mouseleave="onCanvasMouseLeave" />
+            <div v-if="canvasTooltip.visible" class="canvas-tooltip" :style="{ left: canvasTooltip.x + 'px', top: canvasTooltip.y + 'px' }">
+              <span class="ct-price">¥{{ canvasTooltip.price }}</span>
+              <span class="ct-pct">{{ canvasTooltip.pct }}%</span>
+              <span class="ct-zone" :class="canvasTooltip.zone === 'PROFIT' ? 'zone-profit' : 'zone-loss'">{{ canvasTooltip.zone }}</span>
+            </div>
           </div>
-        </div>
-        <div class="overview-card apple-card">
-          <div class="apple-metric">
-            <div class="apple-metric-label">获利比例</div>
-            <div class="apple-metric-value mono" :class="chipData.profit_ratio > 0.5 ? 'text-rise' : 'text-fall'">{{ (chipData.profit_ratio * 100).toFixed(1) }}%</div>
-          </div>
-        </div>
-        <div class="overview-card apple-card">
-          <div class="apple-metric">
-            <div class="apple-metric-label">集中度</div>
-            <div class="apple-metric-value mono">{{ (chipData.concentration * 100).toFixed(1) }}%</div>
-          </div>
-        </div>
-        <div class="overview-card apple-card">
-          <div class="apple-metric">
-            <div class="apple-metric-label">支撑位</div>
-            <div class="apple-metric-value mono text-fall">{{ chipData.support_price.toFixed(2) }}</div>
-          </div>
-        </div>
-        <div class="overview-card apple-card">
-          <div class="apple-metric">
-            <div class="apple-metric-label">阻力位</div>
-            <div class="apple-metric-value mono text-rise">{{ chipData.resistance_price.toFixed(2) }}</div>
-          </div>
+          <div v-else class="panel-empty">ENTER A STOCK CODE TO VIEW CHIP DISTRIBUTION</div>
         </div>
       </div>
 
-      <div class="chip-chart-area apple-card">
-        <div class="chart-title">筹码分布图</div>
-        <div class="chart-container" ref="chartRef">
-          <canvas ref="canvasRef" />
+      <div class="info-col">
+        <div class="surface-panel">
+          <div class="panel-header"><span class="panel-title">KEY METRICS</span></div>
+          <div v-if="chipData" class="metrics-grid">
+            <div class="metric-cell">
+              <span class="mc-label">PROFIT RATIO</span>
+              <span class="mc-value" :class="chipData.profit_ratio >= 0.5 ? 'val-profit' : 'val-loss'">
+                {{ safeToFixed((chipData.profit_ratio ?? 0) * 100, 1) }}%
+              </span>
+            </div>
+            <div class="metric-cell">
+              <span class="mc-label">CONCENTRATION</span>
+              <span class="mc-value">{{ safeToFixed((chipData.concentration ?? 0) * 100, 1) }}%</span>
+            </div>
+            <div class="metric-cell">
+              <span class="mc-label">SUPPORT</span>
+              <span class="mc-value val-support">{{ safeToFixed(chipData.support_price, 2) }}</span>
+            </div>
+            <div class="metric-cell">
+              <span class="mc-label">RESISTANCE</span>
+              <span class="mc-value val-resist">{{ safeToFixed(chipData.resistance_price, 2) }}</span>
+            </div>
+            <div class="metric-cell">
+              <span class="mc-label">PEAK COST</span>
+              <span class="mc-value">{{ safeToFixed(chipData.peak_price, 2) }}</span>
+            </div>
+            <div class="metric-cell">
+              <span class="mc-label">AVG COST</span>
+              <span class="mc-value val-avg-cost">{{ safeToFixed(chipData.avg_cost, 2) }}</span>
+            </div>
+          </div>
+          <div v-else class="panel-empty">NO DATA</div>
         </div>
-      </div>
 
-      <div v-if="chipData.fire" class="chip-fire apple-card">
-        <div class="fire-header">
-          <h3 class="fire-title">筹码研判</h3>
-          <span class="apple-badge" :class="fireBadgeClass(chipData.fire.status)">{{ fireStatusLabel(chipData.fire.status) }}</span>
+        <div v-if="chipData?.chip_bands?.length" class="surface-panel">
+          <div class="panel-header"><span class="panel-title">CHIP BANDS</span></div>
+          <div class="bands-list">
+            <div v-for="(band, idx) in chipData.chip_bands" :key="idx" class="band-row">
+              <span class="band-range">{{ band.range }}</span>
+              <div class="band-bar-track">
+                <div class="band-bar-fill" :style="{ width: (band.weight * 100).toFixed(1) + '%' }" />
+              </div>
+              <span class="band-weight">{{ safeToFixed(band.weight * 100, 1) }}%</span>
+            </div>
+          </div>
         </div>
-        <div class="fire-signal">{{ chipData.fire.signal }}</div>
-        <div class="fire-details" v-if="chipData.fire.short_concentration !== undefined">
-          <div class="detail-row"><span>短期集中度</span><span class="mono">{{ (chipData.fire.short_concentration * 100).toFixed(1) }}%</span></div>
-          <div class="detail-row"><span>中期集中度</span><span class="mono">{{ (chipData.fire.mid_concentration! * 100).toFixed(1) }}%</span></div>
-          <div class="detail-row"><span>长期集中度</span><span class="mono">{{ (chipData.fire.long_concentration! * 100).toFixed(1) }}%</span></div>
+
+        <div v-if="chipData?.fire" class="surface-panel">
+          <div class="panel-header">
+            <span class="panel-title">CHIP FIRE</span>
+            <span class="fire-status" :class="chipData.fire.signal === 'bullish' ? 'fire-bull' : chipData.fire.signal === 'bearish' ? 'fire-bear' : 'fire-neutral'">
+              {{ (chipData.fire.signal ?? chipData.fire.status ?? '—').toUpperCase() }}
+            </span>
+          </div>
+          <div class="fire-grid">
+            <div v-if="chipData.fire.short_concentration != null" class="fire-cell">
+              <span class="fc-label">SHORT CONC</span>
+              <span class="fc-value">{{ safeToFixed(chipData.fire.short_concentration * 100, 1) }}%</span>
+            </div>
+            <div v-if="chipData.fire.mid_concentration != null" class="fire-cell">
+              <span class="fc-label">MID CONC</span>
+              <span class="fc-value">{{ safeToFixed(chipData.fire.mid_concentration * 100, 1) }}%</span>
+            </div>
+            <div v-if="chipData.fire.long_concentration != null" class="fire-cell">
+              <span class="fc-label">LONG CONC</span>
+              <span class="fc-value">{{ safeToFixed(chipData.fire.long_concentration * 100, 1) }}%</span>
+            </div>
+            <div v-if="chipData.fire.avg_cost_short != null" class="fire-cell">
+              <span class="fc-label">AVG COST S</span>
+              <span class="fc-value">{{ safeToFixed(chipData.fire.avg_cost_short, 2) }}</span>
+            </div>
+            <div v-if="chipData.fire.avg_cost_mid != null" class="fire-cell">
+              <span class="fc-label">AVG COST M</span>
+              <span class="fc-value">{{ safeToFixed(chipData.fire.avg_cost_mid, 2) }}</span>
+            </div>
+            <div v-if="chipData.fire.avg_cost_long != null" class="fire-cell">
+              <span class="fc-label">AVG COST L</span>
+              <span class="fc-value">{{ safeToFixed(chipData.fire.avg_cost_long, 2) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="surface-panel">
+          <div class="panel-header"><span class="panel-title">ANALYSIS</span></div>
+          <div v-if="chipData" class="analysis-body">
+            <div class="analysis-row">
+              <span class="an-label">PROFIT RATIO</span>
+              <span class="an-value" :class="chipData.profit_ratio >= 0.5 ? 'val-profit' : chipData.profit_ratio <= 0.2 ? 'val-loss' : ''">
+                {{ chipData.profit_ratio >= 0.5 ? 'BULLISH — MAJORITY PROFITABLE' : chipData.profit_ratio <= 0.2 ? 'BEARISH — MAJORITY TRAPPED' : 'NEUTRAL — MIXED SIGNALS' }}
+              </span>
+            </div>
+            <div class="analysis-row">
+              <span class="an-label">CONCENTRATION</span>
+              <span class="an-value" :class="chipData.concentration >= 0.6 ? 'val-profit' : ''">
+                {{ chipData.concentration >= 0.6 ? 'HIGH — STRONG CONSENSUS' : chipData.concentration <= 0.3 ? 'LOW — DISPERSED' : 'MODERATE' }}
+              </span>
+            </div>
+            <div class="analysis-row">
+              <span class="an-label">SUPPORT / RESIST</span>
+              <span class="an-value">{{ safeToFixed(chipData.support_price, 2) }} / {{ safeToFixed(chipData.resistance_price, 2) }}</span>
+            </div>
+          </div>
+          <div v-else class="panel-empty">NO DATA</div>
         </div>
       </div>
-    </template>
+    </div>
+
+    <div class="surface-panel">
+      <div class="panel-header"><span class="panel-title">POPULAR STOCKS</span></div>
+      <div class="popular-list">
+        <button
+          v-for="s in popularSymbols"
+          :key="s"
+          class="popular-tag"
+          :class="{ active: symbol === s }"
+          @click="quickLoad(s)"
+        >{{ s }}</button>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
+import { createLogger } from '@/composables/useLogger'
+import { useRequestCancel } from '@/composables/useRequestCancel'
+import { useApiError } from '@/composables/useApiError'
+import { safeToFixed } from '@/utils/format'
 import { api } from '@/api'
 import type { ChipData } from '@/types'
 
+const log = createLogger('Chip')
+const { handleApiError } = useApiError()
+
 const route = useRoute()
-const symbolInput = ref('')
+const props = defineProps<{ symbol?: string }>()
+
+const inputSymbol = ref('')
 const chipData = ref<ChipData | null>(null)
 const loading = ref(false)
-const canvasRef = ref<HTMLCanvasElement>()
-const chartRef = ref<HTMLDivElement>()
+const symbol = ref('')
+const { cancelAll } = useRequestCancel()
 
-const quickPicks = [
-  { code: '600519', name: '贵州茅台' },
-  { code: '000858', name: '五粮液' },
-  { code: '601318', name: '中国平安' },
-  { code: '300750', name: '宁德时代' },
-  { code: '002594', name: '比亚迪' },
-  { code: '600036', name: '招商银行' },
+const popularSymbols = [
+  '600519', '000858', '601318', '000001', '600036',
+  '601012', '000333', '002594', '601888', '300750',
 ]
 
-function fireStatusLabel(status: string) {
-  const map: Record<string, string> = {
-    highly_concentrated: '高度集中',
-    concentrated_above_cost: '集中偏多',
-    concentrated_below_cost: '集中偏空',
-    dispersed: '筹码分散',
-    moderate: '分布适中',
-    insufficient_data: '数据不足',
-  }
-  return map[status] || status
+const canvasContainerRef = ref<HTMLDivElement>()
+const canvasRef = ref<HTMLCanvasElement>()
+const canvasTooltip = ref<{ visible: boolean; x: number; y: number; price: string; pct: string; zone: string }>({
+  visible: false, x: 0, y: 0, price: '', pct: '', zone: '',
+})
+
+let resizeObserver: ResizeObserver | null = null
+let animFrameId: number | null = null
+
+const PAD = { top: 28, right: 72, bottom: 32, left: 72 }
+
+function getThemeVar(name: string, fallback: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback
 }
 
-function fireBadgeClass(status: string) {
-  const map: Record<string, string> = {
-    highly_concentrated: 'apple-badge-rise',
-    concentrated_above_cost: 'apple-badge-warn',
-    concentrated_below_cost: 'apple-badge-accent',
-    dispersed: '',
-    moderate: 'apple-badge-fall',
-    insufficient_data: '',
-  }
-  return map[status] || ''
-}
-
-async function fetchChip() {
-  const symbol = symbolInput.value.trim()
-  if (!symbol) return
-  loading.value = true
-  try {
-    chipData.value = await api.chip.distribution(symbol)
-    loading.value = false
-    await nextTick()
-    drawChart()
-  } catch {
-    chipData.value = null
-    loading.value = false
-  }
-}
-
-function drawChart() {
-  if (!chipData.value || !canvasRef.value || !chartRef.value) return
+function drawButterfly(): void {
   const canvas = canvasRef.value
-  const container = chartRef.value
+  const container = canvasContainerRef.value
+  if (!canvas || !container || !chipData.value) return
+
+  const rect = container.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) return
+
   const dpr = window.devicePixelRatio || 1
-  const w = container.clientWidth
-  const h = 320
+  const w = rect.width
+  const h = rect.height
   canvas.width = w * dpr
   canvas.height = h * dpr
   canvas.style.width = w + 'px'
   canvas.style.height = h + 'px'
-  const ctx = canvas.getContext('2d')!
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
   ctx.scale(dpr, dpr)
-
-  const data = chipData.value
-  const prices = data.prices
-  const dist = data.distribution
-  if (!prices.length || !dist.length) return
-
-  const pad = { top: 24, right: 70, bottom: 30, left: 70 }
-  const cw = w - pad.left - pad.right
-  const ch = h - pad.top - pad.bottom
-  const maxDist = Math.max(...dist)
-  const minP = Math.min(...prices)
-  const maxP = Math.max(...prices)
-  const priceRange = maxP - minP || 1
-
   ctx.clearRect(0, 0, w, h)
 
-  const cs = getComputedStyle(document.documentElement)
-  const borderColor = cs.getPropertyValue('--border').trim() || '#333'
-  const tertColor = cs.getPropertyValue('--text-tertiary').trim() || '#888'
-  const riseColor = cs.getPropertyValue('--rise').trim() || '#ff3b30'
-  const fallColor = cs.getPropertyValue('--fall').trim() || '#34c759'
+  const { prices, distribution, current_price, avg_cost, support_price, resistance_price } = chipData.value
+  if (!prices.length || !distribution.length) return
 
-  ctx.strokeStyle = borderColor
-  ctx.lineWidth = 0.5
+  const plotW = w - PAD.left - PAD.right
+  const plotH = h - PAD.top - PAD.bottom
+  const minPrice = Math.min(...prices)
+  const maxPrice = Math.max(...prices)
+  const priceRange = maxPrice - minPrice || 1
+  const maxDist = Math.max(...distribution) || 1
+  const centerX = PAD.left + plotW / 2
+
+  const priceToY = (p: number): number => PAD.top + plotH - ((p - minPrice) / priceRange) * plotH
+
+  const profitColor = getThemeVar('--fall', '#00e676')
+  const lossColor = getThemeVar('--rise', '#ff3b3b')
+  const warnColor = getThemeVar('--warn', '#ffd600')
+  const purpleColor = getThemeVar('--purple', '#e040fb')
+  const labelColor = getThemeVar('--text-tertiary', '#55556a')
+  const gridColor = getThemeVar('--border-hair', 'rgba(255,255,255,0.06)')
+
+  ctx.strokeStyle = gridColor
+  ctx.lineWidth = 1
   for (let i = 0; i <= 4; i++) {
-    const y = pad.top + (ch / 4) * i
+    const y = PAD.top + (plotH / 4) * i
     ctx.beginPath()
-    ctx.moveTo(pad.left, y)
-    ctx.lineTo(w - pad.right, y)
+    ctx.moveTo(PAD.left, y)
+    ctx.lineTo(PAD.left + plotW, y)
     ctx.stroke()
-    const price = maxP - (priceRange / 4) * i
-    ctx.fillStyle = tertColor
-    ctx.font = '11px monospace'
-    ctx.textAlign = 'right'
-    ctx.fillText(price.toFixed(2), pad.left - 8, y + 4)
   }
+
+  ctx.strokeStyle = gridColor
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(centerX, PAD.top)
+  ctx.lineTo(centerX, PAD.top + plotH)
+  ctx.stroke()
 
   for (let i = 0; i < prices.length; i++) {
-    const y = pad.top + ((maxP - prices[i]) / priceRange) * ch
-    const barW = (dist[i] / maxDist) * cw * 0.4
-    const isAbove = prices[i] <= data.current_price
-    ctx.fillStyle = isAbove ? riseColor + '60' : fallColor + '60'
-    ctx.fillRect(pad.left + cw * 0.3, y - ch / prices.length / 2, barW, Math.max(ch / prices.length, 1))
+    const price = prices[i]
+    const dist = distribution[i]
+    if (dist <= 0) continue
+
+    const y = priceToY(price)
+    const barLen = (dist / maxDist) * (plotW / 2 - 4)
+    const isProfit = price <= current_price
+
+    if (isProfit) {
+      const grad = ctx.createLinearGradient(centerX, y, centerX - barLen, y)
+      grad.addColorStop(0, profitColor + '33')
+      grad.addColorStop(1, profitColor + 'cc')
+      ctx.fillStyle = grad
+      ctx.fillRect(centerX - barLen, y - 1, barLen, 2)
+    } else {
+      const grad = ctx.createLinearGradient(centerX, y, centerX + barLen, y)
+      grad.addColorStop(0, lossColor + '33')
+      grad.addColorStop(1, lossColor + 'cc')
+      ctx.fillStyle = grad
+      ctx.fillRect(centerX, y - 1, barLen, 2)
+    }
   }
 
-  const curY = pad.top + ((maxP - data.current_price) / priceRange) * ch
-  ctx.strokeStyle = '#ffd60a'
-  ctx.lineWidth = 1.5
-  ctx.setLineDash([5, 4])
-  ctx.beginPath()
-  ctx.moveTo(pad.left, curY)
-  ctx.lineTo(w - pad.right, curY)
-  ctx.stroke()
-  ctx.setLineDash([])
-  ctx.fillStyle = '#ffd60a'
-  ctx.font = '11px sans-serif'
-  ctx.textAlign = 'left'
-  ctx.fillText('当前价 ' + data.current_price.toFixed(2), w - pad.right + 6, curY + 4)
+  const drawHLine = (p: number, color: string, dash: number[], width: number, label: string, side: 'left' | 'right') => {
+    const y = priceToY(p)
+    ctx.beginPath()
+    ctx.setLineDash(dash)
+    ctx.strokeStyle = color
+    ctx.lineWidth = width
+    ctx.moveTo(PAD.left, y)
+    ctx.lineTo(PAD.left + plotW, y)
+    ctx.stroke()
+    ctx.setLineDash([])
 
-  const avgY = pad.top + ((maxP - data.avg_cost) / priceRange) * ch
-  ctx.strokeStyle = '#bf5af2'
-  ctx.lineWidth = 1.5
-  ctx.setLineDash([5, 4])
-  ctx.beginPath()
-  ctx.moveTo(pad.left, avgY)
-  ctx.lineTo(w - pad.right, avgY)
-  ctx.stroke()
-  ctx.setLineDash([])
-  ctx.fillStyle = '#bf5af2'
-  ctx.fillText('成本 ' + data.avg_cost.toFixed(2), w - pad.right + 6, avgY + 4)
+    ctx.font = '10px JetBrains Mono, monospace'
+    const textW = ctx.measureText(label).width + 10
+    if (side === 'right') {
+      ctx.fillStyle = color
+      ctx.fillRect(PAD.left + plotW + 2, y - 8, textW, 16)
+      ctx.fillStyle = '#000'
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(label, PAD.left + plotW + 7, y)
+    } else {
+      ctx.fillStyle = color
+      ctx.fillRect(PAD.left - textW - 2, y - 8, textW, 16)
+      ctx.fillStyle = '#000'
+      ctx.textAlign = 'right'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(label, PAD.left - 7, y)
+    }
+  }
+
+  drawHLine(current_price, warnColor, [6, 4], 2, `CUR ${safeToFixed(current_price, 2)}`, 'right')
+  drawHLine(avg_cost, purpleColor, [4, 3], 1.5, `AVG ${safeToFixed(avg_cost, 2)}`, 'left')
+
+  const drawSRLine = (p: number, color: string, label: string) => {
+    const y = priceToY(p)
+    if (y < PAD.top || y > PAD.top + plotH) return
+    ctx.beginPath()
+    ctx.setLineDash([2, 4])
+    ctx.strokeStyle = color + '88'
+    ctx.lineWidth = 1
+    ctx.moveTo(PAD.left, y)
+    ctx.lineTo(PAD.left + plotW, y)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    ctx.fillStyle = color + '44'
+    ctx.font = '9px JetBrains Mono, monospace'
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(label, PAD.left + plotW - 4, y - 6)
+  }
+
+  drawSRLine(support_price, profitColor, 'SUPPORT')
+  drawSRLine(resistance_price, lossColor, 'RESIST')
+
+  ctx.font = '9px JetBrains Mono, monospace'
+  ctx.fillStyle = profitColor + '99'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'top'
+  ctx.fillText('PROFIT', centerX - plotW / 4, PAD.top + plotH + 8)
+
+  ctx.fillStyle = lossColor + '99'
+  ctx.fillText('TRAPPED', centerX + plotW / 4, PAD.top + plotH + 8)
+
+  const tickCount = Math.min(6, prices.length)
+  const step = Math.max(1, Math.floor(prices.length / tickCount))
+  ctx.fillStyle = labelColor
+  ctx.font = '9px JetBrains Mono, monospace'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'top'
+  for (let i = 0; i < prices.length; i += step) {
+    const y = priceToY(prices[i])
+    ctx.fillText(safeToFixed(prices[i], 2), centerX, y + 3)
+  }
+}
+
+function onCanvasMouseMove(e: MouseEvent): void {
+  const canvas = canvasRef.value
+  const container = canvasContainerRef.value
+  if (!canvas || !container || !chipData.value) return
+
+  const rect = canvas.getBoundingClientRect()
+  const mouseX = e.clientX - rect.left
+  const mouseY = e.clientY - rect.top
+
+  const { prices, distribution, current_price } = chipData.value
+  const w = rect.width
+  const h = rect.height
+  const plotW = w - PAD.left - PAD.right
+  const plotH = h - PAD.top - PAD.bottom
+  const minPrice = Math.min(...prices)
+  const maxPrice = Math.max(...prices)
+  const priceRange = maxPrice - minPrice || 1
+  const centerX = PAD.left + plotW / 2
+  const maxDist = Math.max(...distribution) || 1
+
+  let found = false
+  for (let i = 0; i < prices.length; i++) {
+    const price = prices[i]
+    const dist = distribution[i]
+    if (dist <= 0) continue
+
+    const y = PAD.top + plotH - ((price - minPrice) / priceRange) * plotH
+    const barLen = (dist / maxDist) * (plotW / 2 - 4)
+    const isProfit = price <= current_price
+
+    const left = isProfit ? centerX - barLen : centerX
+    const right = isProfit ? centerX : centerX + barLen
+
+    if (mouseX >= left && mouseX <= right && mouseY >= y - 6 && mouseY <= y + 6) {
+      canvasTooltip.value = {
+        visible: true,
+        x: e.clientX - rect.left + 14,
+        y: e.clientY - rect.top - 28,
+        price: safeToFixed(price, 2),
+        pct: (dist * 100).toFixed(2),
+        zone: isProfit ? 'PROFIT' : 'LOSS',
+      }
+      found = true
+      break
+    }
+  }
+
+  if (!found) {
+    canvasTooltip.value.visible = false
+  }
+}
+
+function onCanvasMouseLeave(): void {
+  canvasTooltip.value.visible = false
+}
+
+function setupResize(): void {
+  if (resizeObserver) {
+    if (canvasContainerRef.value) resizeObserver.unobserve(canvasContainerRef.value)
+    resizeObserver.disconnect()
+    resizeObserver = null
+  }
+  if (!canvasContainerRef.value) return
+  resizeObserver = new ResizeObserver(() => {
+    if (animFrameId) cancelAnimationFrame(animFrameId)
+    animFrameId = requestAnimationFrame(drawButterfly)
+  })
+  resizeObserver.observe(canvasContainerRef.value)
+}
+
+async function loadChip() {
+  const s = inputSymbol.value.trim()
+  if (!s) return
+  symbol.value = s
+  loading.value = true
+  try {
+    chipData.value = await api.chip.distribution(s)
+    await nextTick()
+    drawButterfly()
+    setupResize()
+  } catch (err) {
+    handleApiError(err, '加载筹码分布失败')
+    chipData.value = null
+  } finally {
+    loading.value = false
+  }
+}
+
+function quickLoad(s: string) {
+  inputSymbol.value = s
+  loadChip()
 }
 
 onMounted(() => {
-  const sym = route.params.symbol as string
-  if (sym) {
-    symbolInput.value = sym
-    fetchChip()
+  const routeSymbol = (route.params.symbol as string) || props.symbol
+  if (routeSymbol) {
+    inputSymbol.value = routeSymbol
+    loadChip()
   }
 })
 
-watch([() => chipData.value, () => loading.value], () => {
-  if (chipData.value && !loading.value) {
-    nextTick(drawChart)
+watch(() => route.params.symbol, (newSymbol) => {
+  if (newSymbol) {
+    inputSymbol.value = newSymbol as string
+    loadChip()
   }
+})
+
+watch(() => chipData.value, () => {
+  nextTick(drawButterfly)
+})
+
+onUnmounted(() => {
+  cancelAll()
+  if (animFrameId) {
+    cancelAnimationFrame(animFrameId)
+    animFrameId = null
+  }
+  if (resizeObserver && canvasContainerRef.value) {
+    resizeObserver.unobserve(canvasContainerRef.value)
+    resizeObserver.disconnect()
+  }
+  resizeObserver = null
 })
 </script>
 
 <style scoped>
-.chip-page { max-width: 960px; margin: 0 auto; }
-.page-hero { margin-bottom: var(--space-6); }
-.page-title { font-size: var(--text-3xl); font-weight: 700; letter-spacing: -0.03em; color: var(--text-primary); line-height: var(--leading-tight); }
-.page-subtitle { font-size: var(--text-md); color: var(--text-secondary); margin-top: var(--space-2); }
-.search-bar { margin-bottom: var(--space-6); }
-.search-wrap { display: flex; align-items: center; gap: var(--space-3); }
-.search-wrap svg { color: var(--text-tertiary); flex-shrink: 0; }
-.search-wrap .apple-input { flex: 0 0 160px; }
-.quick-picks { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); }
-.pick-label { font-size: var(--text-xs); color: var(--text-tertiary); font-weight: 500; }
-.pick-btn { padding: 3px 12px; border-radius: 100px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-secondary); font-size: var(--text-xs); font-family: var(--font-sans); cursor: pointer; transition: all var(--transition-fast); font-weight: 500; }
-.pick-btn:hover { border-color: var(--accent); color: var(--accent); }
-.pick-btn.active { background: var(--accent-muted); border-color: var(--accent); color: var(--accent); }
-.loading-state { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); padding: var(--space-16); color: var(--text-tertiary); }
-.loading-spinner { width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.chip-overview { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--space-3); margin-bottom: var(--space-5); }
-.overview-card { padding: var(--space-4); }
-.chip-chart-area { padding: var(--space-5); margin-bottom: var(--space-5); }
-.chart-title { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-4); font-weight: 600; }
-.chart-container { width: 100%; height: 320px; }
-.chart-container canvas { display: block; }
-.chip-fire { padding: var(--space-5); }
-.fire-header { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
-.fire-title { font-size: var(--text-md); font-weight: 600; color: var(--text-primary); }
-.fire-signal { font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-4); line-height: 1.5; }
-.fire-details { display: flex; flex-direction: column; gap: var(--space-2); }
-.detail-row { display: flex; justify-content: space-between; font-size: var(--text-sm); color: var(--text-secondary); padding: var(--space-2) 0; border-bottom: 1px solid var(--border-subtle); }
-.empty-state { text-align: center; padding: var(--space-16); color: var(--text-tertiary); }
-.empty-icon { font-size: 40px; margin-bottom: var(--space-3); }
+.chip-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: grid;
+  gap: var(--u4);
+}
+
+.chip-top {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: var(--u4);
+}
+
+.chart-col { min-width: 0; }
+
+.info-col {
+  display: grid;
+  gap: var(--u4);
+  align-content: start;
+}
+
+.chart-panel { display: flex; flex-direction: column; }
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--u3) var(--u4);
+  border-bottom: 1px solid var(--border-hair);
+}
+
+.panel-title {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+}
+
+.symbol-input-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--u2);
+}
+
+.term-input {
+  width: 120px;
+  padding: 3px 8px;
+  background: var(--bg-plate);
+  border: 1px solid var(--border-dim);
+  border-radius: var(--r-md);
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-mechanical);
+}
+
+.term-input:focus { border-color: var(--accent); }
+
+.term-btn {
+  padding: 3px 10px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-md);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  transition: opacity var(--dur-fast) var(--ease-mechanical);
+}
+
+.term-btn:hover { opacity: 0.85; }
+.term-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.canvas-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 360px;
+  flex: 1;
+}
+
+.canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+}
+
+.canvas-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(13, 13, 26, 0.94);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-md);
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
+  white-space: nowrap;
+  z-index: 10;
+  display: flex;
+  gap: var(--u2);
+  align-items: center;
+}
+
+.ct-price { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.ct-pct { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.ct-zone { font-weight: 700; letter-spacing: 0.06em; }
+.zone-profit { color: var(--fall); }
+.zone-loss { color: var(--rise); }
+
+.panel-empty {
+  padding: var(--u10) var(--u4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.blink-cursor { animation: blink 1s step-end infinite; }
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: var(--border-hair);
+}
+
+.metric-cell {
+  padding: var(--u3) var(--u4);
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--u1);
+}
+
+.mc-label {
+  font-size: var(--fs-3xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.mc-value {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.val-profit { color: var(--fall); }
+.val-loss { color: var(--rise); }
+.val-support { color: var(--teal); }
+.val-resist { color: var(--warn); }
+.val-avg-cost { color: var(--purple); }
+
+.bands-list { display: grid; gap: 1px; }
+
+.band-row {
+  display: flex;
+  align-items: center;
+  gap: var(--u3);
+  padding: var(--u2) var(--u4);
+  border-bottom: 1px solid var(--border-hair);
+}
+
+.band-row:last-child { border-bottom: none; }
+
+.band-range {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  min-width: 100px;
+}
+
+.band-bar-track {
+  flex: 1;
+  height: 3px;
+  background: var(--bg-plate);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.band-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width var(--dur-normal) var(--ease-mechanical);
+}
+
+.band-weight {
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+}
+
+.fire-status {
+  font-size: var(--fs-3xs);
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.fire-bull { background: var(--fall-bg); color: var(--fall); }
+.fire-bear { background: var(--rise-bg); color: var(--rise); }
+.fire-neutral { background: var(--accent-muted); color: var(--accent); }
+
+.fire-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: var(--border-hair);
+}
+
+.fire-cell {
+  padding: var(--u2) var(--u3);
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fc-label {
+  font-size: var(--fs-3xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.fc-value {
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.analysis-body { display: grid; gap: var(--u3); padding: var(--u3) var(--u4); }
+
+.analysis-row { display: grid; gap: var(--u1); }
+
+.an-label {
+  font-size: var(--fs-3xs);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.an-value {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.popular-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--u2);
+  padding: var(--u3) var(--u4);
+}
+
+.popular-tag {
+  padding: 2px 10px;
+  background: var(--bg-plate);
+  border: 1px solid var(--border-hair);
+  border-radius: var(--r-md);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-mechanical),
+              color var(--dur-fast) var(--ease-mechanical);
+}
+
+.popular-tag:hover { border-color: var(--accent); color: var(--accent); }
+.popular-tag.active { background: var(--accent-muted); border-color: var(--accent); color: var(--accent); }
+
+@media (max-width: 900px) {
+  .chip-top { grid-template-columns: 1fr; }
+}
 </style>

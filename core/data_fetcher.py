@@ -1,29 +1,22 @@
-"""
-QuantCore 数据获取模块
-支持腾讯、新浪、AKShare等多数据源
+NETWORK_TIMEOUT_SECONDS = 30
 
-asyncio.to_thread 使用审计:
-- akshare相关调用保留to_thread: akshare是纯同步库，无法改为async
-- baostock相关调用保留to_thread: baostock是纯同步库，无法改为async
-- TencentSource.fetch_realtime: 已改为async，不再需要to_thread
-- TencentSource.fetch_history: 已改为async，不再需要to_thread
-- SinaSource.fetch_realtime: 已改为async，不再需要to_thread
-"""
 import asyncio
+import contextlib
 import json
 import logging
 import re
 import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any
+from urllib.parse import urlencode
 
 import aiohttp
 import numpy as np
 import pandas as pd
-from urllib.parse import urlencode
 
-from core.database import SQLiteStore, get_db, ThreadSafeLRU
+from core.database import SQLiteStore, ThreadSafeLRU, get_db
 from core.market_detector import MarketDetector
 
 logger = logging.getLogger(__name__)
@@ -38,14 +31,21 @@ try:
 except ImportError:
     bs = None
 
-_aiohttp_session: Optional[aiohttp.ClientSession] = None
-_session_lock = asyncio.Lock()
+_aiohttp_session: aiohttp.ClientSession | None = None
+_session_lock: asyncio.Lock | None = None
+
+
+def _get_session_lock() -> asyncio.Lock:
+    global _session_lock
+    if _session_lock is None:
+        _session_lock = asyncio.Lock()
+    return _session_lock
 
 
 async def get_aiohttp_session() -> aiohttp.ClientSession:
     global _aiohttp_session
     if _aiohttp_session is None or _aiohttp_session.closed:
-        async with _session_lock:
+        async with _get_session_lock():
             if _aiohttp_session is None or _aiohttp_session.closed:
                 connector = aiohttp.TCPConnector(
                     limit=100,
@@ -67,7 +67,13 @@ async def close_aiohttp_session() -> None:
         _aiohttp_session = None
 
 
-async def async_http_get(url: str, headers: Optional[dict] = None) -> Optional[str]:
+@asynccontextmanager
+async def session_manager():
+    yield await get_aiohttp_session()
+    await close_aiohttp_session()
+
+
+async def async_http_get(url: str, headers: dict | None = None) -> str | None:
     try:
         session = await get_aiohttp_session()
         async with session.get(url, headers=headers or {}) as resp:
@@ -80,20 +86,20 @@ async def async_http_get(url: str, headers: Optional[dict] = None) -> Optional[s
                         return content.decode('gbk')
                     except UnicodeDecodeError:
                         return content.decode('gb2312', errors='replace')
-            logger.debug(f"HTTP GET {url} returned status {resp.status}")
-    except asyncio.TimeoutError:
-        logger.debug(f"HTTP GET {url} timeout")
-    except Exception as e:
-        logger.debug(f"HTTP GET {url} error: {e}")
+            logger.debug("HTTP GET %s returned status %s", url, resp)
+    except TimeoutError:
+        logger.debug("HTTP GET %s timeout", url)
+    except (aiohttp.ClientError, OSError) as e:
+        logger.debug("HTTP GET %s error: %s", url, e)
     return None
 
 
 async def http_get_json(
     url: str,
-    params: Optional[dict] = None,
+    params: dict | None = None,
     referer: str = "https://data.eastmoney.com/",
     use_jsonp: bool = False,
-) -> Optional[dict]:
+) -> dict | None:
     if params is None:
         params = {}
     if use_jsonp:
@@ -104,8 +110,8 @@ async def http_get_json(
             "Referer": referer,
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         })
-    except Exception as e:
-        logger.debug(f"http_get_json request error for {url}: {e}")
+    except (aiohttp.ClientError, OSError) as e:
+        logger.debug("http_get_json request error for %s: %s", url, e)
         return None
     if not text:
         return None
@@ -114,25 +120,13 @@ async def http_get_json(
         if m:
             text = m.group(1)
         else:
-            logger.debug(f"http_get_json JSONP callback not found in response from {url}")
+            logger.debug("http_get_json JSONP callback not found in response from %s", url)
             return None
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        logger.debug(f"http_get_json JSON decode error for {url}: {e}")
+        logger.debug("http_get_json JSON decode error for %s: %s", url, e)
         return None
-
-
-def _http_get(url: str, headers: Optional[dict] = None) -> Optional[str]:
-    try:
-        import requests
-        resp = requests.get(url, headers=headers or {}, timeout=8)
-        if resp.status_code == 200:
-            return resp.text
-        return None
-    except Exception as e:
-        logger.debug(f"HTTP GET fallback error for {url}: {e}")
-    return None
 
 
 KLINE_TYPE_MAP = {
@@ -172,13 +166,13 @@ US_INDICES = {
     ".INX": "标普500",
 }
 
-_realtime_cache = ThreadSafeLRU(maxsize=1000, ttl=8)
-_history_cache = ThreadSafeLRU(maxsize=500, ttl=120)
-_indicator_cache = ThreadSafeLRU(maxsize=300, ttl=300)
-_financial_cache = ThreadSafeLRU(maxsize=200, ttl=3600)
-_northbound_cache = ThreadSafeLRU(maxsize=50, ttl=60)
+_realtime_cache = ThreadSafeLRU(maxsize=3000, ttl=10)
+_history_cache = ThreadSafeLRU(maxsize=1500, ttl=180)
+_indicator_cache = ThreadSafeLRU(maxsize=800, ttl=300)
+_financial_cache = ThreadSafeLRU(maxsize=500, ttl=3600)
+_northbound_cache = ThreadSafeLRU(maxsize=100, ttl=60)
 _hot_symbols_cache: list[str] = []
-_hot_symbols_lock: Optional[asyncio.Lock] = None
+_hot_symbols_lock: asyncio.Lock | None = None
 
 
 def _get_hot_symbols_lock() -> asyncio.Lock:
@@ -202,7 +196,7 @@ CACHE_TTL_TIERS = {
 class DataSourceHealthMonitor:
     """数据源健康度监控，基于内存滑动窗口统计"""
 
-    def __init__(self, db: Optional[SQLiteStore] = None):
+    def __init__(self, db: SQLiteStore | None = None):
         self._db = db or get_db()
         self._memory_stats: dict[tuple[str, str], dict] = {}
         self._pending_writes = 0
@@ -232,7 +226,7 @@ class DataSourceHealthMonitor:
             try:
                 self._db.record_source_request(source_name, request_type, success, latency)
             except Exception as e:
-                logger.debug(f"Health monitor write error: {e}")
+                logger.debug("Health monitor write error: %s", e)
 
     def rank_sources(self, source_names: list[str], request_type: str = "realtime") -> list[str]:
         scored = []
@@ -258,7 +252,7 @@ class DataSourceHealthMonitor:
                     else:
                         score = 0.5
                 except Exception as e:
-                    logger.debug(f"Source ranking error for {name}: {e}")
+                    logger.debug("Source ranking error for %s: %s", name, e)
                     score = 0.5
             scored.append((name, score))
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -273,6 +267,8 @@ class TencentSource:
     @staticmethod
     def _build_code(symbol: str, market: str) -> str:
         clean = re.sub(r"^(sh|sz|SH|SZ)", "", str(symbol)).strip()
+        if not re.match(r'^[0-9a-zA-Z]{1,10}$', clean):
+            return ""
         if market == "A":
             if clean.startswith("6"):
                 return f"sh{clean}"
@@ -284,8 +280,10 @@ class TencentSource:
         return clean
 
     @staticmethod
-    async def fetch_realtime(symbol: str, market: str) -> Optional[dict]:
+    async def fetch_realtime(symbol: str, market: str) -> dict | None:
         code = TencentSource._build_code(symbol, market)
+        if not code:
+            return None
         url = f"{TencentSource.BASE_URL}{code}"
         text = await async_http_get(url)
         if not text:
@@ -315,16 +313,16 @@ class TencentSource:
                 results[code_key] = {
                     "name": parts[1] if len(parts) > 1 else "",
                     "code": parts[2] if len(parts) > 2 else "",
-                    "price": float(parts[3]) if len(parts) > 3 and parts[3] else 0,
-                    "last_close": float(parts[4]) if len(parts) > 4 and parts[4] else 0,
-                    "open": float(parts[5]) if len(parts) > 5 and parts[5] else 0,
-                    "volume": float(parts[6]) if len(parts) > 6 and parts[6] else 0,
-                    "amount": float(parts[37]) if len(parts) > 37 and parts[37] else 0,
-                    "high": float(parts[33]) if len(parts) > 33 and parts[33] else 0,
-                    "low": float(parts[34]) if len(parts) > 34 and parts[34] else 0,
-                    "change_pct": float(parts[32]) if len(parts) > 32 and parts[32] else 0,
-                    "change": float(parts[31]) if len(parts) > 31 and parts[31] else 0,
-                    "turnover_rate": float(parts[38]) if len(parts) > 38 and parts[38] else 0,
+                    "price": safe_float(parts[3], 0) if len(parts) > 3 else 0,
+                    "last_close": safe_float(parts[4], 0) if len(parts) > 4 else 0,
+                    "open": safe_float(parts[5], 0) if len(parts) > 5 else 0,
+                    "volume": safe_float(parts[6], 0) if len(parts) > 6 else 0,
+                    "amount": safe_float(parts[37], 0) if len(parts) > 37 else 0,
+                    "high": safe_float(parts[33], 0) if len(parts) > 33 else 0,
+                    "low": safe_float(parts[34], 0) if len(parts) > 34 else 0,
+                    "change_pct": safe_float(parts[32], 0) if len(parts) > 32 else 0,
+                    "change": safe_float(parts[31], 0) if len(parts) > 31 else 0,
+                    "turnover_rate": safe_float(parts[38], 0) if len(parts) > 38 else 0,
                 }
             except (ValueError, IndexError):
                 continue
@@ -332,8 +330,10 @@ class TencentSource:
 
     @staticmethod
     async def fetch_history(symbol: str, market: str, kline_type: str = "daily",
-                            adjust: str = "", count: int = 300) -> Optional[pd.DataFrame]:
+                            adjust: str = "", count: int = 300) -> pd.DataFrame | None:
         code = TencentSource._build_code(symbol, market)
+        if not code:
+            return None
         ktype_map = {"daily": "day", "weekly": "week", "monthly": "month"}
         ktype = ktype_map.get(kline_type, "day")
         url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={code},{ktype},,,{count},,"
@@ -369,11 +369,11 @@ class TencentSource:
             if rows:
                 return pd.DataFrame(rows)
         except (json.JSONDecodeError, KeyError, ValueError, IndexError) as e:
-            logger.debug(f"Tencent history parse error: {e}")
+            logger.debug("Tencent history parse error: %s", e)
         return None
 
     @staticmethod
-    def _parse_realtime(text: str, symbol: str, market: str) -> Optional[dict]:
+    def _parse_realtime(text: str, symbol: str, market: str) -> dict | None:
         for line in text.strip().split(";"):
             line = line.strip()
             if not line or "~" not in line:
@@ -386,16 +386,16 @@ class TencentSource:
                     "symbol": symbol,
                     "market": market,
                     "name": parts[1],
-                    "price": float(parts[3]),
-                    "last_close": float(parts[4]),
-                    "open": float(parts[5]),
-                    "volume": float(parts[6]),
-                    "high": float(parts[33]) if len(parts) > 33 else 0,
-                    "low": float(parts[34]) if len(parts) > 34 else 0,
-                    "change_pct": float(parts[32]) if len(parts) > 32 else 0,
-                    "change": float(parts[31]) if len(parts) > 31 else 0,
-                    "amount": float(parts[37]) if len(parts) > 37 else 0,
-                    "turnover_rate": float(parts[38]) if len(parts) > 38 else 0,
+                    "price": safe_float(parts[3], 0),
+                    "last_close": safe_float(parts[4], 0),
+                    "open": safe_float(parts[5], 0),
+                    "volume": safe_float(parts[6], 0),
+                    "high": safe_float(parts[33], 0) if len(parts) > 33 else 0,
+                    "low": safe_float(parts[34], 0) if len(parts) > 34 else 0,
+                    "change_pct": safe_float(parts[32], 0) if len(parts) > 32 else 0,
+                    "change": safe_float(parts[31], 0) if len(parts) > 31 else 0,
+                    "amount": safe_float(parts[37], 0) if len(parts) > 37 else 0,
+                    "turnover_rate": safe_float(parts[38], 0) if len(parts) > 38 else 0,
                     "timestamp": time.time(),
                 }
             except (ValueError, IndexError):
@@ -407,13 +407,10 @@ class SinaSource:
     """新浪财经数据源"""
 
     @staticmethod
-    async def fetch_realtime(symbol: str, market: str) -> Optional[dict]:
+    async def fetch_realtime(symbol: str, market: str) -> dict | None:
         clean = re.sub(r"^(sh|sz|SH|SZ)", "", str(symbol)).strip()
         if market == "A":
-            if clean.startswith("6"):
-                prefix = "sh"
-            else:
-                prefix = "sz"
+            prefix = "sh" if clean.startswith("6") else "sz"
             url = f"http://hq.sinajs.cn/list={prefix}{clean}"
         elif market == "HK":
             url = f"http://hq.sinajs.cn/list=rt_hk{clean.zfill(5)}"
@@ -429,7 +426,7 @@ class SinaSource:
         return SinaSource._parse_realtime(text, symbol, market)
 
     @staticmethod
-    def _parse_realtime(text: str, symbol: str, market: str) -> Optional[dict]:
+    def _parse_realtime(text: str, symbol: str, market: str) -> dict | None:
         try:
             for line in text.strip().split("\n"):
                 if '="' not in line:
@@ -441,13 +438,13 @@ class SinaSource:
                 fields = data_part.split(",")
                 if market == "A" and len(fields) >= 32:
                     name = fields[0]
-                    open_price = float(fields[1]) if fields[1] else 0
-                    last_close = float(fields[2]) if fields[2] else 0
-                    price = float(fields[3]) if fields[3] else 0
-                    high = float(fields[4]) if fields[4] else 0
-                    low = float(fields[5]) if fields[5] else 0
-                    volume = float(fields[8]) if fields[8] else 0
-                    amount = float(fields[9]) if fields[9] else 0
+                    open_price = safe_float(fields[1], 0)
+                    last_close = safe_float(fields[2], 0)
+                    price = safe_float(fields[3], 0)
+                    high = safe_float(fields[4], 0)
+                    low = safe_float(fields[5], 0)
+                    volume = safe_float(fields[8], 0)
+                    amount = safe_float(fields[9], 0)
                     change = price - last_close if last_close > 0 else 0
                     change_pct = (change / last_close * 100) if last_close > 0 else 0
                     return {
@@ -468,13 +465,13 @@ class SinaSource:
                     }
                 elif market == "HK" and len(fields) >= 13:
                     name = fields[1]
-                    open_price = float(fields[2]) if fields[2] else 0
-                    last_close = float(fields[3]) if fields[3] else 0
-                    high = float(fields[4]) if fields[4] else 0
-                    low = float(fields[5]) if fields[5] else 0
-                    price = float(fields[6]) if fields[6] else 0
-                    volume = float(fields[12]) if fields[12] else 0
-                    amount = float(fields[11]) if fields[11] else 0
+                    open_price = safe_float(fields[2], 0)
+                    last_close = safe_float(fields[3], 0)
+                    high = safe_float(fields[4], 0)
+                    low = safe_float(fields[5], 0)
+                    price = safe_float(fields[6], 0)
+                    volume = safe_float(fields[12], 0)
+                    amount = safe_float(fields[11], 0)
                     change = price - last_close if last_close > 0 else 0
                     change_pct = (change / last_close * 100) if last_close > 0 else 0
                     return {
@@ -495,13 +492,14 @@ class SinaSource:
                     }
                 elif market == "US" and len(fields) >= 9:
                     name = fields[0]
-                    price = float(fields[1]) if fields[1] else 0
-                    change_pct = float(fields[2]) if fields[2] else 0
-                    change = float(fields[3]) if fields[3] else 0
-                    open_price = float(fields[4]) if fields[4] else 0
-                    high = float(fields[5]) if fields[5] else 0
-                    low = float(fields[6]) if fields[6] else 0
-                    volume = float(fields[8]) if fields[8] else 0
+                    price = safe_float(fields[1], 0)
+                    change_pct = safe_float(fields[2], 0)
+                    change = safe_float(fields[3], 0)
+                    open_price = safe_float(fields[4], 0)
+                    high = safe_float(fields[5], 0)
+                    low = safe_float(fields[6], 0)
+                    volume = safe_float(fields[7], 0) if len(fields) > 7 else 0
+                    amount = safe_float(fields[8], 0) if len(fields) > 8 else 0
                     last_close = price - change if change else 0
                     return {
                         "symbol": symbol,
@@ -515,16 +513,16 @@ class SinaSource:
                         "low": low,
                         "change_pct": round(change_pct, 2),
                         "change": round(change, 3),
-                        "amount": 0,
+                        "amount": amount,
                         "turnover_rate": 0,
                         "timestamp": time.time(),
                     }
         except (ValueError, IndexError) as e:
-            logger.debug(f"Sina parse error for {symbol}: {e}")
+            logger.debug("Sina parse error for %s: %s", symbol, e)
         return None
 
 
-def safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
+def safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value in (None, "-", ""):
             return default
@@ -560,7 +558,7 @@ class EastMoneySource:
         return safe_float(value, default)
 
     @staticmethod
-    async def fetch_realtime(symbol: str, market: str) -> Optional[dict]:
+    async def fetch_realtime(symbol: str, market: str) -> dict | None:
         if market != "A":
             return None
         code = EastMoneySource._clean_symbol(symbol)
@@ -595,12 +593,12 @@ class EastMoneySource:
                 "timestamp": time.time(),
             }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug(f"EastMoney realtime parse error: {e}")
+            logger.debug("EastMoney realtime parse error: %s", e)
             return None
 
     @staticmethod
     async def fetch_history_em(symbol: str, market: str, ktype: str = "101",
-                               fqt: int = 1) -> Optional[pd.DataFrame]:
+                               fqt: int = 1) -> pd.DataFrame | None:
         if market != "A":
             return None
         code = EastMoneySource._clean_symbol(symbol)
@@ -635,11 +633,11 @@ class EastMoneySource:
             if rows:
                 return pd.DataFrame(rows)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug(f"EastMoney history parse error: {e}")
+            logger.debug("EastMoney history parse error: %s", e)
         return None
 
     @staticmethod
-    async def fetch_financial_report(symbol: str) -> Optional[dict]:
+    async def fetch_financial_report(symbol: str) -> dict | None:
         code = EastMoneySource._clean_symbol(symbol)
         fields = "SECURITY_CODE,PE_TTM,PB_MRQ,BASIC_EPS,ROE_WEIGHT,OPERATE_INCOME_YOY,NETPROFIT_YOY,DEBT_ASSET_RATIO"
         url = (
@@ -663,11 +661,11 @@ class EastMoneySource:
                 "debt_ratio": EastMoneySource._num(item.get("DEBT_ASSET_RATIO")),
             }
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug(f"EastMoney financial parse error: {e}")
+            logger.debug("EastMoney financial parse error: %s", e)
             return None
 
     @staticmethod
-    async def fetch_north_bound_flow(date=None) -> Optional[dict]:
+    async def fetch_north_bound_flow(date=None) -> dict | None:
         try:
             if ak is None:
                 return None
@@ -694,7 +692,7 @@ class EastMoneySource:
                 "top_stocks": [],
             }
         except Exception as e:
-            logger.debug(f"akshare northbound fetch error: {e}")
+            logger.debug("akshare northbound fetch error: %s", e)
             return None
 
     @staticmethod
@@ -716,7 +714,7 @@ class EastMoneySource:
                 "seal_amount": EastMoneySource._num(item.get("fund")),
             } for item in pool]
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug(f"EastMoney limit-up parse error: {e}")
+            logger.debug("EastMoney limit-up parse error: %s", e)
             return []
 
     @staticmethod
@@ -741,7 +739,7 @@ class EastMoneySource:
                 "institutions": item.get("ORG_NAME", ""),
             } for item in records]
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.debug(f"EastMoney dragon-tiger parse error: {e}")
+            logger.debug("EastMoney dragon-tiger parse error: %s", e)
             return []
 
     @staticmethod
@@ -786,7 +784,7 @@ class DataQualityChecker:
         numeric_cols = [c for c in ["open", "high", "low", "close", "volume", "amount", "turnover_rate"] if c in cleaned.columns]
         for col in numeric_cols:
             cleaned[col] = pd.to_numeric(cleaned[col], errors="coerce")
-            na_run = cleaned[col].isna().astype(int).groupby(cleaned[col].notna().cumsum()).sum().max()
+            na_run = cleaned[col].isna().astype(int).groupby(cleaned[col].isna().cumsum()).sum().max()
             if pd.notna(na_run) and na_run >= 3:
                 warnings.append(f"{col}_consecutive_nan:{int(na_run)}")
             cleaned[col] = cleaned[col].interpolate(limit=1, limit_direction="both")
@@ -853,6 +851,11 @@ class DataQualityChecker:
         return cleaned
 
 
+class CircuitBreakerError(Exception):
+    """Circuit breaker exception raised when circuit is open"""
+    pass
+
+
 class CircuitBreaker:
     """防止级联失败的断路器"""
 
@@ -864,7 +867,8 @@ class CircuitBreaker:
         self.last_failure_time = 0.0
         self.half_open_calls = 0
         self.half_open_max = half_open_calls
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
+        self._probe_in_progress = False
 
     @staticmethod
     def _is_valid_result(result) -> bool:
@@ -878,38 +882,68 @@ class CircuitBreaker:
             return len(result) > 0
         return True
 
-    async def call(self, func, *args, **kwargs):
-        async with self._lock:
+    def _acquire_permission(self, func_name: str) -> bool:
+        with self._lock:
+            if self.state == "CLOSED":
+                return True
             if self.state == "OPEN":
-                if time.time() - self.last_failure_time > self.timeout:
+                if time.monotonic() - self.last_failure_time > self.timeout:
+                    if self._probe_in_progress:
+                        return False
                     self.state = "HALF_OPEN"
                     self.half_open_calls = 0
-                else:
-                    raise Exception(f"Circuit breaker OPEN for {getattr(func, '__name__', 'source')}")
+                    self._probe_in_progress = True
+                    return True
+                return False
+            if self.state == "HALF_OPEN":
+                if self._probe_in_progress:
+                    return False
+                self._probe_in_progress = True
+                return True
+            return False
 
-        try:
-            result = await func(*args, **kwargs)
-            async with self._lock:
-                if self.state == "HALF_OPEN":
-                    self.half_open_calls += 1
+    def _record_success(self, result) -> None:
+        with self._lock:
+            self._probe_in_progress = False
+            if self.state == "HALF_OPEN":
+                self.half_open_calls += 1
+                if self._is_valid_result(result):
                     if self.half_open_calls >= self.half_open_max:
                         self.state = "CLOSED"
                         self.failure_count = 0
-                elif self._is_valid_result(result):
+                else:
+                    self.failure_count += 1
+                    self.last_failure_time = time.monotonic()
+                    if self.failure_count >= self.failure_threshold:
+                        self.state = "OPEN"
+            else:
+                if self._is_valid_result(result):
                     self.failure_count = 0
                 else:
                     self.failure_count += 1
-                    self.last_failure_time = time.time()
+                    self.last_failure_time = time.monotonic()
                     if self.failure_count >= self.failure_threshold:
                         self.state = "OPEN"
+
+    def _record_failure(self) -> None:
+        with self._lock:
+            self._probe_in_progress = False
+            self.failure_count += 1
+            self.last_failure_time = time.monotonic()
+            if self.failure_count >= self.failure_threshold:
+                self.state = "OPEN"
+
+    async def call(self, func, *args, **kwargs):
+        func_name = getattr(func, '__name__', 'source')
+        if not self._acquire_permission(func_name):
+            raise CircuitBreakerError(f"Circuit breaker OPEN for {func_name}")
+        try:
+            result = await func(*args, **kwargs)
+            self._record_success(result)
             return result
         except Exception as e:
-            logger.debug(f"CircuitBreaker call error: {e}")
-            async with self._lock:
-                self.failure_count += 1
-                self.last_failure_time = time.time()
-                if self.failure_count >= self.failure_threshold:
-                    self.state = "OPEN"
+            logger.debug("CircuitBreaker call error: %s", e)
+            self._record_failure()
             raise
 
 
@@ -926,13 +960,13 @@ def validate_realtime_data(data: dict, symbol: str) -> bool:
         ts_date = datetime.now().date()
     ok = price > 0 and -20 <= pct <= 20 and volume >= 0 and ts_date >= (datetime.now().date() - timedelta(days=1))
     if not ok:
-        logger.debug(f"Invalid realtime data for {symbol}: {data}")
+        logger.debug("Invalid realtime data for %s: %s", symbol, data)
     return ok
 
 
 def validate_kline_data(df: pd.DataFrame, symbol: str) -> bool:
     if df is None or len(df) < 10 or "date" not in df.columns:
-        logger.debug(f"Invalid kline data for {symbol}: insufficient rows/date")
+        logger.debug("Invalid kline data for %s: insufficient rows/date", symbol)
         return False
     data = df.copy()
     data["date"] = pd.to_datetime(data["date"], errors="coerce")
@@ -941,7 +975,7 @@ def validate_kline_data(df: pd.DataFrame, symbol: str) -> bool:
     if price_cols:
         ok = ok and (data[price_cols] > 0).all().all()
     if not ok:
-        logger.debug(f"Invalid kline data for {symbol}")
+        logger.debug("Invalid kline data for %s", symbol)
     return bool(ok)
 
 
@@ -950,18 +984,23 @@ class AKShareSource:
 
     @staticmethod
     async def fetch_history(symbol: str, market: str, kline_type: str = "daily",
-                            adjust: str = "", period: str = "1y") -> Optional[pd.DataFrame]:
+                            adjust: str = "", period: str = "1y") -> pd.DataFrame | None:
         try:
-            df = await asyncio.to_thread(AKShareSource._sync_fetch_history,
-                                         symbol, market, kline_type, adjust, period)
+            df = await asyncio.wait_for(
+                asyncio.to_thread(AKShareSource._sync_fetch_history, symbol, market, kline_type, adjust, period),
+                timeout=NETWORK_TIMEOUT_SECONDS,
+            )
             return df
+        except TimeoutError:
+            logger.warning("AKShare fetch_history timed out after %ss: %s", NETWORK_TIMEOUT_SECONDS, symbol)
+            return None
         except Exception as e:
-            logger.debug(f"AKShare fetch_history error: {e}")
+            logger.debug("AKShare fetch_history error: %s", e)
             return None
 
     @staticmethod
     def _sync_fetch_history(symbol: str, market: str, kline_type: str = "daily",
-                            adjust: str = "", period: str = "1y") -> Optional[pd.DataFrame]:
+                            adjust: str = "", period: str = "1y") -> pd.DataFrame | None:
         try:
             if ak is None:
                 return None
@@ -1006,20 +1045,20 @@ class AKShareSource:
                     df = df.rename(columns=rename_map)
                     return df
         except Exception as e:
-            logger.debug(f"AKShare sync fetch error: {e}")
+            logger.debug("AKShare sync fetch error: %s", e)
         return None
 
     @staticmethod
-    async def fetch_fundamentals(symbol: str, market: str) -> Optional[dict]:
+    async def fetch_fundamentals(symbol: str, market: str) -> dict | None:
         try:
             result = await asyncio.to_thread(AKShareSource._sync_fetch_fundamentals, symbol, market)
             return result
         except Exception as e:
-            logger.debug(f"AKShare fundamentals error: {e}")
+            logger.debug("AKShare fundamentals error: %s", e)
             return None
 
     @staticmethod
-    def _sync_fetch_fundamentals(symbol: str, market: str) -> Optional[dict]:
+    def _sync_fetch_fundamentals(symbol: str, market: str) -> dict | None:
         try:
             if ak is None:
                 return None
@@ -1029,96 +1068,110 @@ class AKShareSource:
             if df is None or df.empty:
                 return None
             result = {}
-            for _, row in df.iterrows():
-                key = str(row.iloc[0]).strip()
-                val = str(row.iloc[1]).strip() if len(row) > 1 else ""
+            for row in df.to_dict("records"):
+                vals = list(row.values())
+                key = str(vals[0]).strip()
+                val = str(vals[1]).strip() if len(vals) > 1 else ""
                 result[key] = val
             return result
         except Exception as e:
-            logger.debug(f"AKShare fundamentals sync error: {e}")
+            logger.debug("AKShare fundamentals sync error: %s", e)
         return None
 
 
 class BaoStockSource:
     """BaoStock数据源（同步库，保留to_thread）"""
 
+    _baostock_lock = threading.Lock()
+
     @staticmethod
     async def fetch_history(symbol: str, market: str, kline_type: str = "daily",
                             adjust: str = "", start_date: str = "",
-                            end_date: str = "") -> Optional[pd.DataFrame]:
+                            end_date: str = "") -> pd.DataFrame | None:
         try:
-            df = await asyncio.to_thread(BaoStockSource._sync_fetch_history,
-                                         symbol, market, kline_type, adjust, start_date, end_date)
+            df = await asyncio.wait_for(
+                asyncio.to_thread(BaoStockSource._sync_fetch_history, symbol, market, kline_type, adjust, start_date, end_date),
+                timeout=NETWORK_TIMEOUT_SECONDS,
+            )
             return df
+        except TimeoutError:
+            logger.warning("BaoStock fetch_history timed out after %ss: %s", NETWORK_TIMEOUT_SECONDS, symbol)
+            return None
         except Exception as e:
-            logger.debug(f"BaoStock fetch error: {e}")
+            logger.debug("BaoStock fetch error: %s", e)
             return None
 
     @staticmethod
     def _sync_fetch_history(symbol: str, market: str, kline_type: str = "daily",
                             adjust: str = "", start_date: str = "",
-                            end_date: str = "") -> Optional[pd.DataFrame]:
+                            end_date: str = "") -> pd.DataFrame | None:
         try:
             if bs is None:
                 return None
-            lg = bs.login()
-            if lg.error_code != "0":
-                return None
+            import io as _io
+            with BaoStockSource._baostock_lock:
+                with contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(_io.StringIO()):
+                    lg = bs.login()
+                if lg.error_code != "0":
+                    return None
+                try:
+                    if not end_date:
+                        end_date = datetime.now().strftime("%Y-%m-%d")
+                    if not start_date:
+                        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
 
-            if not end_date:
-                end_date = datetime.now().strftime("%Y-%m-%d")
-            if not start_date:
-                start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+                    if market != "A":
+                        with contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(_io.StringIO()):
+                            bs.logout()
+                        return None
 
-            if market == "A":
-                if symbol.startswith("6"):
-                    bs_code = f"sh.{symbol}"
-                else:
-                    bs_code = f"sz.{symbol}"
-            else:
-                bs.logout()
-                return None
+                    bs_code = f"sh.{symbol}" if symbol.startswith("6") else f"sz.{symbol}"
 
-            freq_map = {"daily": "d", "weekly": "w", "monthly": "m"}
-            freq = freq_map.get(kline_type, "d")
-            adjust_flag = "2" if adjust == "qfq" else "1" if adjust == "hfq" else "3"
+                    freq_map = {"daily": "d", "weekly": "w", "monthly": "m"}
+                    freq = freq_map.get(kline_type, "d")
+                    adjust_flag = "2" if adjust == "qfq" else "1" if adjust == "hfq" else "3"
 
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,open,high,low,close,volume,amount,turn",
-                start_date=start_date,
-                end_date=end_date,
-                frequency=freq,
-                adjustflag=adjust_flag,
-            )
+                    with contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(_io.StringIO()):
+                        rs = bs.query_history_k_data_plus(
+                            bs_code,
+                            "date,open,high,low,close,volume,amount,turn",
+                            start_date=start_date,
+                            end_date=end_date,
+                            frequency=freq,
+                            adjustflag=adjust_flag,
+                        )
 
-            rows = []
-            while rs.error_code == "0" and rs.next():
-                rows.append(rs.get_row_data())
+                    rows = []
+                    while rs.error_code == "0" and rs.next():
+                        rows.append(rs.get_row_data())
 
-            bs.logout()
+                    if not rows:
+                        return None
 
-            if not rows:
-                return None
-
-            df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume", "amount", "turnover_rate"])
-            for col in ["open", "high", "low", "close", "volume", "amount"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-            return df
+                    df = pd.DataFrame(rows, columns=["date", "open", "high", "low", "close", "volume", "amount", "turnover_rate"])
+                    for col in ["open", "high", "low", "close", "volume", "amount"]:
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors="coerce")
+                    return df
+                finally:
+                    with contextlib.redirect_stdout(_io.StringIO()), contextlib.redirect_stderr(_io.StringIO()):
+                        bs.logout()
         except Exception as e:
-            logger.debug(f"BaoStock sync error: {e}")
-            try:
-                bs.logout()
-            except Exception as e:
-                logger.debug(f"BaoStock logout failed: {e}")
+            logger.debug("BaoStock sync error: %s", e)
+            import io as _io2
+            with contextlib.redirect_stdout(_io2.StringIO()), contextlib.redirect_stderr(_io2.StringIO()):
+                try:
+                    with BaoStockSource._baostock_lock:
+                        bs.logout()
+                except Exception as e2:
+                    logger.debug("BaoStock logout failed: %s", e2)
             return None
 
 
 class SmartDataFetcher:
     """智能数据获取器，自动选择最优数据源"""
 
-    def __init__(self, db: Optional[SQLiteStore] = None):
+    def __init__(self, db: SQLiteStore | None = None):
         self._db = db or get_db()
         self._health = DataSourceHealthMonitor(self._db)
         self._sources = {
@@ -1134,7 +1187,7 @@ class SmartDataFetcher:
             "baostock": CircuitBreaker(failure_threshold=3, timeout=120),
         }
 
-    async def get_realtime(self, symbol: str, market: Optional[str] = None) -> Optional[dict]:
+    async def get_realtime(self, symbol: str, market: str | None = None) -> dict | None:
         if market is None:
             market = MarketDetector.detect(symbol)
 
@@ -1150,14 +1203,14 @@ class SmartDataFetcher:
             source = self._sources.get(source_name)
             if source is None:
                 continue
-            start = time.time()
+            start = time.monotonic()
             try:
                 breaker = self._circuit_breakers.get(source_name)
                 if breaker:
                     result = await breaker.call(source.fetch_realtime, symbol, market)
                 else:
                     result = await source.fetch_realtime(symbol, market)
-                latency = time.time() - start
+                latency = time.monotonic() - start
                 if result and validate_realtime_data(result, symbol):
                     self._health.record_request(source_name, "realtime", True, latency)
                     _realtime_cache.set(cache_key, result)
@@ -1166,13 +1219,13 @@ class SmartDataFetcher:
                         metrics.increment("data_fetch_success", tags={"source": source_name, "type": "realtime"})
                         metrics.timer("data_fetch_latency", latency, tags={"source": source_name, "type": "realtime"})
                     except Exception as e:
-                        logger.debug(f"Metrics recording failed: {e}")
+                        logger.debug("Metrics recording failed: %s", e)
                     return result
                 self._health.record_request(source_name, "realtime", False, latency)
             except Exception as e:
-                latency = time.time() - start
+                latency = time.monotonic() - start
                 self._health.record_request(source_name, "realtime", False, latency)
-                logger.debug(f"Source {source_name} realtime error: {e}")
+                logger.debug("Source %s realtime error: %s", source_name, e)
 
         return None
 
@@ -1209,12 +1262,12 @@ class SmartDataFetcher:
                             if rt:
                                 results[s] = rt
                         except Exception as e:
-                            logger.debug(f"Batch realtime fetch failed for {s}: {e}")
+                            logger.debug("Batch realtime fetch failed for %s: %s", s, e)
 
         if other_symbols:
             tasks = [self.get_realtime(s, m) for s, m in other_symbols]
             other_results = await asyncio.gather(*tasks, return_exceptions=True)
-            for (s, m), result in zip(other_symbols, other_results):
+            for (s, _m), result in zip(other_symbols, other_results, strict=False):
                 if isinstance(result, dict):
                     results[s] = result
 
@@ -1243,7 +1296,7 @@ class SmartDataFetcher:
         if df is not None and not df.empty:
             df, warnings = DataQualityChecker.check_kline(df)
             if warnings:
-                logger.debug(f"Data quality warnings for {symbol}: {warnings}")
+                logger.debug("Data quality warnings for %s: %s", symbol, warnings)
             if not validate_kline_data(df, symbol):
                 return pd.DataFrame()
             rows = df.to_dict("records")
@@ -1253,9 +1306,28 @@ class SmartDataFetcher:
 
         return pd.DataFrame()
 
+    async def get_history_batch(self, symbols: list[str], period: str = "1y",
+                                kline_type: str = "daily", adjust: str = "qfq",
+                                max_concurrent: int = 8) -> dict[str, pd.DataFrame]:
+        if not symbols:
+            return {}
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _fetch_one(sym):
+            async with sem:
+                try:
+                    return sym, await self.get_history(sym, period, kline_type, adjust)
+                except Exception as e:
+                    logger.debug("Batch history fetch failed for %s: %s", sym, e)
+                    return sym, pd.DataFrame()
+
+        tasks = [_fetch_one(s) for s in symbols[:50]]
+        results = await asyncio.gather(*tasks)
+        return {sym: df for sym, df in results if not df.empty}
+
     async def _fetch_history_from_sources(self, symbol: str, market: str,
                                            kline_type: str, adjust: str,
-                                           period: str) -> Optional[pd.DataFrame]:
+                                           period: str) -> pd.DataFrame | None:
         ranked = self._health.rank_sources(["eastmoney", "tencent", "akshare", "baostock"], "history")
 
         # 并发尝试前两个源，取先返回的有效结果
@@ -1282,7 +1354,7 @@ class SmartDataFetcher:
                         if r is not None and not r.empty:
                             results[src] = r
                 except Exception as e:
-                    logger.debug(f"History source task failed: {e}")
+                    logger.debug("History source task failed: %s", e)
 
             if len(results) >= 2:
                 # 结果投票：若两源数据差异>5%，以成交量更大的为准
@@ -1295,10 +1367,7 @@ class SmartDataFetcher:
                     close_a = dfs[0]["close"].iloc[-len_min:].values.astype(float)
                     close_b = dfs[1]["close"].iloc[-len_min:].values.astype(float)
                     diff_pct = np.mean(np.abs(close_a - close_b) / np.maximum(close_a, 1e-8))
-                    if diff_pct > 0.05:
-                        chosen_src = srcs[0] if vol_a >= vol_b else srcs[1]
-                    else:
-                        chosen_src = srcs[0]
+                    chosen_src = (srcs[0] if vol_a >= vol_b else srcs[1]) if diff_pct > 0.05 else srcs[0]
                 else:
                     chosen_src = srcs[0]
                 return results[chosen_src]
@@ -1315,8 +1384,8 @@ class SmartDataFetcher:
         return None
 
     async def _fetch_from_single_source(self, source_name: str, symbol: str, market: str,
-                                         kline_type: str, adjust: str, period: str) -> Optional[pd.DataFrame]:
-        start = time.time()
+                                         kline_type: str, adjust: str, period: str) -> pd.DataFrame | None:
+        start = time.monotonic()
         try:
             if source_name == "eastmoney":
                 ktype_map = {"daily": "101", "weekly": "102", "monthly": "103"}
@@ -1342,7 +1411,7 @@ class SmartDataFetcher:
             else:
                 return None
 
-            latency = time.time() - start
+            latency = time.monotonic() - start
             if result is not None and not result.empty:
                 self._health.record_request(source_name, "history", True, latency)
                 try:
@@ -1350,16 +1419,16 @@ class SmartDataFetcher:
                     metrics.increment("data_fetch_success", tags={"source": source_name, "type": "history"})
                     metrics.timer("data_fetch_latency", latency, tags={"source": source_name, "type": "history"})
                 except Exception as e:
-                    logger.debug(f"History metrics recording failed: {e}")
+                    logger.debug("History metrics recording failed: %s", e)
                 return result
             self._health.record_request(source_name, "history", False, latency)
         except Exception as e:
-            latency = time.time() - start
+            latency = time.monotonic() - start
             self._health.record_request(source_name, "history", False, latency)
-            logger.debug(f"Source {source_name} history error: {e}")
+            logger.debug("Source %s history error: %s", source_name, e)
         return None
 
-    async def get_fundamentals(self, symbol: str, market: Optional[str] = None) -> Optional[dict]:
+    async def get_fundamentals(self, symbol: str, market: str | None = None) -> dict | None:
         if market is None:
             market = MarketDetector.detect(symbol)
         if market == "A":
@@ -1381,14 +1450,33 @@ class SmartDataFetcher:
                 }
         return await AKShareSource.fetch_fundamentals(symbol, market)
 
-    async def fetch_north_bound_flow(self, date=None) -> Optional[dict]:
-        return await EastMoneySource.fetch_north_bound_flow(date)
+    async def fetch_north_bound_flow(self, date=None) -> dict | None:
+        cache_key = f"north_bound:{date or 'latest'}"
+        cached = _realtime_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = await EastMoneySource.fetch_north_bound_flow(date)
+        if result:
+            _realtime_cache.set(cache_key, result, ttl=900)
+        return result
 
     async def fetch_limit_up_pool(self) -> list[dict]:
-        return await EastMoneySource.fetch_limit_up_pool()
+        cache_key = "limit_up_pool"
+        cached = _realtime_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = await EastMoneySource.fetch_limit_up_pool()
+        _realtime_cache.set(cache_key, result, ttl=60)
+        return result
 
     async def fetch_dragon_tiger_list(self, date=None) -> list[dict]:
-        return await EastMoneySource.fetch_dragon_tiger_list(date)
+        cache_key = f"dragon_tiger:{date or 'latest'}"
+        cached = _realtime_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        result = await EastMoneySource.fetch_dragon_tiger_list(date)
+        _realtime_cache.set(cache_key, result, ttl=900)
+        return result
 
     def simulate_level2_from_daily(self, symbol: str, realtime_data: dict) -> dict:
         price = EastMoneySource._num((realtime_data or {}).get("price"))
@@ -1447,11 +1535,11 @@ class SmartDataFetcher:
                         try:
                             code = parts[2] if len(parts) > 2 else ""
                             name = parts[1]
-                            price = float(parts[3]) if parts[3] else 0
-                            change_pct = float(parts[32]) if len(parts) > 32 and parts[32] else 0
-                            change = float(parts[31]) if len(parts) > 31 and parts[31] else 0
+                            price = safe_float(parts[3], 0)
+                            change_pct = safe_float(parts[32], 0) if len(parts) > 32 else 0
+                            change = safe_float(parts[31], 0) if len(parts) > 31 else 0
                             key = None
-                            for k, v in CN_INDICES.items():
+                            for k, _v in CN_INDICES.items():
                                 if k.endswith(code) or code in k:
                                     key = k
                                     break
@@ -1480,9 +1568,9 @@ class SmartDataFetcher:
                         parts = line.split("~")
                         if len(parts) >= 35:
                             try:
-                                price = float(parts[3]) if parts[3] else 0
-                                change_pct = float(parts[32]) if len(parts) > 32 and parts[32] else 0
-                                change = float(parts[31]) if len(parts) > 31 and parts[31] else 0
+                                price = safe_float(parts[3], 0)
+                                change_pct = safe_float(parts[32], 0) if len(parts) > 32 else 0
+                                change = safe_float(parts[31], 0) if len(parts) > 31 else 0
                                 data = {"name": name, "price": price, "change_pct": change_pct, "change": change}
                                 _realtime_cache.set(f"idx_spot_{key}", data)
                                 return key, data
@@ -1506,9 +1594,9 @@ class SmartDataFetcher:
                         parts = line.split("~")
                         if len(parts) >= 35:
                             try:
-                                price = float(parts[3]) if parts[3] else 0
-                                change_pct = float(parts[32]) if len(parts) > 32 and parts[32] else 0
-                                change = float(parts[31]) if len(parts) > 31 and parts[31] else 0
+                                price = safe_float(parts[3], 0)
+                                change_pct = safe_float(parts[32], 0) if len(parts) > 32 else 0
+                                change = safe_float(parts[31], 0) if len(parts) > 31 else 0
                                 data = {"name": name, "price": price, "change_pct": change_pct, "change": change}
                                 _realtime_cache.set(f"idx_spot_{key}", data)
                                 return key, data
@@ -1547,18 +1635,18 @@ class SmartDataFetcher:
                         if len(parts) >= 35:
                             try:
                                 name = parts[1]
-                                amount_val = float(parts[3]) if parts[3] else 0
+                                amount_val = safe_float(parts[3], 0)
                                 northbound[name] = amount_val
                             except (ValueError, IndexError):
                                 pass
             except Exception as e:
-                logger.debug(f"Northbound flow fetch failed: {e}")
+                logger.debug("Northbound flow fetch failed: %s", e)
 
         async def fetch_temperature():
             try:
                 up_count = 0
                 down_count = 0
-                for k, v in all_indices.items():
+                for _k, v in all_indices.items():
                     pct = v.get("change_pct", 0)
                     if pct > 0:
                         up_count += 1
@@ -1570,7 +1658,7 @@ class SmartDataFetcher:
                 else:
                     temperature["value"] = 50.0
             except Exception as e:
-                logger.debug(f"Temperature calculation failed: {e}")
+                logger.debug("Temperature calculation failed: %s", e)
                 temperature["value"] = 50.0
 
         try:
@@ -1578,7 +1666,7 @@ class SmartDataFetcher:
                 asyncio.wait_for(fetch_northbound(), timeout=8),
                 asyncio.wait_for(fetch_temperature(), timeout=4),
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.debug("Market overview northbound/temperature timeout")
 
         result = self._assemble_market_overview(all_indices, northbound, temperature)
@@ -1624,13 +1712,13 @@ class SmartDataFetcher:
                 async with _get_hot_symbols_lock():
                     _hot_symbols_cache = symbols
         except Exception as e:
-            logger.debug(f"Refresh hot symbols error: {e}")
+            logger.debug("Refresh hot symbols error: %s", e)
 
     async def preload_all(self) -> None:
         try:
             await self.get_market_overview()
         except Exception as e:
-            logger.debug(f"Preload market overview error: {e}")
+            logger.debug("Preload market overview error: %s", e)
 
     async def prefetch_symbols(self, symbols: list[str], priority: str = "normal") -> None:
         """批量预热缓存，按优先级排序：watchlist > portfolio > hot"""
@@ -1649,7 +1737,7 @@ class SmartDataFetcher:
             market = MarketDetector.detect(symbol)
             tasks.append(self.get_realtime(symbol, market))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         history_tasks = []
         for symbol in batch:
@@ -1679,11 +1767,12 @@ class SmartDataFetcher:
                         if 915 <= hour_min <= 1500:
                             return False
             return True
-        except Exception:
+        except Exception as e:
+            logger.debug("Cache validity check failed: %s", e)
             return False
 
 
-_shared_fetcher: Optional[SmartDataFetcher] = None
+_shared_fetcher: SmartDataFetcher | None = None
 _shared_fetcher_lock = threading.Lock()
 
 

@@ -1,13 +1,24 @@
+import contextlib
 import json
-import os
 import logging
+import os
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-CONFIG_SCHEMA = {
+__all__ = [
+    'CONFIG_SCHEMA',
+    'DEFAULT_CONFIG',
+    'validate_config',
+    'load_config',
+    'get_config',
+    'reload_config',
+    'ConfigType',
+]
+
+CONFIG_SCHEMA: dict[str, dict[str, Any]] = {
     "server": {
         "type": "object",
         "required": False,
@@ -62,7 +73,7 @@ CONFIG_SCHEMA = {
     },
 }
 
-DEFAULT_CONFIG = {}
+DEFAULT_CONFIG: dict[str, dict[str, Any]] = {}
 
 for section, schema in CONFIG_SCHEMA.items():
     DEFAULT_CONFIG[section] = {}
@@ -71,7 +82,7 @@ for section, schema in CONFIG_SCHEMA.items():
             DEFAULT_CONFIG[section][key] = prop["default"]
 
 
-def validate_config(config: Dict[str, Any]) -> List[str]:
+def validate_config(config: dict[str, Any]) -> list[str]:
     errors = []
     for section, schema in CONFIG_SCHEMA.items():
         if section not in config:
@@ -87,9 +98,9 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
             expected_type = prop.get("type")
             if expected_type == "string" and not isinstance(value, str):
                 errors.append(f"{section}.{key}: 期望字符串，得到 {type(value).__name__}")
-            elif expected_type == "integer" and not isinstance(value, int):
+            elif expected_type == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
                 errors.append(f"{section}.{key}: 期望整数，得到 {type(value).__name__}")
-            elif expected_type == "number" and not isinstance(value, (int, float)):
+            elif expected_type == "number" and (not isinstance(value, (int, float)) or isinstance(value, bool)):
                 errors.append(f"{section}.{key}: 期望数字，得到 {type(value).__name__}")
             elif expected_type == "boolean" and not isinstance(value, bool):
                 errors.append(f"{section}.{key}: 期望布尔值，得到 {type(value).__name__}")
@@ -103,17 +114,17 @@ def validate_config(config: Dict[str, Any]) -> List[str]:
     return errors
 
 
-def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
-    config = json.loads(json.dumps(DEFAULT_CONFIG))
+def load_config(config_path: str | None = None) -> dict[str, Any]:
+    config: dict[str, Any] = json.loads(json.dumps(DEFAULT_CONFIG))
 
-    if config_path and os.path.exists(config_path):
+    if config_path and Path(config_path).exists():
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8") as f:
                 user_config = json.load(f)
             _deep_merge(config, user_config)
-            logger.info(f"配置已从 {config_path} 加载")
+            logger.info("配置已从 %s 加载", config_path)
         except Exception as e:
-            logger.warning(f"加载配置文件失败: {e}")
+            logger.warning("加载配置文件失败: %s", e)
 
     for section in config:
         env_prefix = f"QUANTCORE_{section.upper()}_"
@@ -126,22 +137,18 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                     if isinstance(current, bool):
                         config[section][config_key] = val.lower() in ("true", "1", "yes")
                     elif isinstance(current, int):
-                        try:
+                        with contextlib.suppress(ValueError):
                             config[section][config_key] = int(val)
-                        except ValueError:
-                            pass
                     elif isinstance(current, float):
-                        try:
+                        with contextlib.suppress(ValueError):
                             config[section][config_key] = float(val)
-                        except ValueError:
-                            pass
                     else:
                         config[section][config_key] = val
 
     errors = validate_config(config)
     if errors:
         for err in errors:
-            logger.warning(f"配置验证警告: {err}")
+            logger.warning("配置验证警告: %s", err)
 
     return config
 
@@ -154,11 +161,13 @@ def _deep_merge(base: dict, override: dict) -> None:
             base[key] = value
 
 
-_config_instance: Optional[Dict[str, Any]] = None
+ConfigType = dict[str, Any]
+
+_config_instance: ConfigType | None = None
 _config_lock = threading.Lock()
 
 
-def get_config() -> Dict[str, Any]:
+def get_config() -> ConfigType:
     global _config_instance
     if _config_instance is None:
         with _config_lock:
@@ -168,7 +177,7 @@ def get_config() -> Dict[str, Any]:
     return _config_instance
 
 
-def reload_config() -> Dict[str, Any]:
+def reload_config() -> dict[str, Any]:
     global _config_instance
     with _config_lock:
         _config_instance = None

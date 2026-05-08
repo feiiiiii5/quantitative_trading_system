@@ -1,6 +1,5 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -54,7 +53,7 @@ def execute_twap(
 
 def execute_vwap(
     total_quantity: int,
-    volume_profile: List[float],
+    volume_profile: list[float],
     current_bar: int = 0,
 ) -> int:
     if total_quantity <= 0 or not volume_profile:
@@ -71,17 +70,17 @@ def execute_vwap(
 def generate_volume_profile(
     df: pd.DataFrame,
     n_bars: int = 6,
-) -> List[float]:
+) -> list[float]:
     if "volume" not in df.columns or len(df) < n_bars:
         return [1.0 / n_bars] * n_bars
     recent_vol = df["volume"].iloc[-n_bars:].values
     total = np.sum(recent_vol)
     if total < 1e-10:
         return [1.0 / n_bars] * n_bars
-    profile = recent_vol / total
+    profile: np.ndarray = recent_vol / total
     while len(profile) < n_bars:
         profile = np.append(profile, profile[-1])
-    return profile.tolist()
+    return [float(x) for x in profile]
 
 
 @dataclass
@@ -92,11 +91,11 @@ class ExecutionResult:
     slippage: float
     commission: float
     execution_method: str
-    bar_details: List[Dict] = field(default_factory=list)
+    bar_details: list[dict] = field(default_factory=list)
 
 
 class ExecutionEngine:
-    def __init__(self, cost_model: CostModel = None):
+    def __init__(self, cost_model: CostModel | None = None):
         self._cost_model = cost_model or CostModel()
 
     def execute_market_order(
@@ -114,7 +113,6 @@ class ExecutionEngine:
             cost = self._cost_model.calc_sell_cost(current_price, quantity)
             slippage = current_price * quantity * self._cost_model.slippage_rate
             commission = max(current_price * quantity * self._cost_model.commission_rate, self._cost_model.min_commission)
-            stamp_tax = current_price * quantity * self._cost_model.stamp_tax_rate
             fill_price = current_price * (1 - self._cost_model.slippage_rate)
 
         return ExecutionResult(

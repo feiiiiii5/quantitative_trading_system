@@ -3,7 +3,8 @@ QuantCore - 量化交易系统
 简洁高效，一键启动
 """
 import asyncio
-import gc
+import contextlib
+import itertools
 import logging
 import multiprocessing
 import os
@@ -19,8 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 try:
-    import uvloop
-    uvloop.install()
+    import uvloop  # noqa: F401
     _has_uvloop = True
 except ImportError:
     _has_uvloop = False
@@ -32,10 +32,14 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import router, push_realtime_data, _manager
 from api.auth import APIAuthMiddleware
-from core.logger import setup_logger
+from api.backtest_routes import backtest_router
+from api.duckdb_routes import duckdb_router
+from api.feature_routes import feature_router
+from api.routes import _manager, push_portfolio_metrics, push_realtime_data, router
 from core.config import get_config
+from core.logger import setup_logger
+from core.memory_guard import get_memory_usage, is_memory_critical, is_memory_pressure
 
 try:
     if sys.platform == "darwin":
@@ -53,7 +57,10 @@ try:
     from core.config import load_config
     cfg = load_config()
     PORT = int(cfg.get("server", {}).get("port", 8080))
-except Exception:
+    if not (1024 <= PORT <= 65535):
+        PORT = 8080
+except Exception as e:
+    logger.debug(f"Config load error, using default port: {e}")
     PORT = 8080
 _preload_done = threading.Event()
 _PID_FILE = BASE_DIR / "data" / ".quantcore.pid"
@@ -70,15 +77,16 @@ def _kill_existing_process():
             try:
                 _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
                 _PID_FILE.write_text(str(os.getpid()))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"PID file write error in kill check: {e}")
             return
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Port check error: {e}")
         try:
             _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
             _PID_FILE.write_text(str(os.getpid()))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"PID file write error: {e}")
         return
 
     try:
@@ -120,12 +128,12 @@ def _kill_existing_process():
 
     try:
         if sys.platform == "darwin":
-            result = subprocess.run(
+            proc = subprocess.run(
                 ["lsof", "-ti", f":{PORT}"],
                 capture_output=True, text=True, timeout=5,
             )
-            if result.stdout.strip():
-                for pid_str in result.stdout.strip().split("\n"):
+            if proc.stdout.strip():
+                for pid_str in proc.stdout.strip().split("\n"):
                     pid = int(pid_str.strip())
                     if pid != os.getpid():
                         try:
@@ -145,10 +153,8 @@ def _kill_existing_process():
                 for pid_str in result.stdout.strip().split():
                     pid = int(pid_str.strip())
                     if pid != os.getpid():
-                        try:
+                        with contextlib.suppress(ProcessLookupError, PermissionError):
                             os.kill(pid, signal.SIGTERM)
-                        except (ProcessLookupError, PermissionError):
-                            pass
                 time.sleep(0.5)
     except Exception as e:
         logger.debug(f"Port cleanup error: {e}")
@@ -156,19 +162,19 @@ def _kill_existing_process():
     try:
         _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
         _PID_FILE.write_text(str(os.getpid()))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"PID file write error: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("QuantCore 启动中...")
 
-    from core.database import get_db, get_cache_manager
-    from core.data_fetcher import SmartDataFetcher, get_fetcher
     from core.backtest import BacktestEngine
-    from core.strategies import CompositeStrategy
+    from core.data_fetcher import get_fetcher
+    from core.database import get_cache_manager, get_db
     from core.simulated_trading import SimulatedTrading
+    from core.strategies import CompositeStrategy
 
     app.state.db = get_db()
     app.state.fetcher = get_fetcher()
@@ -176,6 +182,22 @@ async def lifespan(app: FastAPI):
     app.state.backtest_engine = BacktestEngine()
     app.state.trading = SimulatedTrading()
     app.state.start_time = time.time()
+
+    try:
+        from api.auth import ensure_default_user
+        ensure_default_user()
+        logger.info("默认用户初始化完成")
+    except Exception as e:
+        logger.debug(f"Default user init skipped: {e}")
+
+    try:
+        db = get_db()
+        saved = db.get_config("portfolio_snapshot")
+        if isinstance(saved, dict) and saved.get("version"):
+            app.state.trading.import_portfolio(saved)
+            logger.info("已从快照恢复模拟交易组合")
+    except Exception as e:
+        logger.debug(f"Portfolio snapshot restore failed: {e}")
     app.state._request_count = 0
     app.state._total_response_time = 0.0
     app.state._latency_buckets = {
@@ -195,8 +217,8 @@ async def lifespan(app: FastAPI):
     try:
         from core.stock_search import _STOCK_INDEX
         logger.info(f"股票搜索索引: {len(_STOCK_INDEX)} 条")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Stock search index load failed: {e}")
 
     try:
         from core.stock_search import build_search_index_async
@@ -215,6 +237,9 @@ async def lifespan(app: FastAPI):
         task = asyncio.create_task(push_realtime_data(app.state.fetcher))
         app.state._bg_tasks.append(task)
 
+        task = asyncio.create_task(push_portfolio_metrics(app.state.fetcher))
+        app.state._bg_tasks.append(task)
+
         async def _stale_ws_sweeper():
             while True:
                 await asyncio.sleep(60)
@@ -226,11 +251,33 @@ async def lifespan(app: FastAPI):
                     raise
                 except Exception as e:
                     logger.warning(f"Stale WS sweep error: {e}")
+                try:
+                    from api.routes import (
+                        sweep_stale_pnl_connections,
+                        sweep_stale_regime_connections,
+                        sweep_stale_signal_connections,
+                    )
+                    pnl_swept = await sweep_stale_pnl_connections()
+                    sig_swept = await sweep_stale_signal_connections()
+                    reg_swept = await sweep_stale_regime_connections()
+                    if pnl_swept or sig_swept or reg_swept:
+                        logger.info(f"Swept {pnl_swept} stale PnL, {sig_swept} stale signal, {reg_swept} stale regime WS connections")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Stale WS sweep error: {e}")
 
         task2 = asyncio.create_task(_stale_ws_sweeper())
         app.state._bg_tasks.append(task2)
     except Exception as e:
         logger.warning(f"WS push task start failed: {e}")
+
+    try:
+        from api.routes import push_regime_updates
+        task3 = asyncio.create_task(push_regime_updates(app.state.fetcher))
+        app.state._bg_tasks.append(task3)
+    except Exception as e:
+        logger.warning(f"Regime push task start failed: {e}")
 
     try:
         task = asyncio.create_task(_scheduler_loop(app))
@@ -241,8 +288,8 @@ async def lifespan(app: FastAPI):
     try:
         from core.market_data import start_background_refresh
         start_background_refresh()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Market data background refresh start failed: {e}")
 
     os.makedirs(BASE_DIR / "data", exist_ok=True)
     os.makedirs(BASE_DIR / "static", exist_ok=True)
@@ -260,7 +307,7 @@ async def lifespan(app: FastAPI):
             await asyncio.gather(*app.state._bg_tasks, return_exceptions=True)
         logger.info("后台异步任务已取消")
     except Exception as e:
-        logger.warning(f"Task cancellation failed: {e}")
+        logger.error("Failed to cancel background tasks: %s", e)
 
     try:
         from core.data_fetcher import close_aiohttp_session
@@ -272,15 +319,16 @@ async def lifespan(app: FastAPI):
     try:
         db = get_db()
         db._flush_buffer()
-        logger.info("数据库写缓冲已刷入磁盘")
+        db.close()
+        logger.info("数据库连接已关闭")
     except Exception as e:
-        logger.warning(f"DB buffer flush on shutdown failed: {e}")
+        logger.error("Failed to close database: %s", e)
 
     try:
         from core.market_data import stop_background_refresh
         stop_background_refresh()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Market data background refresh stop failed: {e}")
 
     try:
         cm = get_cache_manager()
@@ -291,10 +339,10 @@ async def lifespan(app: FastAPI):
     try:
         trading: SimulatedTrading = app.state.trading
         db = get_db()
-        db.set_config("portfolio_snapshot", trading.get_account_info())
+        db.set_config("portfolio_snapshot", trading.export_portfolio())
         logger.info("Portfolio snapshot saved")
     except Exception as e:
-        logger.warning(f"Portfolio snapshot failed: {e}")
+        logger.error("Failed to save portfolio snapshot: %s", e)
 
     logger.info("QuantCore 已关闭")
 
@@ -312,7 +360,7 @@ async def _preload_data(fetcher):
 
 async def _scheduler_loop(app):
     await asyncio.sleep(5)
-    from api.routes import _manager, _is_trading_hours
+    from api.routes import _is_trading_hours, _manager
     from core.database import get_db
     from core.market_detector import MarketDetector
 
@@ -335,15 +383,20 @@ async def _scheduler_loop(app):
             now = time.time()
             fetcher = app.state.fetcher
 
+            # 定期检查内存状态，压力时自动回收
+            try:
+                from core.memory_guard import check_and_reclaim_if_needed
+                check_and_reclaim_if_needed()
+            except (ImportError, RuntimeError) as e:
+                logger.debug(f"Memory guard check skipped: {e}")
+
             if now - last_ws_rt >= ws_rt_interval:
                 try:
                     if _is_trading_hours() and _manager.connections:
                         subscribed = _manager.get_all_subscribed_symbols()
                         for symbol in list(subscribed)[:30]:
-                            try:
+                            with contextlib.suppress(TimeoutError, Exception):
                                 await asyncio.wait_for(fetcher.get_realtime(symbol), timeout=3)
-                            except (asyncio.TimeoutError, Exception):
-                                pass
                     last_ws_rt = now
                 except Exception as e:
                     logger.warning("WS realtime refresh error: %s", e, exc_info=True)
@@ -371,8 +424,8 @@ async def _scheduler_loop(app):
                             try:
                                 market = MarketDetector.detect(symbol)
                                 await fetcher.get_fundamentals(symbol, market)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Fundamental prefetch failed for {symbol}: {e}")
                     last_fundamental = now
                 except Exception as e:
                     logger.warning("Fundamental refresh error: %s", e, exc_info=True)
@@ -406,7 +459,7 @@ async def _scheduler_loop(app):
                                             alert["triggered_at"] = datetime.now().isoformat()
                                             alert["triggered_price"] = price
                                             db.set_config("price_alerts", alerts)
-                                except (asyncio.TimeoutError, Exception):
+                                except (TimeoutError, Exception):
                                     pass
                     last_alert_check = now
                 except Exception as e:
@@ -435,15 +488,66 @@ async def _scheduler_loop(app):
             await asyncio.sleep(10)
 
 
-try:
-    from fastapi.responses import ORJSONResponse
-    _default_response_class = ORJSONResponse
-except ImportError:
-    _default_response_class = None
-
 app = FastAPI(
-    title="QuantCore", version="3.0.0", lifespan=lifespan,
-    **({"default_response_class": _default_response_class} if _default_response_class else {}),
+    title="QuantCore",
+    version="3.0.0",
+    lifespan=lifespan,
+    description="""
+## QuantCore - Quantitative Trading System
+
+A comprehensive quantitative trading platform with:
+- Real-time market data fetching
+- Advanced technical analysis
+- Strategy backtesting
+- Risk management
+- Portfolio optimization
+- API endpoints for integration
+- WebSocket for real-time updates
+
+### Key Features:
+- **Multiple Data Sources**: AkShare, BaoStock, etc.
+- **Vectorized Backtesting**: High-performance strategy testing
+- **Risk Management**: Stop-loss, take-profit, VaR, drawdown limits
+- **Strategy Engine**: Pre-built strategies with customization
+- **WebSocket API**: Real-time market data and alerts
+    """,
+    contact={
+        "name": "QuantCore Team",
+        "url": "https://github.com/quantcore",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    openapi_tags=[
+        {
+            "name": "system",
+            "description": "System health, metrics, and configuration endpoints",
+        },
+        {
+            "name": "market",
+            "description": "Market data and stock information endpoints",
+        },
+        {
+            "name": "strategy",
+            "description": "Trading strategy generation and execution",
+        },
+        {
+            "name": "backtest",
+            "description": "Historical backtesting and analysis",
+        },
+        {
+            "name": "portfolio",
+            "description": "Portfolio management and risk analysis",
+        },
+        {
+            "name": "auth",
+            "description": "Authentication and authorization endpoints",
+        },
+    ],
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
 )
 
 
@@ -464,12 +568,10 @@ _config = get_config()
 _api_config = _config.get("api", {})
 _cors_origins = _config.get("server", {}).get("cors_origins", [])
 _default_origins = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:3000",
     "http://localhost:8080",
+    "http://localhost:8081",
     "http://127.0.0.1:8080",
+    "http://127.0.0.1:8081",
 ]
 app.add_middleware(APIAuthMiddleware,
     api_key=_api_config.get("api_key", ""),
@@ -485,19 +587,28 @@ app.add_middleware(
 
 
 app.include_router(router, prefix="/api")
-
-from api.backtest_routes import backtest_router
 app.include_router(backtest_router, prefix="/api")
-
-from api.feature_routes import feature_router
 app.include_router(feature_router, prefix="/api")
+app.include_router(duckdb_router, prefix="/api")
+
+
+_request_counter = itertools.count(1)
 
 
 @app.middleware("http")
 async def unified_metrics_middleware(request: Request, call_next):
-    start = time.time()
+    start = time.monotonic()
+    path = request.url.path
+    request_id = request.headers.get("X-Request-ID", f"srv-{next(_request_counter):08x}")
     response = await call_next(request)
-    elapsed = time.time() - start
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-Request-ID"] = request_id
+    if path.startswith("/api"):
+        response.headers["X-API-Version"] = "3.0.0"
+    elapsed = time.monotonic() - start
     elapsed_ms = elapsed * 1000
     try:
         app.state._request_count = getattr(app.state, "_request_count", 0) + 1
@@ -520,30 +631,44 @@ async def unified_metrics_middleware(request: Request, call_next):
                 buckets[">5s"] += 1
         if response.status_code >= 400:
             app.state._error_count = getattr(app.state, "_error_count", 0) + 1
-    except Exception:
-        pass
-    path = request.url.path
+    except Exception as e:
+        logger.debug(f"Metrics middleware error: {e}")
     if path.startswith("/api"):
         try:
             from core.metrics import metrics
             path_seg = path.split("/")[2] if len(path.split("/")) > 2 else "other"
             metrics.increment("api_requests_total", tags={"path": path_seg})
-            metrics.timer("api_request_duration", elapsed, tags={"path": path_seg})
-        except Exception:
-            pass
+            metrics.histogram("api_request_duration", elapsed_ms, tags={"path": path_seg})
+        except Exception as e:
+            logger.debug(f"Metrics reporting error: {e}")
     return response
 
 
-@app.get("/")
+@app.get("/", tags=["system"], summary="Application root endpoint")
 def index():
+    """
+    Get the root endpoint which either serves the frontend application
+    or returns system status information.
+    """
     index_file = BASE_DIR / "static" / "index.html"
     if index_file.exists():
         return FileResponse(str(index_file))
     return {"name": "QuantCore", "version": "3.0.0", "status": "running", "docs": "/docs"}
 
 
-@app.get("/health")
+@app.get("/health", tags=["system"], summary="Health check endpoint")
 async def health_check(request: Request):
+    """
+    Comprehensive health check that verifies all system components:
+    - Database connection
+    - Network connectivity
+    - Memory usage
+    - Cache status
+    - Data sources availability
+    - Configuration status
+
+    Returns overall system health status with detailed component checks.
+    """
     checks = {}
     try:
         db = request.app.state.db
@@ -562,13 +687,15 @@ async def health_check(request: Request):
     try:
         import psutil
         process = psutil.Process()
-        mem = process.memory_info()
         cpu_pct = process.cpu_percent(interval=0.1)
+        mem_info = get_memory_usage()
         checks["memory"] = {
-            "rss_mb": round(mem.rss / 1024 ** 2, 1),
-            "vms_mb": round(mem.vms / 1024 ** 2, 1),
+            "rss_mb": mem_info.get("rss_mb", 0),
+            "vms_mb": mem_info.get("vms_mb", 0),
             "cpu_percent": round(cpu_pct, 1),
-            "status": "ok" if mem.rss < 512 * 1024 * 1024 else "warning",
+            "status": "ok" if not is_memory_pressure() else ("warning" if not is_memory_critical() else "critical"),
+            "system_used_pct": mem_info.get("system_used_pct", 0),
+            "process_pct": mem_info.get("process_pct", 0),
         }
     except Exception as e:
         checks["memory"] = {"status": "warning", "message": str(e)}
@@ -577,8 +704,8 @@ async def health_check(request: Request):
         from core.data_fetcher import _history_cache, _realtime_cache
         checks["cache"] = {
             "status": "ok",
-            "realtime_entries": len(_realtime_cache),
-            "history_entries": len(_history_cache),
+            "realtime_entries": str(len(_realtime_cache)),
+            "history_entries": str(len(_history_cache)),
         }
     except Exception as e:
         checks["cache"] = {"status": "warning", "message": str(e)}
@@ -600,18 +727,63 @@ async def health_check(request: Request):
         checks["config"] = {"status": "warning", "message": str(e)}
 
     uptime = time.time() - getattr(request.app.state, "start_time", time.time())
+    request_count = getattr(request.app.state, "_request_count", 0)
+    total_response_time = getattr(request.app.state, "_total_response_time", 0.0)
     all_ok = all(v.get("status") == "ok" for v in checks.values())
     has_warning = any(v.get("status") == "warning" for v in checks.values())
+    has_critical = any(v.get("status") == "critical" for v in checks.values())
     return {
-        "status": "healthy" if all_ok else ("degraded" if has_warning else "unhealthy"),
+        "status": "healthy" if all_ok else ("degraded" if has_warning else ("critical" if has_critical else "unhealthy")),
         "uptime_seconds": round(uptime),
         "checks": checks,
         "version": "3.0.0",
-        "request_count": getattr(request.app.state, "_request_count", 0),
+        "request_count": request_count,
         "avg_response_ms": round(
-            getattr(request.app.state, "_total_response_time", 0) / max(getattr(request.app.state, "_request_count", 1), 1),
+            total_response_time / request_count if request_count > 0 else 0,
             2,
         ),
+    }
+
+
+@app.get("/api/system/memory", tags=["system"], summary="Get memory usage information")
+async def system_memory():
+    """
+    Get detailed memory usage statistics:
+    - Process memory (RSS, VMS)
+    - System memory usage
+    - Memory pressure status
+    - Critical memory warning status
+    """
+    mem_info = get_memory_usage()
+    return {
+        "success": True,
+        "data": {
+            "memory": mem_info,
+            "is_pressure": is_memory_pressure(),
+            "is_critical": is_memory_critical(),
+        },
+    }
+
+
+@app.get("/api/system/stats", tags=["system"], summary="Get system performance statistics")
+async def system_stats(request: Request):
+    """
+    Get comprehensive system performance metrics:
+    - Total request count
+    - Response time statistics
+    - Latency distribution buckets
+    - Error count
+    - System uptime
+    """
+    return {
+        "success": True,
+        "data": {
+            "request_count": getattr(request.app.state, "_request_count", 0),
+            "total_response_time_ms": getattr(request.app.state, "_total_response_time", 0),
+            "latency_buckets": getattr(request.app.state, "_latency_buckets", {}),
+            "error_count": getattr(request.app.state, "_error_count", 0),
+            "uptime_seconds": round(time.time() - getattr(request.app.state, "start_time", time.time())),
+        },
     }
 
 
@@ -624,11 +796,10 @@ if assets_dir.exists():
 async def spa_fallback(request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if response.status_code == 404 and not path.startswith("/api") and not path.startswith("/docs"):
-        if "text/html" in request.headers.get("accept", ""):
-            index_file = BASE_DIR / "static" / "index.html"
-            if index_file.exists():
-                return FileResponse(str(index_file))
+    if response.status_code == 404 and not path.startswith("/api") and not path.startswith("/docs") and "text/html" in request.headers.get("accept", ""):
+        index_file = BASE_DIR / "static" / "index.html"
+        if index_file.exists():
+            return FileResponse(str(index_file))
     return response
 
 
@@ -681,8 +852,14 @@ def _build_frontend():
 
 
 if __name__ == "__main__":
+    _dev_mode = "--dev" in sys.argv
+    if _dev_mode:
+        PORT = 8081
+        logger.info("开发模式: 后端运行在 8081, 前端 Vite 运行在 8080")
+
     _kill_existing_process()
-    _build_frontend()
+    if not _dev_mode:
+        _build_frontend()
 
     def open_browser():
         _preload_done.wait(timeout=30)

@@ -1,16 +1,14 @@
 import numpy as np
 import pandas as pd
-import pytest
 
 from core.alpha_screener import (
-    AlphaScreeningConfig,
     AlphaScreener,
+    AlphaScreeningConfig,
+    calc_decay,
     calc_ic,
     calc_rolling_ic,
     calc_turnover,
-    calc_decay,
 )
-from core.alpha_engine import AlphaResult
 
 
 class TestCalcIC:

@@ -1,4 +1,4 @@
-from core.events import EventBus, Event, EventType, BacktestProgressTracker
+from core.events import BacktestProgressTracker, Event, EventBus, EventType
 
 
 class TestEventBus:
@@ -53,9 +53,9 @@ class TestEventBus:
     def test_handler_exception_doesnt_break_others(self):
         bus = EventBus()
         count = [0]
-        def bad_handler(e):
-            1 / 0
-        def good_handler(e):
+        def bad_handler(_e):
+            _ = 1 / 0  # Intentional division by zero for testing
+        def good_handler(_e):
             count[0] += 1
         bus.subscribe(EventType.ON_BAR, bad_handler)
         bus.subscribe(EventType.ON_BAR, good_handler)

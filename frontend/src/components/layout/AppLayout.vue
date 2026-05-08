@@ -1,395 +1,106 @@
 <template>
-  <div class="shell">
-    <aside class="sidebar" :class="{ expanded }" @mouseenter="expanded = true" @mouseleave="expanded = false">
-      <div class="sidebar-brand">
-        <div class="brand-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path d="M3 3v18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M7 16l4-8 4 4 6-10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </div>
-        <transition name="fade">
-          <span v-if="expanded" class="brand-text">QuantCore</span>
-        </transition>
-      </div>
-
-      <nav class="sidebar-nav">
-        <router-link
-          v-for="item in navItems"
-          :key="item.path"
-          :to="item.path"
-          class="nav-item"
-          :class="{ active: isActive(item.path) }"
-        >
-          <div class="nav-icon" v-html="item.icon" />
-          <transition name="fade">
-            <span v-if="expanded" class="nav-label">{{ item.label }}</span>
-          </transition>
-        </router-link>
-      </nav>
-
-      <div class="sidebar-footer">
-        <div class="nav-item clock-item">
-          <div class="nav-icon clock-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
-            </svg>
-          </div>
-          <transition name="fade">
-            <span v-if="expanded" class="nav-label mono">{{ currentTime }}</span>
-          </transition>
-        </div>
-      </div>
-    </aside>
-
+  <div class="app-shell">
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+    <Sidebar />
     <div class="main-area">
-      <header class="topbar">
-        <div class="topbar-left">
-          <div class="market-status" v-if="marketStatus">
-            <span
-              v-for="(s, key) in marketStatus"
-              :key="key"
-              class="status-pill"
-              :class="s.is_open ? 'open' : 'closed'"
-            >
-              <span class="status-dot" />
-              {{ key === 'A' ? 'A股' : key === 'HK' ? '港股' : '美股' }}
-            </span>
-          </div>
-        </div>
-
-        <div class="topbar-center">
-          <div class="search-trigger" @click="showSearch = true">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-            </svg>
-            <span>搜索股票代码或名称</span>
-            <kbd>⌘K</kbd>
-          </div>
-        </div>
-
-        <div class="topbar-right">
-          <button class="theme-toggle" @click="themeStore.toggleTheme()" :title="themeStore.theme === 'dark' ? '切换亮色模式' : '切换暗色模式'">
-            <svg v-if="themeStore.theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-            </svg>
-            <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-            </svg>
-          </button>
-          <div class="index-tickers" v-if="cnIndices.length">
-            <span v-for="idx in cnIndices.slice(0, 3)" :key="idx.code" class="ticker mono">
-              {{ idx.name }}
-              <span :class="idx.change_pct >= 0 ? 'text-rise' : 'text-fall'">
-                {{ idx.change_pct >= 0 ? '+' : '' }}{{ idx.change_pct?.toFixed(2) }}%
-              </span>
-            </span>
-          </div>
-        </div>
-      </header>
-
-      <main class="content">
-        <slot />
+      <Topbar />
+      <TickerBar />
+      <main class="content-area" id="main-content">
+        <ErrorBoundary>
+          <slot />
+        </ErrorBoundary>
       </main>
     </div>
-
-    <teleport to="body">
-      <transition name="fade">
-        <div v-if="showSearch" class="search-overlay" @click.self="showSearch = false">
-          <div class="search-modal">
-            <div class="search-input-wrap">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-              </svg>
-              <input
-                ref="searchInput"
-                v-model="searchQuery"
-                placeholder="输入股票代码或名称..."
-                @input="onSearch"
-              />
-              <kbd @click="showSearch = false">ESC</kbd>
-            </div>
-            <div class="search-results" v-if="searchResults.length">
-              <div
-                v-for="item in searchResults"
-                :key="item.symbol"
-                class="search-item"
-                @click="goToStock(item.symbol)"
-              >
-                <span class="search-code mono">{{ item.code }}</span>
-                <span class="search-name">{{ item.name }}</span>
-                <span class="search-market">{{ item.market }}</span>
-              </div>
-            </div>
-            <div v-else-if="searchQuery" class="search-empty">未找到相关股票</div>
-          </div>
-        </div>
-      </transition>
-    </teleport>
+    <ShortcutHelpOverlay ref="shortcutHelp" />
+    <MobileNav />
+    <Transition name="pwa-banner">
+      <div v-if="canInstall" class="pwa-install-banner" @click="promptInstall">
+        📲 安装 QuantCore 到桌面
+      </div>
+    </Transition>
+    <Transition name="pwa-banner">
+      <div v-if="isOffline" class="pwa-offline-banner">
+        ⚡ 当前离线模式 · 数据可能不是最新
+      </div>
+    </Transition>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
-import { api } from '@/api'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useThemeStore } from '@/stores/theme'
-import type { MarketStatus, SearchItem } from '@/types'
-import { debounce } from '@/utils/format'
+import { useWebSocketStore } from '@/stores/websocket'
+import { useMarketAnomalyNotify } from '@/composables/useMarketAnomalyNotify'
+import { registerGlobalShortcut, registerNavigationShortcuts } from '@/composables/useKeyboardShortcuts'
+import { usePageTitle } from '@/composables/usePageTitle'
+import { usePwaInstall } from '@/composables/usePwaInstall'
+import { useWebVitals } from '@/composables/useWebVitals'
+import Sidebar from './Sidebar.vue'
+import Topbar from './Topbar.vue'
+import TickerBar from './TickerBar.vue'
+import ErrorBoundary from '@/components/ui/ErrorBoundary.vue'
+import ShortcutHelpOverlay from '@/components/ui/ShortcutHelpOverlay.vue'
+import MobileNav from './MobileNav.vue'
+import { useRouter } from 'vue-router'
+
+useThemeStore()
+useMarketAnomalyNotify()
+usePageTitle()
+useWebVitals()
 
 const router = useRouter()
-const route = useRoute()
-const themeStore = useThemeStore()
+const wsStore = useWebSocketStore()
+const shortcutHelp = ref<InstanceType<typeof ShortcutHelpOverlay> | null>(null)
 
-const expanded = ref(false)
-const currentTime = ref('')
-const showSearch = ref(false)
-const searchQuery = ref('')
-const searchResults = ref<SearchItem[]>([])
-const searchInput = ref<HTMLInputElement>()
-const marketStatus = ref<Record<string, MarketStatus> | null>(null)
-const cnIndices = ref<{ code: string; name: string; change_pct: number }[]>([])
+const unregisterHelp = registerGlobalShortcut({
+  key: '?',
+  shift: true,
+  handler: () => {
+    if (shortcutHelp.value) {
+      shortcutHelp.value.open()
+    }
+  },
+  description: '显示快捷键帮助',
+})
 
-const navItems = [
-  {
-    path: '/dashboard',
-    label: '仪表盘',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
-  },
-  {
-    path: '/market',
-    label: '行情',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v18h18"/><path d="M7 16l4-8 4 4 6-10"/></svg>',
-  },
-  {
-    path: '/news',
-    label: '资讯',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 22h16a2 2 0 002-2V4a2 2 0 00-2-2H8a2 2 0 00-2 2v16a2 2 0 01-2 2zm0 0a2 2 0 01-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8M15 18h-5M10 6h8v4h-8z"/></svg>',
-  },
-  {
-    path: '/screener',
-    label: '选股',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg>',
-  },
-  {
-    path: '/moneyflow',
-    label: '资金',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
-  },
-  {
-    path: '/chip',
-    label: '筹码',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>',
-  },
-  {
-    path: '/sector',
-    label: '板块',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/><path d="M2 12h20"/></svg>',
-  },
-  {
-    path: '/strategy',
-    label: '策略',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
-  },
-  {
-    path: '/portfolio',
-    label: '组合',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M6 12h12"/></svg>',
-  },
-  {
-    path: '/watchlist',
-    label: '自选',
-    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.27 5.82 22 7 14.14l-5-4.87 6.91-1.01L12 2z"/></svg>',
-  },
-]
+const unregisterNav = registerNavigationShortcuts((path) => router.push(path))
 
-function isActive(path: string) {
-  return route.path === path || route.path.startsWith(path + '/')
-}
-
-function updateTime() {
-  const now = new Date()
-  currentTime.value = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
-}
-
-const onSearch = debounce(async () => {
-  if (!searchQuery.value.trim()) {
-    searchResults.value = []
-    return
-  }
-  try {
-    searchResults.value = await api.search.stocks(searchQuery.value.trim(), 8)
-  } catch {
-    searchResults.value = []
-  }
-}, 300)
-
-function goToStock(symbol: string) {
-  showSearch.value = false
-  searchQuery.value = ''
-  searchResults.value = []
-  router.push(`/stock/${symbol}`)
-}
-
-function onKeydown(e: KeyboardEvent) {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-    e.preventDefault()
-    showSearch.value = true
-    setTimeout(() => searchInput.value?.focus(), 100)
-  }
-  if (e.key === 'Escape') {
-    showSearch.value = false
-  }
-}
-
-async function fetchStatus() {
-  try {
-    marketStatus.value = await api.market.status()
-    const overview = await api.market.overview()
-    cnIndices.value = Object.entries(overview.cn_indices).map(([code, d]) => ({
-      code,
-      name: d.name,
-      change_pct: d.change_pct,
-    }))
-  } catch {
-    // silent
-  }
-}
-
-let timer: ReturnType<typeof setInterval>
-let statusTimer: ReturnType<typeof setInterval>
+const { canInstall, isOffline, promptInstall } = usePwaInstall()
 
 onMounted(() => {
-  updateTime()
-  timer = setInterval(updateTime, 1000)
-  statusTimer = setInterval(fetchStatus, 30000)
-  fetchStatus()
-  window.addEventListener('keydown', onKeydown)
+  wsStore.connect()
 })
 
 onUnmounted(() => {
-  clearInterval(timer)
-  clearInterval(statusTimer)
-  window.removeEventListener('keydown', onKeydown)
+  wsStore.disconnect()
+  unregisterHelp()
+  unregisterNav()
 })
 </script>
 
 <style scoped>
-.shell {
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 0;
+  padding: var(--u2) var(--u4);
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  z-index: 10000;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+.app-shell {
   display: flex;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-base);
-}
-
-.sidebar {
-  width: var(--sidebar-width);
-  background: var(--bg-glass);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  transition: width var(--duration-slower) var(--ease-out);
-  z-index: 100;
-  flex-shrink: 0;
-}
-
-.sidebar.expanded {
-  width: var(--sidebar-expanded);
-}
-
-.sidebar-brand {
-  height: var(--topbar-height);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 0 var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.brand-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-gradient-accent);
-  color: white;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  box-shadow: var(--glow-accent);
-}
-
-.brand-text {
-  font-size: var(--text-md);
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  letter-spacing: -0.02em;
-}
-
-.sidebar-nav {
-  flex: 1;
-  padding: var(--space-2);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  overflow-y: auto;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  white-space: nowrap;
-  overflow: hidden;
-  text-decoration: none;
-}
-
-.nav-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.nav-item.active {
-  background: var(--accent-muted);
-  color: var(--accent);
-}
-
-.nav-icon {
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.nav-label {
-  font-size: var(--text-sm);
-  white-space: nowrap;
-  overflow: hidden;
-  font-weight: 500;
-}
-
-.sidebar-footer {
-  padding: var(--space-2);
-  border-top: 1px solid var(--border-subtle);
-}
-
-.clock-item {
-  cursor: default;
-}
-
-.clock-icon {
-  color: var(--text-tertiary);
+  background: var(--bg-void);
+  position: relative;
 }
 
 .main-area {
@@ -398,241 +109,62 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+  border-left: 1px solid var(--border-hair);
 }
 
-.topbar {
-  height: var(--topbar-height);
-  background: var(--bg-glass);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
-  border-bottom: 1px solid var(--border-subtle);
-  display: flex;
-  align-items: center;
-  padding: 0 var(--space-6);
-  gap: var(--space-4);
-  flex-shrink: 0;
-}
-
-.topbar-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.market-status {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.status-pill {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: var(--text-xs);
-  padding: 3px 10px;
-  border-radius: 100px;
-  background: var(--bg-elevated);
-  font-weight: 500;
-}
-
-.status-pill.open {
-  color: var(--fall);
-}
-
-.status-pill.closed {
-  color: var(--text-tertiary);
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.status-pill.open .status-dot {
-  animation: pulse 2s ease-in-out infinite;
-}
-
-.topbar-center {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-}
-
-.search-trigger {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  color: var(--text-tertiary);
-  font-size: var(--text-sm);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
-  min-width: 280px;
-}
-
-.search-trigger:hover {
-  border-color: var(--border-hover);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.search-trigger kbd {
-  font-size: 10px;
-  padding: 2px 6px;
-  background: var(--bg-overlay);
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  margin-left: auto;
-  color: var(--text-tertiary);
-}
-
-.topbar-right {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-}
-
-.theme-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 50%;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-.theme-toggle:hover {
-  border-color: var(--border-hover);
-  color: var(--text-primary);
-  background: var(--bg-overlay);
-}
-
-.index-tickers {
-  display: flex;
-  gap: var(--space-5);
-}
-
-.ticker {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  display: flex;
-  gap: 5px;
-  font-weight: 500;
-}
-
-.content {
+.content-area {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--space-6);
+  padding: var(--u4);
+  position: relative;
+  background: var(--bg-base);
+  border-top: 1px solid var(--border-hair);
 }
 
-.search-overlay {
+@media (max-width: 1024px) {
+  .content-area { padding: var(--u3); }
+}
+
+@media (max-width: 768px) {
+  .content-area { padding: var(--u2); padding-bottom: 72px; }
+}
+
+.pwa-install-banner,
+.pwa-offline-banner {
   position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 1000;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 18vh;
-  backdrop-filter: blur(8px);
-}
-
-.search-modal {
-  width: 560px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-float);
-  overflow: hidden;
-  animation: fadeSlideDown var(--duration-normal) var(--ease-out);
-}
-
-.search-input-wrap {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-tertiary);
-}
-
-.search-input-wrap input {
-  flex: 1;
-  background: none;
-  border: none;
-  outline: none;
-  color: var(--text-primary);
-  font-size: var(--text-md);
-  font-family: var(--font-sans);
-}
-
-.search-input-wrap input::placeholder {
-  color: var(--text-tertiary);
-}
-
-.search-input-wrap kbd {
-  font-size: 10px;
-  padding: 2px 6px;
-  background: var(--bg-elevated);
-  border-radius: 4px;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-size: var(--fs-sm);
   font-family: var(--font-mono);
-  color: var(--text-tertiary);
+  z-index: 9999;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.search-results {
-  max-height: 360px;
-  overflow-y: auto;
+.pwa-install-banner {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
 }
 
-.search-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-5);
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-
-.search-item:hover {
-  background: var(--bg-hover);
-}
-
-.search-code {
-  font-size: var(--text-sm);
-  color: var(--accent);
-  min-width: 60px;
-  font-weight: 500;
-}
-
-.search-name {
-  flex: 1;
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-}
-
-.search-market {
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
-  padding: 2px 8px;
+.pwa-offline-banner {
   background: var(--bg-elevated);
-  border-radius: 100px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-hair);
 }
 
-.search-empty {
-  padding: var(--space-8);
-  text-align: center;
-  color: var(--text-tertiary);
-  font-size: var(--text-sm);
+.pwa-banner-enter-active,
+.pwa-banner-leave-active {
+  transition: all 300ms ease;
+}
+
+.pwa-banner-enter-from,
+.pwa-banner-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(20px);
 }
 </style>

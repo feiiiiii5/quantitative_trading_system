@@ -1,5 +1,4 @@
-import pytest
-from core.orders import Order, OrderSide, OrderType, OrderStatus, Trade
+from core.orders import Order, OrderSide, OrderStatus, OrderType, Trade
 
 
 class TestOrder:

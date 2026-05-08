@@ -1,8 +1,6 @@
 import numpy as np
-import pytest
 
 from core.chip_distribution import (
-    ChipDistribution,
     ChipDistributionAnalyzer,
     _volume_profile_distribution,
     get_chip_analyzer,

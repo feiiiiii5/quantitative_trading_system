@@ -1,10 +1,24 @@
+import logging
+from typing import Any
+
 import numpy as np
 import pandas as pd
 
 from core.database import ThreadSafeLRU
+from core.memory_guard import register_cleanup
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    'TechnicalIndicators',
+    'calc_all_indicators',
+    '_sanitize_for_json',
+]
 
 _indicator_cache = ThreadSafeLRU(maxsize=200)
 _MAX_CHART_POINTS = 500
+
+register_cleanup(_indicator_cache.clear)
 
 
 class TechnicalIndicators:
@@ -74,17 +88,18 @@ class TechnicalIndicators:
     @staticmethod
     def _ma(c: np.ndarray) -> dict:
         result = {}
+        s = pd.Series(c)
         for p in [5, 10, 20, 60, 120]:
             if len(c) >= p:
-                vals = pd.Series(c).rolling(p).mean().values
+                vals = s.rolling(p).mean().values
                 result[p] = _to_list(vals)
         return result
 
     @staticmethod
     def _ema(c: np.ndarray) -> dict:
         result = {}
+        s = pd.Series(c)
         for p in [12, 26]:
-            s = pd.Series(c)
             vals = s.ewm(span=p, adjust=False).mean().values
             result[p] = _to_list(vals)
         return result
@@ -125,6 +140,7 @@ class TechnicalIndicators:
                                            np.abs(low_arr - np.roll(c, 1))))
         tr[0] = h[0] - low_arr[0]
         atr = pd.Series(tr).rolling(period).mean().values
+        atr = np.where(np.isfinite(atr) & (atr > 0), atr, np.nan)
         n = len(c)
         upper_band = np.zeros(n)
         lower_band = np.zeros(n)
@@ -188,12 +204,14 @@ class TechnicalIndicators:
     @staticmethod
     def _rsi(c: np.ndarray) -> dict:
         result = {}
+        delta = np.diff(c, prepend=c[0])
+        gain = np.where(delta > 0, delta, 0.0)
+        loss = np.where(delta < 0, -delta, 0.0)
+        gain_s = pd.Series(gain)
+        loss_s = pd.Series(loss)
         for p in [6, 12, 24]:
-            delta = np.diff(c, prepend=c[0])
-            gain = np.where(delta > 0, delta, 0)
-            loss = np.where(delta < 0, -delta, 0)
-            avg_gain = pd.Series(gain).ewm(alpha=1 / p, min_periods=p).mean().values
-            avg_loss = pd.Series(loss).ewm(alpha=1 / p, min_periods=p).mean().values
+            avg_gain = gain_s.ewm(alpha=1 / p, min_periods=p).mean().values
+            avg_loss = loss_s.ewm(alpha=1 / p, min_periods=p).mean().values
             with np.errstate(divide='ignore', invalid='ignore'):
                 rs = np.where(avg_loss != 0, avg_gain / avg_loss, 100)
             rsi_vals = 100 - 100 / (1 + rs)
@@ -220,17 +238,15 @@ class TechnicalIndicators:
 
     @staticmethod
     def _cci(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14) -> np.ndarray:
-        tp = (h + low_arr + c) / 3
-        n = len(tp)
+        tp_arr = (h + low_arr + c) / 3
+        n = len(tp_arr)
         if n < period:
             return np.zeros(n)
-        from numpy.lib.stride_tricks import sliding_window_view
-        windows = sliding_window_view(tp, period)
-        ma = np.full(n, np.nan)
-        md = np.full(n, np.nan)
-        ma[period - 1 :] = windows.mean(axis=1)
-        md[period - 1 :] = np.mean(np.abs(windows - ma[period - 1 :, np.newaxis]), axis=1)
-        cci = np.where(np.isfinite(md) & (md != 0), (tp - ma) / (0.015 * md), 0)
+        tp_s = pd.Series(tp_arr)
+        ma = tp_s.rolling(period).mean().values
+        md = tp_s.rolling(period).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True).values
+        with np.errstate(divide='ignore', invalid='ignore'):
+            cci = np.where(np.isfinite(md) & (md != 0), (tp_arr - ma) / (0.015 * md), 0)
         return cci
 
     @staticmethod
@@ -271,7 +287,8 @@ class TechnicalIndicators:
     @staticmethod
     def _cmf(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, v: np.ndarray,
              period: int = 20) -> np.ndarray:
-        clv = np.where((h - low_arr) != 0, ((c - low_arr) - (h - c)) / (h - low_arr), 0)
+        diff = h - low_arr
+        clv = np.where(diff != 0, ((c - low_arr) - (h - c)) / diff, 0.0)
         mfv = clv * v
         mfv_s = pd.Series(mfv).rolling(period).sum()
         v_s = pd.Series(v).rolling(period).sum()
@@ -292,8 +309,9 @@ class TechnicalIndicators:
         log_ret = np.where(np.isfinite(log_ret), log_ret, 0)
         log_ret = np.insert(log_ret, 0, 0)
         result = {}
+        lr_s = pd.Series(log_ret)
         for p in [10, 20, 60]:
-            vol = pd.Series(log_ret).rolling(p).std().values * np.sqrt(252) * 100
+            vol = lr_s.rolling(p).std().values * np.sqrt(252) * 100
             result[p] = _to_list(vol)
         return result
 
@@ -301,6 +319,11 @@ class TechnicalIndicators:
     def _bb_position(c: np.ndarray, boll: dict) -> np.ndarray:
         upper = np.array(boll["upper"])
         lower = np.array(boll["lower"])
+        n = len(c)
+        if len(upper) < n:
+            upper = np.concatenate([np.full(n - len(upper), np.nan), upper])
+        if len(lower) < n:
+            lower = np.concatenate([np.full(n - len(lower), np.nan), lower])
         diff = upper - lower
         with np.errstate(divide="ignore", invalid="ignore"):
             return np.where(diff != 0, (c - lower) / diff, 0.5)
@@ -384,10 +407,10 @@ class TechnicalIndicators:
         return "neutral"
 
 
-def _to_list(arr, max_points: int = _MAX_CHART_POINTS) -> list:
+def _to_list(arr, max_points: int = _MAX_CHART_POINTS) -> list[Any]:
     if isinstance(arr, np.ndarray):
         src = arr[-max_points:] if max_points > 0 else arr
-        cleaned = np.nan_to_num(src, nan=0, posinf=0, neginf=0)
+        cleaned: np.ndarray = np.nan_to_num(src, nan=0, posinf=0, neginf=0)
         cleaned.round(4, out=cleaned)
         return cleaned.tolist()
     if isinstance(arr, pd.Series):
@@ -400,9 +423,7 @@ def _to_list(arr, max_points: int = _MAX_CHART_POINTS) -> list:
 
 def _last(arr) -> float:
     try:
-        if isinstance(arr, np.ndarray):
-            val = arr[-1]
-        elif isinstance(arr, list):
+        if isinstance(arr, (np.ndarray, list)):
             val = arr[-1]
         else:
             return 0.0
@@ -422,23 +443,19 @@ class KLinePatternRecognizer:
         closes = candles["close"].astype(float).values
         lookback = 5
         slopes = np.zeros(n)
-        if n >= 2:
-            x_unit = np.arange(lookback + 1, dtype=float)
-            x_mean = x_unit.mean()
-            x_var = ((x_unit - x_mean) ** 2).sum()
-            for i in range(n):
-                start = max(0, i - lookback)
-                window = closes[start:i + 1]
-                if len(window) < 2:
-                    slopes[i] = 0.0
+        for i in range(n):
+            start = max(0, i - lookback)
+            window = closes[start:i + 1]
+            if len(window) < 2:
+                slopes[i] = 0.0
+            else:
+                x_w = np.arange(len(window), dtype=float)
+                xm = x_w.mean()
+                xv = ((x_w - xm) ** 2).sum()
+                if xv > 0:
+                    slopes[i] = float(np.dot(window - window.mean(), x_w - xm) / xv)
                 else:
-                    x_w = np.arange(len(window), dtype=float)
-                    xm = x_w.mean()
-                    xv = ((x_w - xm) ** 2).sum()
-                    if xv > 0:
-                        slopes[i] = float(np.dot(window - window.mean(), x_w - xm) / xv)
-                    else:
-                        slopes[i] = 0.0
+                    slopes[i] = 0.0
         for i in range(len(candles)):
             row = candles.iloc[i]
             open_price = float(row["open"])
@@ -663,12 +680,21 @@ class IndicatorAnalysis:
         return {"top_divergence": top_divergence, "bottom_divergence": bottom_divergence}
 
 
-def _sanitize_for_json(obj):
-    if isinstance(obj, (np.integer,)):
+def _sanitize_for_json(obj: Any) -> Any:
+    """
+    将numpy类型转换为JSON可序列化的Python原生类型
+
+    Args:
+        obj: 输入对象
+
+    Returns:
+        JSON可序列化的对象
+    """
+    if isinstance(obj, np.integer):
         return int(obj)
-    if isinstance(obj, (np.floating,)):
+    if isinstance(obj, np.floating):
         return float(obj)
-    if isinstance(obj, (np.bool_,)):
+    if isinstance(obj, np.bool_):
         return bool(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
@@ -695,42 +721,42 @@ def calc_all_indicators(kline_data: list) -> dict:
         if computed:
             result.update(computed)
     except Exception as e:
-        logger.warning(f"compute_all failed: {e}")
+        logger.warning("compute_all failed: %s", e)
 
     try:
         result["ma_alignment"] = IndicatorAnalysis.ma_alignment(df)
     except Exception as e:
-        logger.warning(f"ma_alignment failed: {e}")
+        logger.warning("ma_alignment failed: %s", e)
 
     try:
         result["support_resistance"] = IndicatorAnalysis.support_resistance(df)
     except Exception as e:
-        logger.warning(f"support_resistance failed: {e}")
+        logger.warning("support_resistance failed: %s", e)
 
     try:
         result["volatility"] = IndicatorAnalysis.volatility_range(df)
     except Exception as e:
-        logger.warning(f"volatility_range failed: {e}")
+        logger.warning("volatility_range failed: %s", e)
 
     try:
         result["volume_price"] = IndicatorAnalysis.volume_price_analysis(df)
     except Exception as e:
-        logger.warning(f"volume_price_analysis failed: {e}")
+        logger.warning("volume_price_analysis failed: %s", e)
 
     try:
         result["rsi_divergence"] = IndicatorAnalysis.rsi_divergence(df)
     except Exception as e:
-        logger.warning(f"rsi_divergence failed: {e}")
+        logger.warning("rsi_divergence failed: %s", e)
 
     try:
         result["kline_patterns"] = KLinePatternRecognizer.recognize(df)
     except Exception as e:
-        logger.warning(f"kline_patterns failed: {e}")
+        logger.warning("kline_patterns failed: %s", e)
 
     return _sanitize_for_json(result)
 
 
-def calc_factor_ic(factor_values, forward_returns, periods: list = None) -> dict:
+def calc_factor_ic(factor_values, forward_returns, periods: list | None = None) -> dict:
     if periods is None:
         periods = [1, 5, 10]
 
@@ -766,7 +792,8 @@ def calc_factor_ic(factor_values, forward_returns, periods: list = None) -> dict
                 from scipy.stats import pearsonr
                 corr, _ = pearsonr(x_clean, y_clean)
                 ic_list.append(float(corr) if np.isfinite(corr) else 0.0)
-            except Exception:
+            except Exception as e:
+                logger.debug("IC calculation failed for period %s: %s", p, e)
                 ic_list.append(0.0)
 
         if not ic_list:
@@ -806,7 +833,8 @@ def calc_factor_turnover(factor_values_series) -> float:
             from scipy.stats import spearmanr
             corr, _ = spearmanr(rank_t_clean, rank_t1_clean)
             turnover_list.append(float(corr) if np.isfinite(corr) else 0.0)
-        except Exception:
+        except Exception as e:
+            logger.debug("Turnover autocorrelation failed: %s", e)
             continue
 
     if not turnover_list:
@@ -823,17 +851,16 @@ def calc_adx(h: np.ndarray, low_arr: np.ndarray, c: np.ndarray, period: int = 14
     n = len(c)
     tr = np.empty(n)
     tr[0] = h[0] - low_arr[0]
-    for i in range(1, n):
-        tr[i] = max(h[i] - low_arr[i], abs(h[i] - c[i - 1]), abs(low_arr[i] - c[i - 1]))
-    plus_dm = np.zeros(n)
-    minus_dm = np.zeros(n)
-    for i in range(1, n):
-        up_move = h[i] - h[i - 1]
-        down_move = low_arr[i - 1] - low_arr[i]
-        if up_move > down_move and up_move > 0:
-            plus_dm[i] = up_move
-        if down_move > up_move and down_move > 0:
-            minus_dm[i] = down_move
+    tr[1:] = np.maximum(
+        h[1:] - low_arr[1:],
+        np.maximum(np.abs(h[1:] - c[:-1]), np.abs(low_arr[1:] - c[:-1])),
+    )
+    up_move = np.zeros(n)
+    down_move = np.zeros(n)
+    up_move[1:] = h[1:] - h[:-1]
+    down_move[1:] = low_arr[:-1] - low_arr[1:]
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
     atr = pd.Series(tr).ewm(alpha=1 / period, min_periods=period).mean().values
     plus_di = np.where(atr > 0, pd.Series(plus_dm).ewm(alpha=1 / period, min_periods=period).mean().values / atr * 100, 0)
     minus_di = np.where(atr > 0, pd.Series(minus_dm).ewm(alpha=1 / period, min_periods=period).mean().values / atr * 100, 0)
@@ -875,11 +902,11 @@ def calc_kelly_fraction(c: np.ndarray, lookback: int = 60, half_kelly: float = 0
     losses = returns[returns < 0]
     if len(wins) == 0 or len(losses) == 0:
         return 0.25
-    win_rate = len(wins) / len(returns)
     avg_win = np.mean(wins)
     avg_loss = abs(np.mean(losses))
-    if avg_loss == 0:
+    if avg_win <= 0 or avg_loss <= 0:
         return 0.25
+    win_rate = len(wins) / len(returns)
     win_loss_ratio = avg_win / avg_loss
     kelly = win_rate - (1 - win_rate) / win_loss_ratio
     kelly = max(0.05, min(0.5, kelly * half_kelly))
@@ -1059,17 +1086,17 @@ def calc_factor_relative_volume(v, short=5, long=20) -> np.ndarray:
     return np.divide(short_ma, long_ma, out=np.full(len(v), np.nan), where=long_ma > 0)
 
 
-def calc_factor_money_flow_index(h, l, c, v, period=14) -> np.ndarray:
+def calc_factor_money_flow_index(h, low, c, v, period=14) -> np.ndarray:
     """资金流量指数MFI，量价结合版RSI"""
     h = _factor_arr(h)
-    l = _factor_arr(l)
+    low = _factor_arr(low)
     c = _factor_arr(c)
     v = _factor_arr(v)
-    n = min(len(h), len(l), len(c), len(v))
+    n = min(len(h), len(low), len(c), len(v))
     out = np.full(n, np.nan)
     if n < period + 1:
         return out
-    tp = (h[:n] + l[:n] + c[:n]) / 3
+    tp = (h[:n] + low[:n] + c[:n]) / 3
     raw = tp * v[:n]
     delta = np.diff(tp, prepend=np.nan)
     pos = np.where(delta > 0, raw, 0.0)
@@ -1130,18 +1157,18 @@ def calc_factor_trix(c, period=15) -> np.ndarray:
     return out
 
 
-def calc_factor_ultimate_oscillator(h, l, c, p1=7, p2=14, p3=28) -> np.ndarray:
+def calc_factor_ultimate_oscillator(h, low, c, p1=7, p2=14, p3=28) -> np.ndarray:
     """终极振荡器，多周期综合"""
     h = _factor_arr(h)
-    l = _factor_arr(l)
+    low = _factor_arr(low)
     c = _factor_arr(c)
-    n = min(len(h), len(l), len(c))
+    n = min(len(h), len(low), len(c))
     out = np.full(n, np.nan)
     if n < max(p1, p2, p3) + 1:
         return out
     prev_close = np.r_[c[0], c[:n - 1]]
-    bp = c[:n] - np.minimum(l[:n], prev_close)
-    tr = np.maximum(h[:n], prev_close) - np.minimum(l[:n], prev_close)
+    bp = c[:n] - np.minimum(low[:n], prev_close)
+    tr = np.maximum(h[:n], prev_close) - np.minimum(low[:n], prev_close)
 
     def avg(period):
         bp_sum = _rolling_sum_np(bp, period)
@@ -1152,12 +1179,12 @@ def calc_factor_ultimate_oscillator(h, l, c, p1=7, p2=14, p3=28) -> np.ndarray:
     return out
 
 
-def calc_factor_chaikin_volatility(h, l, period=10) -> np.ndarray:
+def calc_factor_chaikin_volatility(h, low, period=10) -> np.ndarray:
     """Chaikin波动率：EMA(H-L)的变化率"""
     h = _factor_arr(h)
-    l = _factor_arr(l)
-    n = min(len(h), len(l))
-    spread = h[:n] - l[:n]
+    low = _factor_arr(low)
+    n = min(len(h), len(low))
+    spread = h[:n] - low[:n]
     ema = _ema_np(spread, period)
     out = np.full(n, np.nan)
     if n > period:
@@ -1196,7 +1223,7 @@ def calc_factor_connors_rsi(c, rsi_p=3, streak_p=2, rank_p=100) -> np.ndarray:
     return out
 
 
-def calc_composite_score(factor_dict: dict, weights: dict = None) -> np.ndarray:
+def calc_composite_score(factor_dict: dict, weights: dict | None = None) -> np.ndarray:
     """
     多因子合成打分
     - Z-score标准化各因子

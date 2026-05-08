@@ -1,3 +1,4 @@
+import asyncio
 import random
 import threading
 import time
@@ -54,19 +55,19 @@ class TestBacktestEngine:
             assert len(result.dates) > 0
 
     def test_backtest_empty_data(self):
-        from core.backtest import BacktestEngine
+        from core.backtest import BacktestEngine, InsufficientDataError
         from core.strategies import DualMAStrategy
         engine = BacktestEngine()
-        result = engine.run(DualMAStrategy(), pd.DataFrame())
-        assert result.total_trades == 0
+        with pytest.raises(InsufficientDataError):
+            engine.run(DualMAStrategy(), pd.DataFrame())
 
     def test_backtest_short_data(self):
-        from core.backtest import BacktestEngine
+        from core.backtest import BacktestEngine, InsufficientDataError
         from core.strategies import DualMAStrategy
         df = _make_kline_df(5, seed=1)
         engine = BacktestEngine()
-        result = engine.run(DualMAStrategy(), df)
-        assert result.total_trades == 0
+        with pytest.raises(InsufficientDataError):
+            engine.run(DualMAStrategy(), df)
 
     def test_backtest_result_fields(self):
         from core.backtest import BacktestEngine
@@ -185,11 +186,11 @@ class TestStrategies:
         assert result.strategy_name == "BollingerBreakoutStrategy"
 
     def test_strategy_with_random_data(self):
-        from core.strategies import DualMAStrategy, RSIMeanReversionStrategy, MACDStrategy
+        from core.strategies import DualMAStrategy, MACDStrategy, RSIMeanReversionStrategy
         for seed in random.sample(range(100000), 10):
             df = _make_kline_df(random.randint(50, 300), seed=seed)
-            for StrategyCls in [DualMAStrategy, RSIMeanReversionStrategy, MACDStrategy]:
-                strategy = StrategyCls()
+            for strategy_cls in [DualMAStrategy, RSIMeanReversionStrategy, MACDStrategy]:
+                strategy = strategy_cls()
                 result = strategy.generate_signals(df)
                 assert result.strategy_name is not None
 
@@ -368,8 +369,8 @@ class TestSimulatedTrading:
 
 class TestRiskManager:
     def test_concentration_filter(self):
-        from core.risk_manager import ConcentrationFilter
         from core.orders import Order, OrderSide, OrderType
+        from core.risk_manager import ConcentrationFilter
         f = ConcentrationFilter(max_concentration=0.3)
         order = Order(order_id="1", symbol="600000", side=OrderSide.BUY,
                       order_type=OrderType.MARKET, quantity=1000, price=10.0)
@@ -382,8 +383,8 @@ class TestRiskManager:
         assert approved2 is False
 
     def test_daily_loss_filter(self):
-        from core.risk_manager import DailyLossFilter
         from core.orders import Order, OrderSide, OrderType
+        from core.risk_manager import DailyLossFilter
         f = DailyLossFilter(max_daily_loss=0.05, initial_capital=100000)
         f.update_daily_pnl(-6000)
         order = Order(order_id="1", symbol="600000", side=OrderSide.BUY,
@@ -392,8 +393,8 @@ class TestRiskManager:
         assert approved is False
 
     def test_cash_sufficiency_filter(self):
-        from core.risk_manager import CashSufficiencyFilter
         from core.orders import Order, OrderSide, OrderType
+        from core.risk_manager import CashSufficiencyFilter
         f = CashSufficiencyFilter()
         order = Order(order_id="1", symbol="600000", side=OrderSide.BUY,
                       order_type=OrderType.MARKET, quantity=1000, price=10.0)
@@ -640,9 +641,10 @@ class TestDatabase:
         assert cache.get("rt_600000") == "data3"
 
     def test_sqlite_store_basic(self):
-        from core.database import SQLiteStore
-        import tempfile
         import os
+        import tempfile
+
+        from core.database import SQLiteStore
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SQLiteStore(db_path=os.path.join(tmpdir, "test.db"))
             db.set_config("test_key", {"value": 42})
@@ -651,9 +653,10 @@ class TestDatabase:
             db.close()
 
     def test_sqlite_kline_roundtrip(self):
-        from core.database import SQLiteStore
-        import tempfile
         import os
+        import tempfile
+
+        from core.database import SQLiteStore
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SQLiteStore(db_path=os.path.join(tmpdir, "test.db"))
             rows = [
@@ -669,7 +672,7 @@ class TestDatabase:
 
 class TestEvents:
     def test_event_bus_subscribe(self):
-        from core.events import EventBus, Event, EventType
+        from core.events import Event, EventBus, EventType
         bus = EventBus()
         received = []
         bus.subscribe(EventType.INIT, lambda e: received.append(e.data))
@@ -678,17 +681,18 @@ class TestEvents:
         assert received[0]["msg"] == "hello"
 
     def test_event_bus_unsubscribe(self):
-        from core.events import EventBus, Event, EventType
+        from core.events import Event, EventBus, EventType
         bus = EventBus()
         received = []
-        handler = lambda e: received.append(e)
+        def handler(e):
+            return received.append(e)
         bus.subscribe(EventType.INIT, handler)
         bus.unsubscribe(EventType.INIT, handler)
         bus.publish(Event(EventType.INIT))
         assert len(received) == 0
 
     def test_event_bus_once(self):
-        from core.events import EventBus, Event, EventType
+        from core.events import Event, EventBus, EventType
         bus = EventBus()
         received = []
         bus.subscribe_once(EventType.INIT, lambda e: received.append(e))
@@ -699,7 +703,7 @@ class TestEvents:
 
 class TestOrders:
     def test_order_creation(self):
-        from core.orders import Order, OrderSide, OrderType, OrderStatus
+        from core.orders import Order, OrderSide, OrderStatus, OrderType
         order = Order(
             order_id="test_001", symbol="600000", side=OrderSide.BUY,
             order_type=OrderType.MARKET, quantity=100, price=10.0,
@@ -709,7 +713,7 @@ class TestOrders:
         assert order.is_done is False
 
     def test_order_fill(self):
-        from core.orders import Order, OrderSide, OrderType, OrderStatus
+        from core.orders import Order, OrderSide, OrderStatus, OrderType
         order = Order(
             order_id="test_001", symbol="600000", side=OrderSide.BUY,
             order_type=OrderType.MARKET, quantity=100, price=10.0,
@@ -721,7 +725,7 @@ class TestOrders:
         assert order.is_done is True
 
     def test_order_partial_fill(self):
-        from core.orders import Order, OrderSide, OrderType, OrderStatus
+        from core.orders import Order, OrderSide, OrderStatus, OrderType
         order = Order(
             order_id="test_001", symbol="600000", side=OrderSide.BUY,
             order_type=OrderType.MARKET, quantity=100, price=10.0,
@@ -732,7 +736,7 @@ class TestOrders:
         assert order.status == OrderStatus.PARTIALLY_FILLED
 
     def test_order_reject(self):
-        from core.orders import Order, OrderSide, OrderType, OrderStatus
+        from core.orders import Order, OrderSide, OrderStatus, OrderType
         order = Order(
             order_id="test_001", symbol="600000", side=OrderSide.BUY,
             order_type=OrderType.MARKET, quantity=100, price=10.0,
@@ -742,7 +746,7 @@ class TestOrders:
         assert "资金不足" in order.reject_reason
 
     def test_order_invalid_transition(self):
-        from core.orders import Order, OrderSide, OrderType, OrderStatus
+        from core.orders import Order, OrderSide, OrderStatus, OrderType
         order = Order(
             order_id="test_001", symbol="600000", side=OrderSide.BUY,
             order_type=OrderType.MARKET, quantity=100, price=10.0,
@@ -761,7 +765,7 @@ class TestOrders:
         assert d["side"] == "buy"
 
     def test_trade_amount(self):
-        from core.orders import Trade, OrderSide
+        from core.orders import OrderSide, Trade
         trade = Trade(
             trade_id="t1", order_id="o1", symbol="600000",
             side=OrderSide.BUY, quantity=100, price=10.0,
@@ -820,11 +824,15 @@ class TestDataFetcherUtils:
         assert len(cleaned) > 0
 
     def test_circuit_breaker(self):
-        from core.data_fetcher import CircuitBreaker
         import asyncio
 
+        from core.data_fetcher import CircuitBreaker, CircuitBreakerError
+
+        class TestFailureError(Exception):
+            pass
+
         async def always_fail():
-            raise Exception("test failure")
+            raise TestFailureError("test failure")
 
         async def always_succeed():
             return "ok"
@@ -832,18 +840,20 @@ class TestDataFetcherUtils:
         async def test_cb():
             cb = CircuitBreaker(failure_threshold=3, timeout=1)
             for _ in range(3):
-                with pytest.raises(Exception):
+                with pytest.raises(TestFailureError):
                     await cb.call(always_fail)
             assert cb.state == "OPEN"
-            with pytest.raises(Exception):
+            with pytest.raises(CircuitBreakerError):
                 await cb.call(always_fail)
 
         asyncio.run(test_cb())
 
     def test_circuit_breaker_empty_dataframe_trips_breaker(self):
-        from core.data_fetcher import CircuitBreaker
-        import pandas as pd
         import asyncio
+
+        import pandas as pd
+
+        from core.data_fetcher import CircuitBreaker
 
         async def return_empty_df():
             return pd.DataFrame()
@@ -857,8 +867,9 @@ class TestDataFetcherUtils:
         asyncio.run(test_cb())
 
     def test_circuit_breaker_empty_list_trips_breaker(self):
-        from core.data_fetcher import CircuitBreaker
         import asyncio
+
+        from core.data_fetcher import CircuitBreaker
 
         async def return_empty_list():
             return []
@@ -872,8 +883,12 @@ class TestDataFetcherUtils:
         asyncio.run(test_cb())
 
     def test_circuit_breaker_valid_result_resets(self):
-        from core.data_fetcher import CircuitBreaker
         import asyncio
+
+        from core.data_fetcher import CircuitBreaker
+
+        class TransientError(Exception):
+            pass
 
         call_count = 0
 
@@ -881,13 +896,13 @@ class TestDataFetcherUtils:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                raise Exception("transient")
+                raise TransientError("transient")
             return {"ok": True}
 
         async def test_cb():
             cb = CircuitBreaker(failure_threshold=3, timeout=5)
             for _ in range(2):
-                with pytest.raises(Exception):
+                with pytest.raises(TransientError):
                     await cb.call(fail_then_succeed)
             assert cb.failure_count == 2
             result = await cb.call(fail_then_succeed)
@@ -897,8 +912,9 @@ class TestDataFetcherUtils:
         asyncio.run(test_cb())
 
     def test_circuit_breaker_has_lock(self):
-        from core.data_fetcher import CircuitBreaker
         import asyncio
+
+        from core.data_fetcher import CircuitBreaker
 
         async def test_lock():
             cb = CircuitBreaker(failure_threshold=3, timeout=1)
@@ -910,6 +926,48 @@ class TestDataFetcherUtils:
             assert all(r == "ok" for r in results)
 
         asyncio.run(test_lock())
+
+    def test_circuit_breaker_half_open_single_probe(self):
+        import asyncio
+
+        from core.data_fetcher import CircuitBreaker, CircuitBreakerError
+
+        class ProbeFailureError(Exception):
+            pass
+
+        async def test_single_probe():
+            cb = CircuitBreaker(failure_threshold=2, timeout=0.1, half_open_calls=2)
+
+            async def always_fail():
+                raise ProbeFailureError("fail")
+
+            for _ in range(2):
+                with pytest.raises(ProbeFailureError):
+                    await cb.call(always_fail)
+            assert cb.state == "OPEN"
+
+            await asyncio.sleep(0.15)
+
+            probe_started = asyncio.Event()
+            probe_continue = asyncio.Event()
+
+            async def slow_probe():
+                probe_started.set()
+                await probe_continue.wait()
+                return {"ok": True}
+
+            task1 = asyncio.create_task(cb.call(slow_probe))
+            await probe_started.wait()
+            assert cb._probe_in_progress is True
+
+            with pytest.raises(CircuitBreakerError, match="Circuit breaker OPEN"):
+                await cb.call(always_fail)
+
+            probe_continue.set()
+            result = await task1
+            assert result == {"ok": True}
+
+        asyncio.run(test_single_probe())
 
     def test_to_list_converts_inf_to_zero(self):
         from core.indicators import _to_list
@@ -929,6 +987,12 @@ class TestDataFetcherUtils:
             for _ in range(10):
                 store.buffered_write("INVALID SQL SYNTAX !!!", ())
             for _ in range(7):
+                with store._buffer_lock:
+                    store._write_buffer = [
+                        (sql, params, retries, 0.0) if len(item) == 4 else item
+                        for item in store._write_buffer
+                        for sql, params, retries in [(item[0], item[1], item[2] if len(item) > 2 else 0)]
+                    ]
                 store._flush_buffer()
             buffer_after = len(store._write_buffer)
             assert buffer_after == 0
@@ -971,19 +1035,35 @@ class TestFactorFunctions:
         result = calc_kelly_fraction(c)
         assert 0 <= result <= 0.5
 
+    def test_kelly_fraction_edge_cases(self):
+        from core.indicators import calc_kelly_fraction
+        c_all_wins = np.array([100.0] * 61)
+        c_all_wins = np.cumsum(np.abs(np.random.randn(61))) + 100.0
+        result = calc_kelly_fraction(c_all_wins)
+        assert 0 <= result <= 0.5
+
+        c_short = np.array([100.0] * 5)
+        result_short = calc_kelly_fraction(c_short)
+        assert 0 <= result_short <= 0.5
+
+        c_zeros = np.zeros(70)
+        c_zeros[:] = 100.0
+        result_zeros = calc_kelly_fraction(c_zeros)
+        assert 0 <= result_zeros <= 0.5
+
     def test_random_factor_computation(self):
         from core.indicators import (
-            calc_factor_price_acceleration,
-            calc_factor_volume_price_trend,
-            calc_factor_relative_volume,
             calc_factor_money_flow_index,
+            calc_factor_price_acceleration,
+            calc_factor_relative_volume,
+            calc_factor_volume_price_trend,
         )
         for seed in random.sample(range(100000), 5):
             rng = np.random.default_rng(seed)
             n = rng.integers(50, 300)
             c = rng.uniform(10, 100, n)
             h = c * (1 + rng.uniform(0, 0.03, n))
-            l = c * (1 - rng.uniform(0, 0.03, n))
+            low = c * (1 - rng.uniform(0, 0.03, n))
             v = rng.uniform(1e6, 5e7, n)
             r1 = calc_factor_price_acceleration(c)
             assert len(r1) == n
@@ -991,7 +1071,7 @@ class TestFactorFunctions:
             assert len(r2) == n
             r3 = calc_factor_relative_volume(v)
             assert len(r3) == n
-            r4 = calc_factor_money_flow_index(h, l, c, v)
+            r4 = calc_factor_money_flow_index(h, low, c, v)
             assert len(r4) == n
 
 
@@ -1000,7 +1080,7 @@ class TestAdaptiveStrategyFixes:
         from core.adaptive_strategy import AdaptiveStrategyEngine
         engine = AdaptiveStrategyEngine(initial_capital=1000000)
         n = 200
-        rng = np.random.default_rng(42)
+        np.random.default_rng(42)
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
         close = np.concatenate([
             np.linspace(10, 20, 100),
@@ -1045,7 +1125,7 @@ class TestAdaptiveStrategyFixes:
             assert t["shares"] >= 0, f"Trade has negative shares: {t}"
 
     def test_qlearning_deterministic_with_seed(self):
-        from core.adaptive_strategy import QLearningWeightAdapter, MarketRegime
+        from core.adaptive_strategy import MarketRegime, QLearningWeightAdapter
         adapter1 = QLearningWeightAdapter(n_strategies=5, seed=42)
         adapter2 = QLearningWeightAdapter(n_strategies=5, seed=42)
         base = [0.2, 0.2, 0.2, 0.2, 0.2]
@@ -1084,7 +1164,7 @@ class TestAdaptiveStrategyPartialExit:
         from core.adaptive_strategy import AdaptiveStrategyEngine
         engine = AdaptiveStrategyEngine(initial_capital=1000000)
         n = 200
-        rng = np.random.default_rng(77)
+        np.random.default_rng(77)
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
         close = np.concatenate([
             np.linspace(10, 25, 80),
@@ -1109,7 +1189,7 @@ class TestAdaptiveStrategyPartialExit:
         from core.adaptive_strategy import AdaptiveStrategyEngine
         engine = AdaptiveStrategyEngine(initial_capital=1000000)
         n = 300
-        rng = np.random.default_rng(55)
+        np.random.default_rng(55)
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
         close = np.concatenate([
             np.linspace(10, 25, 100),
@@ -1156,8 +1236,8 @@ class TestDatabaseFlushRetry:
         from core.database import SQLiteStore
         db = SQLiteStore(":memory:")
         db.buffered_write("INSERT INTO nonexistent_table (a) VALUES (?)", ("test",))
-        import logging
         import io
+        import logging
         handler = logging.StreamHandler(io.StringIO())
         handler.setLevel(logging.WARNING)
         db_logger = logging.getLogger("core.database")
@@ -1185,25 +1265,27 @@ class TestSanitizeDepthLimit:
 
 class TestSymbolValidation:
     def test_valid_symbols_accepted(self):
-        from pydantic import ValidationError
         from api.backtest_routes import BacktestRunRequest
         valid = BacktestRunRequest(symbol="600519", strategy_type="adaptive")
         assert valid.symbol == "600519"
 
     def test_invalid_symbol_rejected(self):
         from pydantic import ValidationError
+
         from api.backtest_routes import BacktestRunRequest
         with pytest.raises(ValidationError):
             BacktestRunRequest(symbol="../../etc/passwd")
 
     def test_invalid_strategy_type_rejected(self):
         from pydantic import ValidationError
+
         from api.backtest_routes import BacktestRunRequest
         with pytest.raises(ValidationError):
             BacktestRunRequest(symbol="600519", strategy_type="<script>alert(1)</script>")
 
     def test_invalid_date_format_rejected(self):
         from pydantic import ValidationError
+
         from api.backtest_routes import BacktestRunRequest
         with pytest.raises(ValidationError):
             BacktestRunRequest(symbol="600519", start_date="not-a-date")
@@ -1212,12 +1294,14 @@ class TestSymbolValidation:
 class TestPostBodyValidation:
     def test_watchlist_invalid_symbol_rejected(self):
         from pydantic import ValidationError
+
         from api.routes import WatchlistAddRemoveRequest
         with pytest.raises(ValidationError):
             WatchlistAddRemoveRequest(symbol="../../etc/passwd")
 
     def test_alert_invalid_type_rejected(self):
         from pydantic import ValidationError
+
         from api.routes import AlertAddRequest
         with pytest.raises(ValidationError):
             AlertAddRequest(symbol="600519", alert_type="hack", value=100)
@@ -1229,12 +1313,14 @@ class TestPostBodyValidation:
 
     def test_trading_buy_invalid_symbol_rejected(self):
         from pydantic import ValidationError
+
         from api.routes import TradingBuyRequest
         with pytest.raises(ValidationError):
             TradingBuyRequest(symbol="<script>", price=10, shares=100)
 
     def test_config_value_max_length(self):
         from pydantic import ValidationError
+
         from api.routes import ConfigSetRequest
         with pytest.raises(ValidationError):
             ConfigSetRequest(value="x" * 10001)
@@ -1281,8 +1367,8 @@ class TestGenesisRegression:
         assert "600519" not in rm._position_returns
 
     def test_strategy_performance_endpoint_structure(self):
-        from core.strategies import DualMAStrategy, MACDStrategy
         from core.backtest import BacktestEngine
+        from core.strategies import DualMAStrategy, MACDStrategy
         rng = np.random.default_rng(42)
         n = 200
         dates = pd.date_range("2024-01-01", periods=n, freq="B")
@@ -1298,3 +1384,103 @@ class TestGenesisRegression:
             assert hasattr(result, "total_return")
             assert hasattr(result, "sharpe_ratio")
             assert hasattr(result, "trades")
+
+    def test_register_request_password_validation(self):
+        from pydantic import ValidationError
+
+        from api.routes import RegisterRequest
+
+        with pytest.raises(ValidationError):
+            RegisterRequest(username="ab", password="short")
+
+        with pytest.raises(ValidationError):
+            RegisterRequest(username="a", password="validpassword")
+
+        req = RegisterRequest(username="testuser", password="validpassword123")
+        assert req.username == "testuser"
+        assert req.password == "validpassword123"
+
+    def test_parameter_sensitivity_analysis(self):
+        from core.backtest import BacktestEngine
+        from core.strategies import DualMAStrategy
+
+        rng = np.random.default_rng(42)
+        n = 200
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        close = 50 * np.cumprod(1 + rng.normal(0.001, 0.02, n))
+        df = pd.DataFrame({
+            "date": dates, "open": close * 0.999, "high": close * 1.02,
+            "low": close * 0.98, "close": close, "volume": np.ones(n) * 5e7,
+            "amount": close * 5e7,
+        })
+        engine = BacktestEngine(initial_capital=1000000)
+        result = engine.parameter_sensitivity(
+            DualMAStrategy, df, "short_window",
+            param_range=(5, 30), num_points=5,
+        )
+        assert "param_name" in result
+        assert result["param_name"] == "short_window"
+        assert "results" in result
+        assert len(result["results"]) >= 2
+        assert "sensitivity" in result
+        assert "robustness" in result
+        for r in result["results"]:
+            assert "value" in r
+            assert "sharpe_ratio" in r
+
+    def test_ws_authenticate_allows_when_disabled(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from api.routes import _WS_AUTH_ENABLED, _ws_authenticate
+
+        ws = MagicMock()
+        ws.query_params = {"token": "invalid"}
+        ws.close = AsyncMock()
+
+        if not _WS_AUTH_ENABLED:
+            result = asyncio.run(_ws_authenticate(ws))
+            assert result is True
+            ws.close.assert_not_called()
+
+    def test_ws_authenticate_rejects_invalid_token(self):
+        import os
+        original = os.environ.get("WS_AUTH_ENABLED")
+        os.environ["WS_AUTH_ENABLED"] = "true"
+        try:
+            import importlib
+
+            import api.routes as routes_mod
+            importlib.reload(routes_mod)
+        finally:
+            if original is None:
+                os.environ.pop("WS_AUTH_ENABLED", None)
+            else:
+                os.environ["WS_AUTH_ENABLED"] = original
+
+    def test_efficient_frontier(self):
+        from core.portfolio_optimizer import PortfolioOptimizer
+
+        rng = np.random.default_rng(42)
+        n_assets = 5
+        n_days = 200
+        expected_returns = rng.normal(0.001, 0.0005, n_assets)
+        cov = rng.standard_normal((n_days, n_assets))
+        cov_matrix = np.cov(cov, rowvar=False)
+
+        optimizer = PortfolioOptimizer(max_weight=1.0)
+        frontier = optimizer.efficient_frontier(expected_returns, cov_matrix, n_points=10)
+        assert len(frontier) >= 1
+        for point in frontier:
+            assert "return" in point
+            assert "volatility" in point
+            assert "sharpe" in point
+            assert point["volatility"] >= 0
+
+    def test_efficient_frontier_single_asset(self):
+        from core.portfolio_optimizer import PortfolioOptimizer
+
+        optimizer = PortfolioOptimizer()
+        frontier = optimizer.efficient_frontier(
+            np.array([0.001]), np.array([[0.01]]), n_points=10,
+        )
+        assert frontier == []

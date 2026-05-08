@@ -1,16 +1,22 @@
+import asyncio
+import io
 import logging
-import re
-from typing import Optional
+import time
 
-from fastapi import APIRouter, Path, Query, Request
+import numpy as np
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from api.utils import json_response as _json_response, safe_error
+from api.utils import json_response as _json_response
+from api.utils import safe_error
 
 logger = logging.getLogger(__name__)
 backtest_router = APIRouter()
 
-_SYMBOL_RE = re.compile(r"^[0-9]{6}\.[A-Z]{2}$|^[0-9]{6}$|^[A-Z]+$")
+_perf_overview_cache: dict[str, tuple[float, dict]] = {}
+_PERF_CACHE_TTL = 300.0
+_PERF_CACHE_MAX = 50
 
 
 class BacktestRunRequest(BaseModel):
@@ -39,7 +45,7 @@ class BacktestRunRequest(BaseModel):
 class BacktestAdvancedRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
     strategy_type: str = Field("adaptive", max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-    strategy_name: Optional[str] = Field(None, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    strategy_name: str | None = Field(None, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
     start_date: str = Field("2022-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
     end_date: str = Field("2024-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
     initial_capital: float = 1000000
@@ -78,7 +84,7 @@ async def get_backtest_strategies(request: Request):
         from core.strategies import STRATEGY_REGISTRY
         strategy_info = {}
         seen = set()
-        for alias, cls in STRATEGY_REGISTRY.items():
+        for _alias, cls in STRATEGY_REGISTRY.items():
             real_name = cls.__name__
             if real_name in seen:
                 continue
@@ -88,7 +94,8 @@ async def get_backtest_strategies(request: Request):
                 info = inst.get_info()
                 info["param_space"] = cls.get_param_space()
                 strategy_info[real_name] = info
-            except Exception:
+            except Exception as e:
+                logger.warning("Strategy introspection failed for %s: %s", real_name, e)
                 strategy_info[real_name] = {"name": real_name, "type": "unknown"}
         strategy_info["AdaptiveEngine"] = {
             "name": "自适应量化策略引擎",
@@ -100,13 +107,106 @@ async def get_backtest_strategies(request: Request):
         return _json_response(False, error=safe_error(e))
 
 
+@backtest_router.post("/backtest/heatmap")
+async def strategy_performance_heatmap(request: Request):
+    try:
+        body = await request.json()
+        symbol = body.get("symbol", "000001.SZ")
+        strategies = body.get("strategies", [])
+        metrics_list = body.get(
+            "metrics",
+            ["sharpe_ratio", "total_return", "max_drawdown", "win_rate", "profit_loss_ratio"],
+        )
+        start_date = body.get("start_date", "2024-01-01")
+        end_date = body.get("end_date", "2025-12-31")
+
+        if not strategies or len(strategies) < 2:
+            return _json_response(False, error="At least 2 strategies required")
+
+        from core.backtest import BacktestEngine
+        from core.strategies import STRATEGY_REGISTRY
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="数据不足")
+
+        import pandas as pd
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
+            df = df[(df["date"] >= start_date) & (df["date"] <= end_date)].reset_index(drop=True)
+
+        if len(df) < 30:
+            return _json_response(False, error="数据不足，至少需要30个交易日")
+
+        engine = BacktestEngine()
+        heatmap_data = {}
+
+        async def _run_strategy(sname: str) -> tuple[str, dict | None]:
+            if sname not in STRATEGY_REGISTRY:
+                return sname, None
+            try:
+                strategy = STRATEGY_REGISTRY[sname]()
+                result = await asyncio.to_thread(engine.run, strategy, df, symbol)
+                if result and result.total_trades > 0:
+                    sd = result.summary_dict()
+                    return sname, {m: sd.get(m, 0.0) for m in metrics_list}
+            except Exception as e:
+                logger.debug("Heatmap strategy %s failed: %s", sname, e)
+            return sname, None
+
+        pairs = await asyncio.gather(*[_run_strategy(s) for s in strategies])
+        for sname, data in pairs:
+            if data is not None:
+                heatmap_data[sname] = data
+
+        if len(heatmap_data) < 2:
+            return _json_response(False, error="至少需要2个有效策略")
+
+        strategy_names = list(heatmap_data.keys())
+        matrix = []
+        for m in metrics_list:
+            row = []
+            for sname in strategy_names:
+                row.append(heatmap_data[sname].get(m, 0.0))
+            matrix.append(row)
+
+        return _json_response(True, data={
+            "strategies": strategy_names,
+            "metrics": metrics_list,
+            "matrix": matrix,
+            "data": heatmap_data,
+        })
+    except Exception as e:
+        logger.error("Strategy heatmap error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+@backtest_router.get("/backtest/strategies/categorized")
+async def get_strategies_categorized(
+    request: Request,
+    category: str | None = Query(None, max_length=30),
+):
+    """分类策略列表，支持按类别过滤"""
+    try:
+        from core.strategies import get_strategy_registry
+        registry = get_strategy_registry()
+        strategies = registry.list_strategies(category=category)
+        categories = registry.list_categories()
+        return _json_response(True, data={
+            "strategies": strategies,
+            "categories": categories,
+            "total": len(strategies),
+        })
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
 @backtest_router.post("/backtest/run")
 async def run_backtest(
     request: Request,
     body: BacktestRunRequest,
 ):
     try:
-        from core.backtest import run_backtest as run_bt
         fetcher = request.app.state.fetcher
         df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
@@ -119,7 +219,7 @@ async def run_backtest(
 
         return _json_response(True, data=result)
     except Exception as e:
-        logger.error(f"backtest run error: {e}", exc_info=True)
+        logger.error("backtest run error: %s", e,  exc_info=True)
         return _json_response(False, error=safe_error(e))
 
 
@@ -137,7 +237,6 @@ async def compare_strategies(
     period: str = Query("1y", max_length=5),
 ):
     try:
-        from core.strategies import STRATEGY_REGISTRY
         fetcher = request.app.state.fetcher
         df = await fetcher.get_history(symbol, period="all", kline_type="daily", adjust="qfq")
         if df is None or df.empty:
@@ -161,23 +260,13 @@ async def compare_strategies(
         strategies = request.app.state.composite_strategy.strategies
         results = engine.run_multi(strategies, work_df)
 
-        comparison = []
-        for name, result in results.items():
-            comparison.append({
-                "strategy_name": result.strategy_name,
-                "total_return": round(result.total_return, 4) if result.total_return else 0,
-                "annual_return": round(result.annual_return, 4) if result.annual_return else 0,
-                "sharpe_ratio": round(result.sharpe_ratio, 2) if result.sharpe_ratio else 0,
-                "max_drawdown": round(result.max_drawdown, 4) if result.max_drawdown else 0,
-                "win_rate": round(result.win_rate, 2) if result.win_rate else 0,
-                "profit_factor": round(result.profit_factor, 2) if result.profit_factor else 0,
-                "total_trades": result.total_trades,
-            })
+        from core.backtest import compare_results
+        result_list = list(results.values())
+        comparison_data = compare_results(result_list)
 
-        comparison.sort(key=lambda x: x["total_return"], reverse=True)
-        return _json_response(True, data=comparison)
+        return _json_response(True, data=comparison_data)
     except Exception as e:
-        logger.error(f"compare strategies error: {e}", exc_info=True)
+        logger.error("compare strategies error: %s", e,  exc_info=True)
         return _json_response(False, error=safe_error(e))
 
 
@@ -191,8 +280,9 @@ async def recommend_strategy(
     try:
         import numpy as np
         import pandas as pd
-        from core.indicators import calc_atr, calc_adx
-        from core.adaptive_strategy import classify_market_regime, REGIME_LABELS, STRATEGY_ALLOCATION, MarketRegime
+
+        from core.adaptive_strategy import REGIME_LABELS, STRATEGY_ALLOCATION, MarketRegime, classify_market_regime
+        from core.indicators import calc_adx, calc_atr
         from core.strategies import STRATEGY_REGISTRY
 
         fetcher = request.app.state.fetcher
@@ -223,7 +313,6 @@ async def recommend_strategy(
 
         hist_vol = float(np.std(returns) * np.sqrt(252))
         trend = float((c[-1] - c[0]) / c[0] * 100) if c[0] > 0 else 0
-        total_return = trend
 
         adx_arr = calc_adx(h, low_arr, c, period=14)
         last_adx = float(adx_arr[-1]) if not np.isnan(adx_arr[-1]) else 20.0
@@ -343,12 +432,13 @@ async def recommend_strategy(
             "recommendations": recommendations[:6],
         })
     except Exception as e:
-        logger.error(f"recommend strategy error: {e}", exc_info=True)
+        logger.error("recommend strategy error: %s", e,  exc_info=True)
         return _json_response(False, error=safe_error(e))
 
 
 async def _run_single_or_adaptive(strategy_type, symbol, start_date, end_date, initial_capital, df):
     import asyncio
+
     from core.backtest import run_backtest as run_bt
 
     if strategy_type == "composite" or strategy_type == "all":
@@ -382,28 +472,559 @@ async def _run_single_or_adaptive(strategy_type, symbol, start_date, end_date, i
 
 
 def _serialize_result(result, initial_capital, df):
-    import numpy as np
-    equity_curve = []
-    if result.equity_curve and result.dates:
-        for i in range(min(len(result.dates), len(result.equity_curve))):
-            equity_curve.append({"date": result.dates[i], "value": float(result.equity_curve[i])})
+    return result.to_dict(max_equity=500, max_trades=100)
 
-    return {
-        "strategy_name": result.strategy_name,
-        "total_return": result.total_return,
-        "annual_return": result.annual_return,
-        "sharpe_ratio": result.sharpe_ratio,
-        "max_drawdown": result.max_drawdown,
-        "win_rate": result.win_rate,
-        "profit_factor": result.profit_factor,
-        "total_trades": result.total_trades,
-        "win_trades": result.win_trades,
-        "loss_trades": result.loss_trades,
-        "avg_profit": result.avg_profit,
-        "avg_loss": result.avg_loss,
-        "benchmark_return": result.benchmark_return,
-        "alpha": result.alpha,
-        "beta": result.beta,
-        "equity_curve": equity_curve[-500:] if equity_curve else [],
-        "trades": result.trades[-100:] if result.trades else [],
-    }
+
+@backtest_router.post("/backtest/export")
+async def export_backtest(
+    request: Request,
+    body: BacktestRunRequest,
+    format: str = Query("json", pattern=r"^(json|csv)$"),
+):
+    try:
+        import json as json_lib
+
+        import pandas as pd
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error=f"无法获取 {body.symbol} 的历史数据")
+
+        result = await _run_single_or_adaptive(
+            body.strategy_type, body.symbol, body.start_date,
+            body.end_date, body.initial_capital, df,
+        )
+        if "error" in result:
+            return _json_response(False, error=result["error"])
+
+        if format == "csv":
+            output = io.StringIO()
+            if isinstance(result, dict) and "equity_curve" in result:
+                ec = result.get("equity_curve", [])
+                if ec:
+                    ec_df = pd.DataFrame(ec)
+                    ec_df.to_csv(output, index=False)
+                trades = result.get("trades", [])
+                if trades:
+                    output.write("\n--- Trades ---\n")
+                    td = pd.DataFrame(trades)
+                    td.to_csv(output, index=False)
+                summary = {k: v for k, v in result.items() if k not in ("equity_curve", "trades") and not isinstance(v, (list, dict))}
+                output.write("\n--- Summary ---\n")
+                pd.DataFrame([summary]).to_csv(output, index=False)
+            else:
+                pd.DataFrame([{"result": str(result)}]).to_csv(output, index=False)
+            output.seek(0)
+            filename = f"backtest_{body.symbol}_{body.strategy_type}_{body.start_date}_{body.end_date}.csv"
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="text/csv",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+
+        filename = f"backtest_{body.symbol}_{body.strategy_type}_{body.start_date}_{body.end_date}.json"
+        return StreamingResponse(
+            iter([json_lib.dumps(result, ensure_ascii=False, default=str)]),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        logger.error("backtest export error: %s", e,  exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+@backtest_router.get("/backtest/performance_overview")
+async def performance_overview(
+    request: Request,
+    symbol: str = Query("600000", min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$"),
+    period: str = Query("1y", max_length=5),
+):
+    cache_key = f"{symbol}:{period}"
+    now = time.time()
+    if cache_key in _perf_overview_cache:
+        cached_ts, cached_data = _perf_overview_cache[cache_key]
+        if now - cached_ts < _PERF_CACHE_TTL:
+            return _json_response(True, data=cached_data)
+
+    try:
+        import numpy as np
+
+        from core.backtest import BacktestEngine
+        from core.strategies import STRATEGY_REGISTRY
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(symbol, period=period, kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="无法获取历史数据")
+
+        if len(df) < 30:
+            return _json_response(False, error="数据不足，至少需要30个交易日")
+
+        seen_classes = {}
+        for _name, cls in STRATEGY_REGISTRY.items():
+            base_name = cls.__name__
+            if base_name not in seen_classes:
+                seen_classes[base_name] = cls
+
+        strategy_results = []
+        for base_name, cls in seen_classes.items():
+            try:
+                strategy = cls()
+                engine = BacktestEngine()
+                result = engine.run(strategy, df)
+                if result:
+                    sd = result.summary_dict()
+                    sd["strategy"] = base_name
+                    sd["trade_count"] = sd.pop("total_trades", 0)
+                    strategy_results.append(sd)
+            except Exception as e:
+                logger.debug("策略 %s 回测失败: %s", base_name, e)
+
+        strategy_results.sort(key=lambda x: x["sharpe_ratio"], reverse=True)
+
+        c = df["close"].values.astype(float)
+        bh_return = round((c[-1] - c[0]) / c[0], 4) if len(c) > 1 and c[0] > 0 else 0
+        returns = np.diff(c) / np.where(c[:-1] > 0, c[:-1], 1)
+        returns = np.where(np.isfinite(returns), returns, 0)
+        bh_sharpe = round(float(np.mean(returns) / np.std(returns) * np.sqrt(252)), 2) if np.std(returns) > 0 else 0
+
+        best_strategy = strategy_results[0] if strategy_results else None
+        avg_return = round(float(np.mean([s["total_return"] for s in strategy_results])), 4) if strategy_results else 0
+        avg_sharpe = round(float(np.mean([s["sharpe_ratio"] for s in strategy_results])), 2) if strategy_results else 0
+
+        overview = {
+            "symbol": symbol,
+            "period": period,
+            "data_points": len(df),
+            "benchmark": {
+                "name": "买入持有",
+                "total_return": bh_return,
+                "sharpe_ratio": bh_sharpe,
+            },
+            "best_strategy": best_strategy,
+            "average_return": avg_return,
+            "average_sharpe": avg_sharpe,
+            "strategy_count": len(strategy_results),
+            "strategies": strategy_results,
+        }
+
+        _perf_overview_cache[cache_key] = (now, overview)
+
+        if len(_perf_overview_cache) > _PERF_CACHE_MAX:
+            expired_keys = [k for k, (ts, _) in _perf_overview_cache.items() if now - ts > _PERF_CACHE_TTL]
+            for k in expired_keys:
+                del _perf_overview_cache[k]
+            if len(_perf_overview_cache) > _PERF_CACHE_MAX:
+                oldest_key = min(_perf_overview_cache, key=lambda k: _perf_overview_cache[k][0])
+                del _perf_overview_cache[oldest_key]
+
+        return _json_response(True, data=overview)
+    except Exception as e:
+        logger.error("performance overview error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+class StrategyCompareRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategies: list[str] = Field(..., min_length=2, max_length=10)
+    start_date: str = Field("2024-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    initial_capital: float = 1000000
+
+
+@backtest_router.post("/backtest/strategy_compare")
+async def strategy_compare(request: Request, body: StrategyCompareRequest):
+    """多策略深度比较：收益曲线叠加、统计显著性检验、风险指标对比"""
+    try:
+        from scipy import stats as sp_stats
+
+        from core.backtest import BacktestEngine
+        from core.strategies import STRATEGY_REGISTRY
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="数据不足")
+
+        import pandas as pd
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
+            df = df[(df["date"] >= body.start_date) & (df["date"] <= body.end_date)].reset_index(drop=True)
+
+        if len(df) < 30:
+            return _json_response(False, error="数据不足，至少需要30个交易日")
+
+        engine = BacktestEngine(initial_capital=body.initial_capital)
+        strategy_results = []
+        all_equity_returns = {}
+
+        async def _compare_strategy(sname: str) -> tuple[dict | None, str, np.ndarray | None]:
+            if sname not in STRATEGY_REGISTRY:
+                return None, sname, None
+            try:
+                strategy = STRATEGY_REGISTRY[sname]()
+                result = await asyncio.to_thread(engine.run, strategy, df)
+                if result and result.total_trades > 0:
+                    sd = result.summary_dict()
+                    sd["equity_curve"] = [
+                        {"date": result.dates[i], "value": float(result.equity_curve[i])}
+                        for i in range(min(len(result.dates), len(result.equity_curve)))
+                    ][-200:]
+                    rets = None
+                    if result.equity_curve and len(result.equity_curve) > 1:
+                        eq = np.array(result.equity_curve, dtype=float)
+                        rets = np.diff(eq) / np.where(eq[:-1] > 0, eq[:-1], 1)
+                        rets = np.where(np.isfinite(rets), rets, 0)
+                    return sd, sname, rets
+            except Exception as e:
+                logger.debug("策略 %s 比较失败: %s", sname, e)
+            return None, sname, None
+
+        pairs = await asyncio.gather(*[_compare_strategy(s) for s in body.strategies])
+        for sd, sname, rets in pairs:
+            if sd is not None:
+                strategy_results.append(sd)
+                if rets is not None:
+                    all_equity_returns[sname] = rets
+
+        if len(strategy_results) < 2:
+            return _json_response(False, error="至少需要2个有效策略才能比较")
+
+        strategy_results.sort(key=lambda x: x.get("sharpe_ratio", 0), reverse=True)
+
+        significance_tests = []
+        sname_list = list(all_equity_returns.keys())
+        for i in range(len(sname_list)):
+            for j in range(i + 1, len(sname_list)):
+                r1 = all_equity_returns[sname_list[i]]
+                r2 = all_equity_returns[sname_list[j]]
+                min_len = min(len(r1), len(r2))
+                if min_len < 10:
+                    continue
+                r1_trimmed = r1[-min_len:]
+                r2_trimmed = r2[-min_len:]
+                diff = r1_trimmed - r2_trimmed
+                if np.std(diff) < 1e-12:
+                    continue
+                t_stat, p_value = sp_stats.ttest_rel(r1_trimmed, r2_trimmed)
+                significance_tests.append({
+                    "strategy_a": sname_list[i],
+                    "strategy_b": sname_list[j],
+                    "t_statistic": round(float(t_stat), 4),
+                    "p_value": round(float(p_value), 6),
+                    "significant_5pct": bool(p_value < 0.05),
+                    "mean_diff_annualized": round(float(np.mean(diff) * 252 * 100), 4),
+                })
+
+        return _json_response(True, data={
+            "symbol": body.symbol,
+            "period": f"{body.start_date} ~ {body.end_date}",
+            "strategies": strategy_results,
+            "significance_tests": significance_tests,
+            "best_by_sharpe": strategy_results[0].get("strategy_name") if strategy_results else None,
+        })
+    except Exception as e:
+        logger.error("strategy compare error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+class ParamGridRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategy: str = Field(..., min_length=1, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    param_x: str = Field(..., min_length=1, max_length=30)
+    param_y: str = Field(..., min_length=1, max_length=30)
+    x_min: float | None = None
+    x_max: float | None = None
+    y_min: float | None = None
+    y_max: float | None = None
+    grid_size: int = Field(7, ge=3, le=15)
+    start_date: str = Field("2024-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    metric: str = Field("sharpe_ratio", pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+@backtest_router.post("/backtest/param_grid")
+async def param_grid_scan(request: Request, body: ParamGridRequest):
+    """二维参数网格扫描，生成热图数据用于前端可视化"""
+    try:
+        from core.backtest import BacktestEngine
+        from core.strategies import STRATEGY_REGISTRY
+
+        if body.strategy not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"未知策略: {body.strategy}")
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="数据不足")
+
+        import pandas as pd
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
+            df = df[(df["date"] >= body.start_date) & (df["date"] <= body.end_date)].reset_index(drop=True)
+
+        if len(df) < 30:
+            return _json_response(False, error="数据不足，至少需要30个交易日")
+
+        strategy_cls = STRATEGY_REGISTRY[body.strategy]
+        engine = BacktestEngine(initial_capital=1000000)
+
+        x_range = (body.x_min, body.x_max) if body.x_min is not None and body.x_max is not None else None
+        y_range = (body.y_min, body.y_max) if body.y_min is not None and body.y_max is not None else None
+
+        result = await asyncio.to_thread(
+            engine.parameter_grid_scan,
+            strategy_cls, df, body.param_x, body.param_y,
+            x_range, y_range, body.grid_size, {}, body.metric,
+        )
+
+        return _json_response(True, data=result)
+    except Exception as e:
+        logger.error("param grid scan error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+class ParamSensitivityRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategy: str = Field(..., min_length=1, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    param_name: str = Field(..., min_length=1, max_length=30)
+    p_min: float | None = None
+    p_max: float | None = None
+    num_points: int = Field(11, ge=3, le=31)
+    start_date: str = Field("2024-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+@backtest_router.post("/backtest/param_sensitivity")
+async def param_sensitivity_analysis(request: Request, body: ParamSensitivityRequest):
+    try:
+        from core.backtest import BacktestEngine
+        from core.strategies import STRATEGY_REGISTRY
+
+        if body.strategy not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"未知策略: {body.strategy}")
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="数据不足")
+
+        import pandas as pd
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
+            df = df[(df["date"] >= body.start_date) & (df["date"] <= body.end_date)].reset_index(drop=True)
+
+        if len(df) < 30:
+            return _json_response(False, error="数据不足，至少需要30个交易日")
+
+        strategy_cls = STRATEGY_REGISTRY[body.strategy]
+        engine = BacktestEngine(initial_capital=1000000)
+
+        p_range = (body.p_min, body.p_max) if body.p_min is not None and body.p_max is not None else None
+
+        result = await asyncio.to_thread(
+            engine.parameter_sensitivity,
+            strategy_cls, df, body.param_name,
+            p_range, body.num_points,
+        )
+
+        return _json_response(True, data=result)
+    except Exception as e:
+        logger.error("param sensitivity error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+class EfficientFrontierRequest(BaseModel):
+    symbols: list[str] = Field(..., min_length=2, max_length=20)
+    period: int = Field(120, ge=60, le=500)
+    n_points: int = Field(20, ge=5, le=50)
+
+
+@backtest_router.post("/portfolio/efficient_frontier")
+async def compute_efficient_frontier(request: Request, body: EfficientFrontierRequest):
+    try:
+        from core.portfolio_optimizer import PortfolioOptimizer
+
+        fetcher = request.app.state.fetcher
+        returns_list = []
+        valid_symbols = []
+
+        async def _fetch_returns(sym: str) -> tuple[str, np.ndarray | None]:
+            try:
+                df = await fetcher.get_history(sym, period="all", kline_type="daily", adjust="qfq")
+                if df is None or len(df) < body.period:
+                    return sym, None
+                df = df.tail(body.period)
+                if "close" not in df.columns:
+                    return sym, None
+                closes = df["close"].values.astype(float)
+                rets = np.diff(closes) / np.where(closes[:-1] > 0, closes[:-1], 1)
+                rets = np.where(np.isfinite(rets), rets, 0)
+                return sym, rets
+            except Exception as e:
+                logger.debug("Return calc failed for %s: %s", sym, e)
+                return sym, None
+
+        pairs = await asyncio.gather(*[_fetch_returns(s) for s in body.symbols])
+        for sym, rets in pairs:
+            if rets is not None:
+                valid_symbols.append(sym)
+                returns_list.append(rets)
+
+        if len(valid_symbols) < 2:
+            return _json_response(False, error="至少需要2个有效股票代码")
+
+        min_len = min(len(r) for r in returns_list)
+        aligned = np.column_stack([r[-min_len:] for r in returns_list])
+
+        expected_returns = np.mean(aligned, axis=0)
+        cov_matrix = np.cov(aligned, rowvar=False)
+
+        optimizer = PortfolioOptimizer()
+        frontier = await asyncio.to_thread(
+            optimizer.efficient_frontier, expected_returns, cov_matrix, body.n_points,
+        )
+
+        return _json_response(True, data={
+            "symbols": valid_symbols,
+            "frontier": frontier,
+            "n_points": len(frontier),
+        })
+    except Exception as e:
+        logger.error("efficient frontier error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+class WalkForwardOOSRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategy: str = Field(..., min_length=1, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    train_days: int = Field(252, ge=60, le=504)
+    test_days: int = Field(63, ge=20, le=126)
+    start_date: str = Field("2023-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    param_grid: dict | None = None
+
+
+@backtest_router.post("/backtest/walk_forward_oos")
+async def walk_forward_oos(request: Request, body: WalkForwardOOSRequest):
+    """Walk-Forward Out-of-Sample验证：过拟合检测、参数稳定性分析"""
+    try:
+        from core.backtest import walk_forward_oos_validation
+        from core.strategies import STRATEGY_REGISTRY
+
+        if body.strategy not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"未知策略: {body.strategy}")
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="数据不足")
+
+        import pandas as pd
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
+            df = df[(df["date"] >= body.start_date) & (df["date"] <= body.end_date)].reset_index(drop=True)
+
+        if len(df) < body.train_days + body.test_days:
+            return _json_response(False, error=f"数据不足：至少需要{body.train_days + body.test_days}个交易日")
+
+        strategy_cls = STRATEGY_REGISTRY[body.strategy]
+
+        result = await asyncio.to_thread(
+            walk_forward_oos_validation,
+            strategy_cls, df, body.train_days, body.test_days,
+            1000000, body.param_grid,
+        )
+
+        return _json_response(True, data=result)
+    except Exception as e:
+        logger.error("walk forward OOS error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+class SignalQualityRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategy: str = Field(..., min_length=1, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    period: str = Field("1y", max_length=10)
+    forward_period: int = Field(5, ge=1, le=30)
+    min_return_threshold: float = Field(0.005, ge=0, le=0.1)
+
+
+@backtest_router.post("/backtest/signal_quality")
+async def signal_quality(request: Request, body: SignalQualityRequest):
+    try:
+        from core.signal_quality import evaluate_signal_quality
+        from core.strategies import STRATEGY_REGISTRY
+
+        if body.strategy not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"未知策略: {body.strategy}")
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(body.symbol, period=body.period, kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="数据不足")
+
+        strategy_cls = STRATEGY_REGISTRY[body.strategy]
+        strategy = strategy_cls()
+
+        report = await asyncio.to_thread(
+            evaluate_signal_quality,
+            strategy, df, body.symbol,
+            body.forward_period, body.min_return_threshold,
+        )
+
+        return _json_response(True, data=report.to_dict())
+    except Exception as e:
+        logger.error("signal quality error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))
+
+
+class WalkForwardAnalysisRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20, pattern=r"^[0-9a-zA-Z\.]{1,20}$")
+    strategy: str = Field(..., min_length=1, max_length=30, pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+    train_period: int = Field(252, ge=60, le=504)
+    test_period: int = Field(63, ge=20, le=126)
+    n_splits: int = Field(5, ge=2, le=20)
+    initial_capital: float = Field(100000, ge=10000, le=1e9)
+    start_date: str = Field("2023-01-01", pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field("2025-12-31", pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+@backtest_router.post("/backtest/walk_forward_analysis")
+async def walk_forward_analysis_endpoint(request: Request, body: WalkForwardAnalysisRequest):
+    try:
+        from core.strategies import STRATEGY_REGISTRY
+        from core.walk_forward import walk_forward_analysis
+
+        if body.strategy not in STRATEGY_REGISTRY:
+            return _json_response(False, error=f"未知策略: {body.strategy}")
+
+        fetcher = request.app.state.fetcher
+        df = await fetcher.get_history(body.symbol, period="all", kline_type="daily", adjust="qfq")
+        if df is None or df.empty:
+            return _json_response(False, error="数据不足")
+
+        import pandas as pd
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"])
+            df = df[(df["date"] >= body.start_date) & (df["date"] <= body.end_date)].reset_index(drop=True)
+
+        strategy_cls = STRATEGY_REGISTRY[body.strategy]
+        strategy = strategy_cls()
+
+        result = await asyncio.to_thread(
+            walk_forward_analysis,
+            strategy, df, body.symbol,
+            body.train_period, body.test_period,
+            body.n_splits, body.initial_capital,
+        )
+
+        return _json_response(True, data=result.to_dict())
+    except Exception as e:
+        logger.error("walk forward analysis error: %s", e, exc_info=True)
+        return _json_response(False, error=safe_error(e))

@@ -41,15 +41,13 @@ class MarketDetector:
         if s.endswith(".HK") or s.endswith(".HKEX"):
             return "HK"
         clean = re.sub(r"[^A-Za-z0-9.]", "", s)
-        if re.match(r"^[A-Z]", clean):
-            if cls.US_PATTERN.match(clean.split(".")[0]) or cls.US_9DIGIT_PATTERN.match(clean):
-                return "US"
+        if re.match(r"^[A-Z]", clean) and (cls.US_PATTERN.match(clean.split(".")[0]) or cls.US_9DIGIT_PATTERN.match(clean)):
+            return "US"
         digits = re.sub(r"[^0-9]", "", symbol)
         if len(digits) == 6 and digits[0] in cls.A_SHARE_PREFIXES:
             return "A"
-        if len(digits) <= 5 and digits and digits[0] in cls.HK_PREFIXES:
-            if not cls.US_PATTERN.match(s) and not cls.US_9DIGIT_PATTERN.match(s):
-                return "HK"
+        if len(digits) <= 5 and digits and digits[0] in cls.HK_PREFIXES and not cls.US_PATTERN.match(s) and not cls.US_9DIGIT_PATTERN.match(s):
+            return "HK"
         if cls.US_PATTERN.match(s) or cls.US_9DIGIT_PATTERN.match(s):
             return "US"
         return "A"

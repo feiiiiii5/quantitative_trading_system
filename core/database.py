@@ -2,6 +2,8 @@
 QuantCore 数据库模块
 提供 SQLite 存储和线程安全缓存
 """
+import asyncio
+import contextlib
 import json
 import logging
 import sqlite3
@@ -10,11 +12,24 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, cast
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    'ThreadSafeLRU',
+    'CacheManager',
+    'SQLiteStore',
+    'AsyncDatabaseSession',
+    'get_db',
+    'get_cache_manager',
+]
+
+def _safe_log(log_func: Any, *args: Any, **kwargs: Any) -> None:
+    with contextlib.suppress(ValueError, OSError, AttributeError):
+        log_func(*args, **kwargs)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DATA_DIR / "quantcore.db"
@@ -29,24 +44,24 @@ class ThreadSafeLRU:
         self._cache: OrderedDict[str, tuple[Any, float, int]] = OrderedDict()
         self._lock = threading.Lock()
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         with self._lock:
             if key in self._cache:
                 value, ts, ttl = self._cache[key]
-                if time.time() - ts < ttl:
+                if time.monotonic() - ts < float(ttl):
                     self._cache.move_to_end(key)
                     return value
                 del self._cache[key]
         return None
 
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
         effective_ttl = ttl if ttl is not None else self._ttl
         with self._lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
             elif len(self._cache) >= self._maxsize:
                 self._cache.popitem(last=False)
-            self._cache[key] = (value, time.time(), int(effective_ttl))
+            self._cache[key] = (value, time.monotonic(), int(effective_ttl))
 
     def delete(self, key: str) -> None:
         with self._lock:
@@ -70,7 +85,7 @@ class ThreadSafeLRU:
             return len(self._cache)
 
 
-_db_query_cache = ThreadSafeLRU(maxsize=500, ttl=90)
+_db_query_cache = ThreadSafeLRU(maxsize=2000, ttl=120)
 
 
 class CacheManager:
@@ -92,7 +107,7 @@ class CacheManager:
                 cache.clear()
 
 
-_cache_manager: Optional[CacheManager] = None
+_cache_manager: CacheManager | None = None
 _cache_manager_lock = threading.Lock()
 
 
@@ -105,26 +120,66 @@ def get_cache_manager() -> CacheManager:
     return _cache_manager
 
 
+class _Transaction:
+    def __init__(self, store: 'SQLiteStore'):
+        self._store = store
+        self._conn: sqlite3.Connection | None = None
+
+    def __enter__(self) -> '_Transaction':
+        conn = self._store._get_conn()
+        conn.execute("BEGIN")
+        self._conn = conn
+        return self
+
+    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        assert self._conn is not None
+        return self._conn.execute(sql, params)
+
+    def executemany(self, sql: str, params_list: list[tuple]) -> sqlite3.Cursor:
+        assert self._conn is not None
+        return self._conn.executemany(sql, params_list)
+
+    def commit(self) -> None:
+        if self._conn:
+            self._conn.commit()
+
+    def rollback(self) -> None:
+        if self._conn:
+            self._conn.rollback()
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if exc_type is not None:
+            self.rollback()
+        else:
+            self.commit()
+
+
 class SQLiteStore:
     """SQLite存储，支持缓冲写入和查询缓存"""
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         self._db_path = db_path or str(DB_PATH)
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
-        self._write_buffer: list[tuple[str, tuple, int]] = []
+        self._write_buffer: list[tuple[str, tuple, int, float]] = []
         self._buffer_lock = threading.Lock()
         self._buffer_max_size = 100
         self._buffer_abs_max = 1000
-        self._last_flush = time.time()
+        self._last_flush = time.monotonic()
         self._buffer_max_retries = 5
         self._dropped_writes = 0
         self._pool: list[sqlite3.Connection] = []
         self._pool_lock = threading.Lock()
         self._pool_max_size = 8
+        self._stop_flush = threading.Event()
         self._init_db()
         self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
         self._flush_thread.start()
+        try:
+            import atexit
+            atexit.register(self._flush_buffer)
+        except (ImportError, AttributeError):
+            pass
 
     def _create_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, timeout=10, check_same_thread=False)
@@ -134,17 +189,26 @@ class SQLiteStore:
         conn.execute("PRAGMA cache_size=-128000")
         conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA mmap_size=67108864")
-        conn.execute("PRAGMA page_size=4096")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_size_limit=67108864")
         return conn
 
     def _get_conn(self) -> sqlite3.Connection:
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = self._acquire_from_pool()
+        raw_conn: sqlite3.Connection | None = cast(
+            sqlite3.Connection | None,
+            getattr(self._local, "conn", None),
+        )
+        if raw_conn is None:
+            result_conn: sqlite3.Connection = self._acquire_from_pool()
+            self._local.conn = result_conn
+            return result_conn
         try:
-            self._local.conn.execute("SELECT 1")
+            raw_conn.execute("SELECT 1")
+            return raw_conn
         except sqlite3.OperationalError:
-            self._local.conn = self._acquire_from_pool()
-        return self._local.conn
+            retry_conn: sqlite3.Connection = self._acquire_from_pool()
+            self._local.conn = retry_conn
+            return retry_conn
 
     def _acquire_from_pool(self) -> sqlite3.Connection:
         with self._pool_lock:
@@ -156,8 +220,8 @@ class SQLiteStore:
                 except sqlite3.OperationalError:
                     try:
                         conn.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Error closing stale pool connection: %s", e)
         return self._create_conn()
 
     def _release_to_pool(self, conn: sqlite3.Connection) -> None:
@@ -170,13 +234,13 @@ class SQLiteStore:
                 except sqlite3.OperationalError:
                     try:
                         conn.close()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Error closing rejected pool connection: %s", e)
                 return
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Error closing overflow connection: %s", e)
 
     def get_pool_status(self) -> dict:
         with self._pool_lock:
@@ -190,109 +254,206 @@ class SQLiteStore:
 
     def _init_db(self) -> None:
         conn = self._get_conn()
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS kline (
-                symbol TEXT NOT NULL,
-                market TEXT NOT NULL,
-                kline_type TEXT NOT NULL,
-                adjust TEXT NOT NULL DEFAULT '',
-                date TEXT NOT NULL,
-                open REAL, high REAL, low REAL, close REAL,
-                volume REAL, amount REAL,
-                turnover_rate REAL DEFAULT 0,
-                PRIMARY KEY (symbol, market, kline_type, adjust, date)
-            );
-            CREATE INDEX IF NOT EXISTS idx_kline_symbol ON kline(symbol, market);
-            CREATE INDEX IF NOT EXISTS idx_kline_date ON kline(date);
+        try:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS kline (
+                    symbol TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    kline_type TEXT NOT NULL,
+                    adjust TEXT NOT NULL DEFAULT '',
+                    date TEXT NOT NULL,
+                    open REAL, high REAL, low REAL, close REAL,
+                    volume REAL, amount REAL,
+                    turnover_rate REAL DEFAULT 0,
+                    PRIMARY KEY (symbol, market, kline_type, adjust, date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_kline_symbol ON kline(symbol, market);
+                CREATE INDEX IF NOT EXISTS idx_kline_date ON kline(date);
 
-            CREATE TABLE IF NOT EXISTS stock_info (
-                symbol TEXT PRIMARY KEY,
-                name TEXT,
-                market TEXT,
-                industry TEXT,
-                list_date TEXT,
-                update_time TEXT
-            );
+                CREATE TABLE IF NOT EXISTS stock_info (
+                    symbol TEXT PRIMARY KEY,
+                    name TEXT,
+                    market TEXT,
+                    industry TEXT,
+                    list_date TEXT,
+                    update_time TEXT
+                );
 
-            CREATE TABLE IF NOT EXISTS source_stats (
-                source_name TEXT NOT NULL,
-                request_type TEXT NOT NULL,
-                success_count INTEGER DEFAULT 0,
-                fail_count INTEGER DEFAULT 0,
-                avg_latency REAL DEFAULT 0,
-                last_success_ts REAL DEFAULT 0,
-                update_time TEXT,
-                PRIMARY KEY (source_name, request_type)
-            );
+                CREATE TABLE IF NOT EXISTS source_stats (
+                    source_name TEXT NOT NULL,
+                    request_type TEXT NOT NULL,
+                    success_count INTEGER DEFAULT 0,
+                    fail_count INTEGER DEFAULT 0,
+                    avg_latency REAL DEFAULT 0,
+                    last_success_ts REAL DEFAULT 0,
+                    update_time TEXT,
+                    PRIMARY KEY (source_name, request_type)
+                );
 
-            CREATE TABLE IF NOT EXISTS config (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            );
+                CREATE TABLE IF NOT EXISTS config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
 
-            CREATE TABLE IF NOT EXISTS realtime_cache (
-                symbol TEXT PRIMARY KEY,
-                data TEXT,
-                update_time REAL
-            );
+                CREATE TABLE IF NOT EXISTS realtime_cache (
+                    symbol TEXT PRIMARY KEY,
+                    data TEXT,
+                    update_time REAL
+                );
 
-            CREATE TABLE IF NOT EXISTS factor_cache (
-                symbol TEXT NOT NULL,
-                factor_name TEXT NOT NULL,
-                date TEXT NOT NULL,
-                value REAL,
-                PRIMARY KEY (symbol, factor_name, date)
-            );
+                CREATE TABLE IF NOT EXISTS factor_cache (
+                    symbol TEXT NOT NULL,
+                    factor_name TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    value REAL,
+                    PRIMARY KEY (symbol, factor_name, date)
+                );
 
-            CREATE TABLE IF NOT EXISTS backtest_results (
-                id TEXT PRIMARY KEY,
-                strategy_name TEXT,
-                symbol TEXT,
-                start_date TEXT,
-                end_date TEXT,
-                params TEXT,
-                result_json TEXT,
-                created_at TEXT,
-                sharpe_ratio REAL,
-                total_return REAL,
-                max_drawdown REAL
-            );
+                CREATE TABLE IF NOT EXISTS backtest_results (
+                    id TEXT PRIMARY KEY,
+                    strategy_name TEXT,
+                    symbol TEXT,
+                    start_date TEXT,
+                    end_date TEXT,
+                    params TEXT,
+                    result_json TEXT,
+                    created_at TEXT,
+                    sharpe_ratio REAL,
+                    total_return REAL,
+                    max_drawdown REAL
+                );
 
-            CREATE TABLE IF NOT EXISTS trade_signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT NOT NULL,
-                strategy_name TEXT NOT NULL,
-                signal_type TEXT NOT NULL,
-                signal_score REAL,
-                price REAL,
-                created_at TEXT,
-                market_regime TEXT
-            );
+                CREATE TABLE IF NOT EXISTS trade_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    strategy_name TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    signal_score REAL,
+                    price REAL,
+                    created_at TEXT,
+                    market_regime TEXT
+                );
 
-            CREATE INDEX IF NOT EXISTS idx_backtest_symbol ON backtest_results(symbol, strategy_name);
-            CREATE INDEX IF NOT EXISTS idx_signals_symbol ON trade_signals(symbol, created_at);
-            CREATE INDEX IF NOT EXISTS idx_kline_composite
-            ON kline(symbol, market, kline_type, adjust, date DESC);
-            CREATE INDEX IF NOT EXISTS idx_config_key ON config(key);
-        """)
-        conn.execute("PRAGMA wal_autocheckpoint=1000")
+                CREATE INDEX IF NOT EXISTS idx_backtest_symbol ON backtest_results(symbol, strategy_name);
+                CREATE INDEX IF NOT EXISTS idx_signals_symbol ON trade_signals(symbol, created_at);
+                CREATE INDEX IF NOT EXISTS idx_kline_composite
+                ON kline(symbol, market, kline_type, adjust, date DESC);
+                CREATE INDEX IF NOT EXISTS idx_config_key ON config(key);
+
+                CREATE TABLE IF NOT EXISTS price_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    name TEXT,
+                    target_price REAL NOT NULL,
+                    direction TEXT NOT NULL DEFAULT 'above',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    triggered INTEGER NOT NULL DEFAULT 0,
+                    trigger_price REAL,
+                    trigger_time TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_alerts_symbol ON price_alerts(symbol);
+                CREATE INDEX IF NOT EXISTS idx_alerts_active ON price_alerts(enabled, triggered);
+
+                CREATE TABLE IF NOT EXISTS financial_pit (
+                    symbol TEXT NOT NULL,
+                    report_period TEXT NOT NULL,
+                    publish_date TEXT NOT NULL,
+                    metric TEXT NOT NULL,
+                    value REAL,
+                    PRIMARY KEY (symbol, report_period, metric, publish_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_fin_pit_symbol_date ON financial_pit(symbol, publish_date);
+
+                CREATE TABLE IF NOT EXISTS index_constituent (
+                    index_code TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    in_date TEXT NOT NULL,
+                    out_date TEXT,
+                    PRIMARY KEY (index_code, symbol, in_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_idx_const_code_date ON index_constituent(index_code, in_date, out_date);
+
+                CREATE TABLE IF NOT EXISTS data_lineage (
+                    symbol TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    ingest_time TEXT NOT NULL,
+                    PRIMARY KEY (symbol, date, source)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lineage_symbol_date ON data_lineage(symbol, date);
+
+                CREATE TABLE IF NOT EXISTS price_anomaly (
+                    symbol TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    anomaly_type TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    details_json TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                    PRIMARY KEY (symbol, date, anomaly_type)
+                );
+                CREATE INDEX IF NOT EXISTS idx_anomaly_symbol_date ON price_anomaly(symbol, date);
+
+                CREATE TABLE IF NOT EXISTS rebalance_schedules (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    symbols TEXT NOT NULL,
+                    frequency TEXT NOT NULL DEFAULT 'weekly',
+                    drift_threshold REAL NOT NULL DEFAULT 0.05,
+                    turnover_cap REAL NOT NULL DEFAULT 0.30,
+                    capital REAL NOT NULL DEFAULT 100000,
+                    period TEXT NOT NULL DEFAULT '1y',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_check_at TEXT,
+                    last_result_json TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_rebal_sched_enabled ON rebalance_schedules(enabled);
+            """)
+        except sqlite3.OperationalError as e:
+            if "already exists" not in str(e) and "duplicate" not in str(e):
+                logger.error("Database initialization error: %s", e)
+                raise
         conn.commit()
+        try:
+            conn.execute("ALTER TABLE kline ADD COLUMN adj_factor REAL DEFAULT 1.0")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
     def _flush_loop(self) -> None:
-        while True:
+        while not self._stop_flush.is_set():
             try:
-                time.sleep(2)
+                if self._stop_flush.wait(timeout=2):
+                    break
                 self._flush_buffer()
             except Exception as e:
-                logger.debug(f"Flush loop error: {e}")
+                logger.debug("Flush loop error: %s", e)
 
     def _flush_buffer(self) -> None:
         with self._buffer_lock:
             if not self._write_buffer:
                 return
-            buffer = self._write_buffer
-            self._write_buffer = []
-            self._last_flush = time.time()
+            now = time.monotonic()
+            ready = []
+            deferred = []
+            for item in self._write_buffer:
+                if len(item) == 4:
+                    sql, params, retries, next_retry = item
+                    if now >= next_retry:
+                        ready.append((sql, params, retries))
+                    else:
+                        deferred.append(item)
+                else:
+                    sql, params = item[0], item[1]
+                    retries = 0
+                    ready.append((sql, params, retries))
+            buffer = ready
+            self._write_buffer = deferred
+            self._last_flush = now
 
         if not buffer:
             return
@@ -301,16 +462,11 @@ class SQLiteStore:
             failed = []
             conn = self._get_conn()
             with conn:
-                for item in buffer:
-                    if len(item) == 2:
-                        sql, params = item
-                        retries = 0
-                    else:
-                        sql, params, retries = item
+                for sql, params, retries in buffer:
                     try:
                         conn.execute(sql, params)
                     except Exception as e:
-                        logger.warning(f"Buffered write error: {e} | sql={sql[:80]}")
+                        _safe_log(logger.warning, f"Buffered write error: {e} | sql={sql[:80]}")
                         failed.append((sql, params, retries + 1))
                 conn.commit()
             if failed:
@@ -318,41 +474,34 @@ class SQLiteStore:
                     requeued = 0
                     for sql, params, retries in failed:
                         if retries < self._buffer_max_retries:
-                            self._write_buffer.append((sql, params, retries))
+                            backoff = min(2 ** retries, 30)
+                            next_retry = time.monotonic() + backoff
+                            self._write_buffer.append((sql, params, retries, next_retry))
                             requeued += 1
                         else:
-                            logger.error(f"丢弃持久失败的缓冲写入（已重试{retries}次）: {sql[:80]}")
+                            _safe_log(logger.error, f"丢弃持久失败的缓冲写入（已重试{retries}次）: {sql[:80]}")
                 if requeued:
-                    logger.warning(f"Re-queued {requeued} failed buffered writes")
-        except Exception:
-            logger.exception("Flush buffer transaction-level error")
+                    _safe_log(logger.warning, f"Re-queued {requeued} failed buffered writes with exponential backoff")
+        except Exception as e:
+            _safe_log(logger.exception, f"Flush buffer transaction-level error: {e}")
             with self._buffer_lock:
-                for item in buffer:
-                    if len(item) == 2:
-                        sql, params = item[0], item[1]
-                        retries = 0
-                    else:
-                        sql, params, retries = item[0], item[1], item[2]
+                for sql, params, retries in buffer:
                     if retries < self._buffer_max_retries:
-                        self._write_buffer.append((sql, params, retries + 1))
+                        backoff = min(2 ** (retries + 1), 30)
+                        next_retry = time.monotonic() + backoff
+                        self._write_buffer.append((sql, params, retries + 1, next_retry))
                     else:
-                        logger.error(f"丢弃持久失败的缓冲写入（事务错误）: {sql[:80]}")
+                        _safe_log(logger.error, f"丢弃持久失败的缓冲写入（事务错误）: {sql[:80]}")
 
     def buffered_write(self, sql: str, params: tuple) -> None:
         with self._buffer_lock:
             if len(self._write_buffer) >= self._buffer_abs_max:
                 dropped = len(self._write_buffer) - self._buffer_max_size
                 self._dropped_writes += dropped
-                dropped_samples = [(b[0][:60], b[2]) for b in self._write_buffer[:min(3, dropped)]]
+                dropped_samples = [(b[0][:60], b[2] if len(b) > 2 else 0) for b in self._write_buffer[:min(3, dropped)]]
                 self._write_buffer = self._write_buffer[-self._buffer_max_size:]
-                logger.error(f"写缓冲区溢出，丢弃 {dropped} 条最旧记录（累计丢弃: {self._dropped_writes}），示例: {dropped_samples}")
-            self._write_buffer.append((sql, params, 0))
-            should_flush = (
-                len(self._write_buffer) >= self._buffer_max_size
-                or (time.time() - self._last_flush) >= 2
-            )
-        if should_flush:
-            self._flush_buffer()
+                logger.error("写缓冲区溢出，丢弃 %s 条最旧记录（累计丢弃: %s），示例: %s", dropped, self, dropped_samples)
+            self._write_buffer.append((sql, params, 0, 0.0))
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         conn = self._get_conn()
@@ -366,7 +515,10 @@ class SQLiteStore:
         conn.commit()
         return cursor
 
-    def fetchone(self, sql: str, params: tuple = ()) -> Optional[dict]:
+    def transaction(self):
+        return _Transaction(self)
+
+    def fetchone(self, sql: str, params: tuple = ()) -> dict | None:
         conn = self._get_conn()
         cursor = conn.execute(sql, params)
         row = cursor.fetchone()
@@ -378,6 +530,9 @@ class SQLiteStore:
         conn = self._get_conn()
         cursor = conn.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
+
+    def fetch(self, sql: str, params: tuple = ()) -> list[dict]:
+        return self.fetchall(sql, params)
 
     def upsert_kline_rows(self, symbol: str, market: str, kline_type: str,
                           adjust: str, rows: list[dict]) -> int:
@@ -408,14 +563,8 @@ class SQLiteStore:
                     dropped = len(self._write_buffer) - self._buffer_max_size
                     self._dropped_writes += dropped
                     self._write_buffer = self._write_buffer[-self._buffer_max_size:]
-                    logger.error(f"写缓冲区溢出（K线写入），丢弃 {dropped} 条最旧记录（累计丢弃: {self._dropped_writes}）")
-                self._write_buffer.append((sql, p, 0))
-            should_flush = (
-                len(self._write_buffer) >= self._buffer_max_size
-                or (time.time() - self._last_flush) >= 2
-            )
-        if should_flush:
-            self._flush_buffer()
+                    logger.error("写缓冲区溢出（K线写入），丢弃 %s 条最旧记录（累计丢弃: %s）", dropped, self)
+                self._write_buffer.append((sql, p, 0, 0.0))
 
         _db_query_cache.delete_prefix(f"kline_{symbol}_")
         return len(rows)
@@ -441,7 +590,7 @@ class SQLiteStore:
             sql += " AND date<=?"
             params.append(end_date)
 
-        sql += " ORDER BY date ASC"
+        sql += " ORDER BY date ASC LIMIT 50000"
 
         try:
             rows = self.fetchall(sql, tuple(params))
@@ -453,7 +602,7 @@ class SQLiteStore:
                 _db_query_cache.set(cache_key, df)
                 return df
         except Exception as e:
-            logger.debug(f"Load kline error: {e}")
+            logger.debug("Load kline error: %s", e)
 
         return pd.DataFrame()
 
@@ -494,6 +643,7 @@ class SQLiteStore:
             params.append(request_type)
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
+        sql += " LIMIT 1000"
         return self.fetchall(sql, tuple(params))
 
     def get_config(self, key: str, default: Any = None) -> Any:
@@ -509,11 +659,12 @@ class SQLiteStore:
         value_str = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
         self.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value_str))
 
-    def get_realtime_cache(self, symbol: str) -> Optional[dict]:
+    def get_realtime_cache(self, symbol: str) -> dict | None:
         row = self.fetchone("SELECT data, update_time FROM realtime_cache WHERE symbol=?", (symbol,))
         if row:
             try:
-                return json.loads(row["data"])
+                data_str: str = row["data"]
+                return cast(dict, json.loads(data_str))
             except (json.JSONDecodeError, TypeError):
                 return None
         return None
@@ -553,7 +704,7 @@ class SQLiteStore:
         )
         return result_id
 
-    def get_backtest_by_id(self, result_id: str) -> Optional[dict]:
+    def get_backtest_by_id(self, result_id: str) -> dict | None:
         row = self.fetchone(
             "SELECT * FROM backtest_results WHERE id=?",
             (result_id,),
@@ -611,13 +762,13 @@ class SQLiteStore:
         if end_date:
             sql += " AND date<=?"
             params.append(end_date)
-        sql += " ORDER BY date ASC"
+        sql += " ORDER BY date ASC LIMIT 1000"
         rows = self.fetchall(sql, tuple(params))
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["date", "value"])
 
     def set_factor_cache(self, symbol, factor_name, dates, values) -> None:
         params = []
-        for d, v in zip(dates, values):
+        for d, v in zip(dates, values, strict=False):
             try:
                 value = float(v) if v is not None and pd.notna(v) else None
             except (TypeError, ValueError):
@@ -652,48 +803,38 @@ class SQLiteStore:
                 conn.commit()
                 return {"deleted_cache": r1.rowcount}
         except Exception as e:
-            logger.debug(f"Cleanup error: {e}")
+            logger.debug("Cleanup error: %s", e)
             return {"error": str(e)}
 
     def compress_old_data(self, days: int = 90) -> dict:
-        """将90天以前的数据按周聚合压缩存储"""
         try:
             cutoff = (pd.Timestamp.now() - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
             conn = self._get_conn()
 
-            rows = self.fetchall(
-                "SELECT symbol, market, kline_type, adjust, COUNT(*) as cnt FROM kline WHERE date < ? GROUP BY symbol, market, kline_type, adjust",
+            all_rows = self.fetchall(
+                "SELECT symbol, market, kline_type, adjust, date, open, high, low, close, volume, amount, turnover_rate FROM kline WHERE date < ? ORDER BY symbol, market, kline_type, adjust, date ASC LIMIT 50000",
                 (cutoff,),
             )
+
+            if not all_rows:
+                return {"deleted_daily": 0, "compressed_weekly": 0}
+
+            df = pd.DataFrame(all_rows)
+            for col in ["open", "high", "low", "close", "volume", "amount", "turnover_rate"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            df["date"] = pd.to_datetime(df["date"])
 
             compressed_count = 0
             deleted_count = 0
 
-            for row in rows:
-                symbol = row["symbol"]
-                market = row["market"]
-                kline_type = row["kline_type"]
-                adjust = row["adjust"]
-                cnt = row.get("cnt", 0)
-                if cnt < 14:
+            for (symbol, market, kline_type, adjust), group in df.groupby(["symbol", "market", "kline_type", "adjust"]):
+                if len(group) < 14:
                     continue
 
-                detail_rows = self.fetchall(
-                    "SELECT date, open, high, low, close, volume, amount, turnover_rate FROM kline WHERE symbol=? AND market=? AND kline_type=? AND adjust=? AND date < ? ORDER BY date ASC",
-                    (symbol, market, kline_type, adjust, cutoff),
-                )
-                if not detail_rows or len(detail_rows) < 5:
-                    continue
-
-                df = pd.DataFrame(detail_rows)
-                for col in ["open", "high", "low", "close", "volume", "amount", "turnover_rate"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-                df["date"] = pd.to_datetime(df["date"])
-                df = df.set_index("date")
-
-                weekly = df.resample("W").agg({
+                group = group.set_index("date")
+                weekly = group.resample("W").agg({
                     "open": "first",
                     "high": "max",
                     "low": "min",
@@ -710,9 +851,9 @@ class SQLiteStore:
                     "DELETE FROM kline WHERE symbol=? AND market=? AND kline_type=? AND adjust=? AND date < ?",
                     (symbol, market, kline_type, adjust, cutoff),
                 )
-                deleted_count += cnt
+                deleted_count += len(group)
 
-                for idx, wr in weekly.iterrows():
+                for idx, wr in weekly.to_dict("index").items():
                     conn.execute(
                         """INSERT OR REPLACE INTO kline
                         (symbol, market, kline_type, adjust, date, open, high, low, close, volume, amount, turnover_rate)
@@ -735,27 +876,33 @@ class SQLiteStore:
             _db_query_cache.clear()
             return {"deleted_daily": deleted_count, "compressed_weekly": compressed_count}
         except Exception as e:
-            logger.debug(f"Compress error: {e}")
+            logger.debug("Compress error: %s", e)
             return {"error": str(e)}
 
     def close(self) -> None:
+        """关闭所有数据库连接，释放资源"""
+        self._stop_flush.set()
+        if self._flush_thread.is_alive():
+            self._flush_thread.join(timeout=5)
         self._flush_buffer()
+        # 关闭线程本地连接
         if hasattr(self._local, "conn") and self._local.conn is not None:
             try:
-                self._local.conn.close()
-            except Exception:
-                pass
+                self._release_to_pool(self._local.conn)
+            except Exception as e:
+                logger.debug("Error releasing local connection to pool: %s", e)
             self._local.conn = None
+        # 关闭连接池中的所有连接
         with self._pool_lock:
             for conn in self._pool:
                 try:
                     conn.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Error closing pool connection: %s", e)
             self._pool.clear()
 
 
-_db_instance: Optional[SQLiteStore] = None
+_db_instance: SQLiteStore | None = None
 _db_lock = threading.Lock()
 
 
@@ -766,3 +913,71 @@ def get_db() -> SQLiteStore:
             if _db_instance is None:
                 _db_instance = SQLiteStore()
     return _db_instance
+
+
+class AsyncDatabaseSession:
+    """异步数据库会话上下文管理器
+
+    提供异步友好的数据库访问接口，支持 async with 语法
+
+    Usage:
+        async with AsyncDatabaseSession() as session:
+            result = await session.fetch_one("SELECT * FROM config WHERE key = ?", ("api_key",))
+    """
+
+    def __init__(self, db: SQLiteStore | None = None):
+        self._db = db or get_db()
+        self._conn = None
+
+    async def __aenter__(self) -> 'AsyncDatabaseSession':
+        def _get() -> sqlite3.Connection:
+            return self._db._get_conn()
+        loop = asyncio.get_running_loop()
+        self._conn = await loop.run_in_executor(None, _get)  # type: ignore[arg-type,func-returns-value]
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._conn:
+            try:
+                if exc_type is None:
+                    await asyncio.to_thread(self._conn.commit)
+                else:
+                    await asyncio.to_thread(self._conn.rollback)
+            except Exception as e:
+                logger.debug("Error in async session exit: %s", e)
+            finally:
+                try:
+                    await asyncio.to_thread(self._db._release_to_pool, self._conn)
+                except Exception as e:
+                    logger.debug("Error releasing connection: %s", e)
+
+    async def fetch_one(self, sql: str, params: tuple = ()) -> dict | None:
+        """异步查询单条记录"""
+        assert self._conn is not None
+        def _fetch() -> dict | None:
+            cursor = self._conn.execute(sql, params)
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        return await asyncio.to_thread(_fetch)
+
+    async def fetch_all(self, sql: str, params: tuple = ()) -> list[dict]:
+        """异步查询多条记录"""
+        assert self._conn is not None
+        def _fetch() -> list[dict]:
+            cursor = self._conn.execute(sql, params)
+            return [dict(row) for row in cursor.fetchall()]
+        return await asyncio.to_thread(_fetch)
+
+    async def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """异步执行SQL"""
+        assert self._conn is not None
+        def _exec() -> sqlite3.Cursor:
+            return self._conn.execute(sql, params)
+        return await asyncio.to_thread(_exec)
+
+    async def executemany(self, sql: str, params_list: list[tuple]) -> sqlite3.Cursor:
+        """异步批量执行SQL"""
+        assert self._conn is not None
+        def _exec_many() -> sqlite3.Cursor:
+            return self._conn.executemany(sql, params_list)
+        return await asyncio.to_thread(_exec_many)

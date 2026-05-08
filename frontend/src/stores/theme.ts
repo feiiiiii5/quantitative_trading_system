@@ -11,11 +11,11 @@ export const useThemeStore = defineStore('theme', () => {
     localStorage.setItem('quantcore-theme', t)
   }
 
-  function toggleTheme() {
+  function toggle() {
     theme.value = theme.value === 'dark' ? 'light' : 'dark'
   }
 
   watch(theme, (val) => applyTheme(val), { immediate: true })
 
-  return { theme, toggleTheme }
+  return { theme, toggle, toggleTheme: toggle }
 })

@@ -1,12 +1,10 @@
 import numpy as np
-import pandas as pd
-import pytest
 
 from core.portfolio_optimizer import (
+    PortfolioOptimizer,
+    ic_weighted_optimize,
     mean_variance_optimize,
     risk_parity_optimize,
-    ic_weighted_optimize,
-    PortfolioOptimizer,
 )
 
 
