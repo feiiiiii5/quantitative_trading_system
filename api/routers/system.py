@@ -1,22 +1,18 @@
 import logging
 import sqlite3
 import time
-import uuid
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Path, Query, Request
 
 from api.connection_manager import (
-    _ALLOWED_CONFIG_KEYS, _api_response_cache, _is_trading_hours,
-    _kline_cache, _manager, _rt_cache, _start_time, _strategy_list_cache,
+    _ALLOWED_CONFIG_KEYS, _kline_cache, _manager, _rt_cache, _start_time, _strategy_list_cache,
     cache_response,
 )
 from api.routers.models import ConfigSetRequest, FeatureFlagRegisterRequest, FeatureFlagUpdateRequest
 from api.utils import json_response as _json_response
-from api.utils import get_trading, rate_limiter, safe_error, validate_symbol
-from core.data_fetcher import get_fetcher
+from api.utils import safe_error, validate_symbol
 from core.database import get_db
-from core.market_hours import MarketHours
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -139,7 +135,23 @@ async def readiness_check(request: Request):
         checks["data_fetcher"] = "error"
         logger.warning("Readiness fetcher check failed: %s", e)
 
-    return {"status": "ready", "checks": checks, "timestamp": datetime.now().isoformat()}
+    try:
+        from core.cache import _tick_cache
+        checks["tick_cache"] = "ready" if _tick_cache is not None else "not_initialized"
+    except Exception as e:
+        checks["tick_cache"] = "error"
+        logger.warning("Readiness tick cache check failed: %s", e)
+
+    try:
+        from core.data_fetcher import RequestCoalescer
+        checks["request_coalescer"] = "ready"
+    except Exception as e:
+        checks["request_coalescer"] = "error"
+        logger.warning("Readiness coalescer check failed: %s", e)
+
+    all_ready = all(v == "ready" or v == "not_initialized" for v in checks.values())
+    status = "ready" if all_ready else "degraded"
+    return {"status": status, "checks": checks, "timestamp": datetime.now().isoformat()}
 
 
 @router.get("/api-info")

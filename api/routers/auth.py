@@ -3,7 +3,6 @@ import logging
 from fastapi import APIRouter
 
 from api.auth import authenticate_user, create_token, create_user, require_auth
-from api.connection_manager import cache_response
 from api.routers.models import LoginRequest, RegisterRequest
 from api.utils import json_response as _json_response
 from api.utils import rate_limiter

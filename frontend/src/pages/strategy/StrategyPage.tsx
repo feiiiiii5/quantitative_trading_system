@@ -1,8 +1,8 @@
-import { useEffect, useState, useRef, useCallback, memo } from 'react';
+import { useEffect, useState, useRef, useCallback, memo, useMemo } from 'react';
 import { useStrategyStore } from '@/stores/strategy';
+import { useStrategyList, useStrategyParamSpecs, useFactorRegistry, useAlphaList, useBacktestHistory } from '@/hooks/queries';
 import { useCanvas } from '@/hooks/useCanvas';
 import { formatRatio, formatPrice } from '@/utils/format';
-import { apiGet } from '@/api/client';
 import type { BacktestResult } from '@/types';
 
 type Difficulty = 'BASIC' | 'PRO' | 'EXPERT';
@@ -177,21 +177,9 @@ const ALPHA_CATEGORY_LABELS: Record<string, string> = {
 };
 
 const AlphaFactorPanel = memo(function AlphaFactorPanel() {
-  const [alphas, setAlphas] = useState<AlphaFactor[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const { data: alphas = [], isLoading: loading, isError: error } = useAlphaList();
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    apiGet<AlphaFactor[]>('/alpha/list').then(data => {
-      if (!cancelled) { setAlphas(data); setLoading(false); }
-    }).catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, []);
 
   const grouped = alphas.reduce<Record<string, AlphaFactor[]>>((acc, a) => {
     (acc[a.category] ??= []).push(a);
@@ -319,21 +307,10 @@ const AlphaFactorPanel = memo(function AlphaFactorPanel() {
 });
 
 const BacktestHistoryPanel = memo(function BacktestHistoryPanel() {
-  const [history, setHistory] = useState<BacktestHistoryEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const { data: historyData, isLoading: loading, isError: error } = useBacktestHistory();
+  const history = Array.isArray(historyData) ? historyData : [];
   const [sortKey, setSortKey] = useState<'sharpe_ratio' | 'total_return' | 'created_at'>('created_at');
   const [sortAsc, setSortAsc] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    apiGet<BacktestHistoryEntry[]>('/backtest/history').then(data => {
-      if (!cancelled) { setHistory(Array.isArray(data) ? data : []); setLoading(false); }
-    }).catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, []);
 
   const sorted = [...history].sort((a, b) => {
     let aVal: number, bVal: number;
@@ -1043,7 +1020,17 @@ const FactorRegistryPanel = memo(function FactorRegistryPanel({ factors }: { fac
 });
 
 export function StrategyPage() {
-  const { strategies, selectedStrategy, backtestResult, backtestRunning, backtestLogs, fetchStrategies, selectStrategy, runBacktest, clearResult } = useStrategyStore();
+  const { selectedStrategy, backtestResult, backtestRunning, backtestLogs, selectStrategy, runBacktest, clearResult } = useStrategyStore();
+  const { data: strategiesData } = useStrategyList();
+  const strategies = strategiesData?.strategies ?? [];
+  const { data: factors } = useFactorRegistry();
+  const { data: paramSpecsData } = useStrategyParamSpecs(selectedStrategy);
+  const paramSpecs = useMemo(() => {
+    const specs = paramSpecsData?.strategies;
+    if (!specs) return null;
+    const firstKey = Object.keys(specs)[0];
+    return firstKey ? specs[firstKey]! : null;
+  }, [paramSpecsData]);
   const [symbol, setSymbol] = useState('000001.SZ');
   const [startDate, setStartDate] = useState('2022-12-31');
   const [endDate, setEndDate] = useState('2025-12-31');
@@ -1056,44 +1043,9 @@ export function StrategyPage() {
   const [leverage, setLeverage] = useState('1');
   const [executionDelay, setExecutionDelay] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ BASIC: true, PRO: true, EXPERT: true });
-  const [factorData, setFactorData] = useState<FactorInfo[] | null>(null);
-  const [paramSpecs, setParamSpecs] = useState<Record<string, ParamSpec> | null>(null);
   const [factorTab, setFactorTab] = useState<'registry' | 'alpha' | 'history'>('registry');
   const logRef = useRef<HTMLDivElement>(null);
   const [cursorVisible, setCursorVisible] = useState(true);
-
-  useEffect(() => { fetchStrategies(); }, [fetchStrategies]);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<FactorInfo[]>('/factor/registry').then(data => {
-      if (!cancelled) setFactorData(data);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    if (!selectedStrategy) {
-      setParamSpecs(null);
-      return;
-    }
-    let cancelled = false;
-    apiGet<{ strategies: Record<string, Record<string, ParamSpec>> }>('/strategy/param-specs', { strategy: selectedStrategy })
-      .then(data => {
-        if (cancelled) return;
-        const specs = data?.strategies;
-        if (specs) {
-          const firstKey = Object.keys(specs)[0];
-          setParamSpecs(firstKey ? specs[firstKey]! : null);
-        } else {
-          setParamSpecs(null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setParamSpecs(null);
-      });
-    return () => { cancelled = true; };
-  }, [selectedStrategy]);
 
   useEffect(() => {
     if (logRef.current) {
@@ -1384,7 +1336,7 @@ export function StrategyPage() {
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
-        {!backtestRunning && !backtestResult && factorData && (
+        {!backtestRunning && !backtestResult && factors && (
           <div style={{ marginBottom: 16, display: 'flex', gap: 4 }}>
             <button
               onClick={() => setFactorTab('registry')}
@@ -1440,8 +1392,8 @@ export function StrategyPage() {
           </div>
         ) : backtestResult ? (
           <BacktestResults result={backtestResult} showDrawdown={showDrawdown} onToggleDrawdown={toggleDrawdown} onBack={handleBackFromResults} commissionRate={Number(commissionRate)} slippage={Number(slippage)} initialCapital={Number(capital)} />
-        ) : factorData ? (
-          factorTab === 'registry' ? <FactorRegistryPanel factors={factorData} /> :
+        ) : factors ? (
+          factorTab === 'registry' ? <FactorRegistryPanel factors={factors} /> :
           factorTab === 'alpha' ? <AlphaFactorPanel /> :
           factorTab === 'history' ? <BacktestHistoryPanel /> : null
         ) : null}

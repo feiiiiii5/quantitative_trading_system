@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from fastapi.responses import Response
 from pydantic import ValidationError
 
 from api.utils import json_response, safe_error, sanitize
@@ -52,26 +53,38 @@ class TestSanitize:
 class TestJsonResponse:
     def test_success_response(self):
         result = json_response(True, data={"key": "value"})
-        assert result["success"] is True
-        assert result["data"] == {"key": "value"}
-        assert result["error"] == ""
+        assert isinstance(result, Response)
+        import orjson
+        body = orjson.loads(result.body)
+        assert body["success"] is True
+        assert body["data"] == {"key": "value"}
+        assert body["error"] == ""
 
     def test_error_response(self):
         result = json_response(False, error="Something went wrong")
-        assert result["success"] is False
-        assert result["data"] is None
-        assert result["error"] == "Something went wrong"
+        assert isinstance(result, Response)
+        import orjson
+        body = orjson.loads(result.body)
+        assert body["success"] is False
+        assert body["data"] is None
+        assert body["error"] == "Something went wrong"
 
     def test_numpy_data_sanitized(self):
         result = json_response(True, data={"count": np.int64(42)})
-        assert result["data"]["count"] == 42
-        assert isinstance(result["data"]["count"], int)
+        assert isinstance(result, Response)
+        import orjson
+        body = orjson.loads(result.body)
+        assert body["data"]["count"] == 42
+        assert isinstance(body["data"]["count"], int)
 
     def test_default_values(self):
         result = json_response(True)
-        assert result["success"] is True
-        assert result["data"] is None
-        assert result["error"] == ""
+        assert isinstance(result, Response)
+        import orjson
+        body = orjson.loads(result.body)
+        assert body["success"] is True
+        assert body["data"] is None
+        assert body["error"] == ""
 
 
 class TestRoutesImport:

@@ -36,6 +36,7 @@ from api.auth import APIAuthMiddleware
 from api.backtest_routes import backtest_router
 from api.duckdb_routes import duckdb_router
 from api.feature_routes import feature_router
+from api.middleware import RequestValidationMiddleware
 from api.perf_routes import perf_router
 from api.routes import _manager, push_portfolio_metrics, push_realtime_data, router
 from core.async_utils import FastJSONResponse
@@ -655,6 +656,7 @@ class _SecurityHeadersMiddleware:
 
 app.add_middleware(_SecurityHeadersMiddleware)
 app.add_middleware(_RequestTimingMiddleware)
+app.add_middleware(RequestValidationMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
@@ -669,6 +671,29 @@ app.include_router(backtest_router, prefix="/api")
 app.include_router(feature_router, prefix="/api")
 app.include_router(duckdb_router, prefix="/api")
 app.include_router(perf_router, prefix="/api")
+
+try:
+    from api.routers.memory import router as memory_router
+    app.include_router(memory_router, prefix="/api")
+except ImportError as e:
+    logger.debug("Memory router import skipped: %s", e)
+
+try:
+    from api.routers.innovation import router as innovation_router
+    app.include_router(innovation_router, prefix="/api")
+except ImportError as e:
+    logger.debug("Innovation router import skipped: %s", e)
+
+try:
+    import core.strategies_advanced as _strategies_advanced  # noqa: F401
+except ImportError as e:
+    logger.debug("Advanced strategies import skipped: %s", e)
+
+try:
+    from api.routers.quantlab import router as quantlab_router
+    app.include_router(quantlab_router, prefix="/api")
+except ImportError as e:
+    logger.debug("QuantLab router import skipped: %s", e)
 
 
 @app.get("/api/health")

@@ -4,20 +4,18 @@ import logging
 import threading
 import time
 import uuid
-from datetime import datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, Path, Query, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import Response
 
 from api.backtest_routes import BacktestAdvancedRequest
-from api.connection_manager import cache_response
 from api.routers.models import BacktestOptimizeRequest, MultiSymbolBacktestRequest
 from api.utils import json_response as _json_response
 from api.utils import rate_limiter, safe_error
-from core.data_fetcher import SmartDataFetcher, get_fetcher
+from core.data_fetcher import SmartDataFetcher
 from core.strategies import STRATEGY_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -56,7 +54,7 @@ async def get_performance_attribution(
 
         strat_rets = np.diff(strategy_returns) / np.where(strategy_returns[:-1] > 1e-9, strategy_returns[:-1], 1.0)
         strat_rets = np.where(np.isfinite(strat_rets), strat_rets, 0)
-        bench_close = df["close"].values.astype(float)
+        bench_close = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
         if len(bench_close) < 2:
             return _json_response(False, error="基准数据不足")
         bench_rets = np.diff(bench_close) / np.where(bench_close[:-1] > 1e-9, bench_close[:-1], 1.0)
@@ -111,7 +109,7 @@ async def get_rolling_attribution(
 
         strat_rets = np.diff(strategy_returns) / np.where(strategy_returns[:-1] > 0, strategy_returns[:-1], 1)
         strat_rets = np.where(np.isfinite(strat_rets), strat_rets, 0)
-        bench_close = df["close"].values.astype(float)
+        bench_close = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
         if len(bench_close) < 2:
             return _json_response(False, error="基准数据不足")
         bench_rets = np.diff(bench_close) / np.where(bench_close[:-1] > 0, bench_close[:-1], 1)
@@ -547,8 +545,8 @@ async def stream_backtest_result(job_id: str):
                 break
 
             await asyncio.sleep(0.5)
-
-        yield f"data: {json.dumps({'event': 'timeout'})}\n\n"
+        else:
+            yield f"data: {json.dumps({'event': 'timeout'})}\n\n"
 
     from starlette.responses import StreamingResponse
     return StreamingResponse(

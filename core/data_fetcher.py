@@ -50,11 +50,13 @@ async def get_aiohttp_session() -> aiohttp.ClientSession:
         async with _get_session_lock():
             if _aiohttp_session is None or _aiohttp_session.closed:
                 connector = aiohttp.TCPConnector(
-                    limit=200,
-                    ttl_dns_cache=600,
+                    limit=500,
+                    limit_per_host=50,
+                    ttl_dns_cache=1800,
                     use_dns_cache=True,
-                    keepalive_timeout=30,
+                    keepalive_timeout=60,
                     enable_cleanup_closed=True,
+                    force_close=False,
                 )
                 timeout = aiohttp.ClientTimeout(total=12, connect=5)
                 _aiohttp_session = aiohttp.ClientSession(
@@ -170,12 +172,13 @@ US_INDICES = {
     ".INX": "标普500",
 }
 
-_realtime_cache = ThreadSafeLRU(maxsize=15000, ttl=20)
-_history_cache = ThreadSafeLRU(maxsize=8000, ttl=600)
+_realtime_cache = ThreadSafeLRU(maxsize=50000, ttl=8)
+_history_cache = ThreadSafeLRU(maxsize=30000, ttl=1800)
 _indicator_cache = ThreadSafeLRU(maxsize=6000, ttl=900)
 _financial_cache = ThreadSafeLRU(maxsize=3000, ttl=10800)
 _northbound_cache = ThreadSafeLRU(maxsize=1000, ttl=180)
 _market_overview_cache = ThreadSafeLRU(maxsize=500, ttl=60)
+_tick_cache = None
 _hot_symbols_cache: list[str] = []
 _hot_symbols_lock = threading.Lock()
 
@@ -193,6 +196,40 @@ def _set_hot_symbols(symbols: list[str]) -> None:
 _inflight_requests: dict[str, asyncio.Future] = {}
 _inflight_lock = asyncio.Lock()
 _INFLIGHT_MAX = 500
+
+
+class RequestCoalescer:
+    __slots__ = ("_window_ms", "_pending", "_lock")
+
+    def __init__(self, window_ms: int = 50):
+        self._window_ms = window_ms
+        self._pending: dict[str, list[asyncio.Future]] = {}
+        self._lock = asyncio.Lock()
+
+    async def get_or_wait(self, key: str, fetch_fn) -> Any:
+        async with self._lock:
+            if key in self._pending:
+                fut = asyncio.get_event_loop().create_future()
+                self._pending[key].append(fut)
+                return await fut
+            self._pending[key] = []
+        try:
+            result = await fetch_fn()
+            async with self._lock:
+                waiters = self._pending.pop(key, [])
+            for w in waiters:
+                if not w.done():
+                    w.set_result(result)
+            return result
+        except Exception as e:
+            async with self._lock:
+                waiters = self._pending.pop(key, [])
+            for w in waiters:
+                if not w.done():
+                    w.set_exception(e)
+            raise
+
+_request_coalescer = RequestCoalescer(window_ms=50)
 
 CACHE_TTL_TIERS = {
     "realtime": 18,
@@ -865,6 +902,167 @@ class DataQualityChecker:
         return cleaned
 
 
+class HKStockSource:
+    @staticmethod
+    async def fetch_realtime(symbol: str) -> dict | None:
+        code = re.sub(r"^(hk|HK)", "", str(symbol)).strip().zfill(5)
+        if not re.match(r'^\d{5}$', code):
+            return None
+        secid = f"116.{code}"
+        url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170"
+        text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"})
+        if not text:
+            secid = f"128.{code}"
+            url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170"
+            text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"})
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+            data = payload.get("data") or {}
+            if not data:
+                return None
+            price = safe_float(data.get("f43"), 0)
+            last_close = safe_float(data.get("f60"), 0)
+            return {
+                "symbol": symbol, "market": "HK",
+                "name": data.get("f58") or code,
+                "price": price, "last_close": last_close,
+                "open": safe_float(data.get("f46"), 0),
+                "high": safe_float(data.get("f44"), 0),
+                "low": safe_float(data.get("f45"), 0),
+                "volume": safe_float(data.get("f47"), 0),
+                "amount": safe_float(data.get("f48"), 0),
+                "change": safe_float(data.get("f169"), 0),
+                "change_pct": safe_float(data.get("f170"), 0),
+                "timestamp": time.time(),
+            }
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            logger.debug("HKStockSource realtime parse error: %s", e)
+        return None
+
+    @staticmethod
+    async def fetch_history(symbol: str, period: str = "1y", kline_type: str = "daily", adjust: str = "") -> pd.DataFrame | None:
+        try:
+            if ak is None:
+                return None
+            code = re.sub(r"^(hk|HK)", "", str(symbol)).strip().zfill(5)
+            df = await asyncio.to_thread(ak.stock_hk_hist, symbol=code, period=kline_type, adjust=adjust or "")
+            if df is not None and not df.empty:
+                rename_map = {"日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"}
+                df = df.rename(columns=rename_map)
+                for col in ["open", "high", "low", "close", "volume", "amount"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                return df
+        except Exception as e:
+            logger.debug("HKStockSource history error: %s", e)
+        return None
+
+
+class USStockSource:
+    @staticmethod
+    async def fetch_realtime(symbol: str) -> dict | None:
+        clean = re.sub(r"^(us|US)", "", str(symbol)).strip().upper()
+        url = f"http://hq.sinajs.cn/list=gb_{clean.lower()}"
+        headers = {"Referer": "http://finance.sina.com.cn"}
+        text = await async_http_get(url, headers=headers)
+        if text:
+            result = SinaSource._parse_realtime(text, clean, "US")
+            if result:
+                return result
+        url = f"https://push2.eastmoney.com/api/qt/stock/get?secid=105.{clean}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170"
+        text = await async_http_get(url, headers={"Referer": "https://finance.eastmoney.com"})
+        if not text:
+            return None
+        try:
+            payload = json.loads(text)
+            data = payload.get("data") or {}
+            if not data:
+                return None
+            price = safe_float(data.get("f43"), 0)
+            last_close = safe_float(data.get("f60"), 0)
+            return {
+                "symbol": clean, "market": "US",
+                "name": data.get("f58") or clean,
+                "price": price, "last_close": last_close,
+                "open": safe_float(data.get("f46"), 0),
+                "high": safe_float(data.get("f44"), 0),
+                "low": safe_float(data.get("f45"), 0),
+                "volume": safe_float(data.get("f47"), 0),
+                "amount": safe_float(data.get("f48"), 0),
+                "change": safe_float(data.get("f169"), 0),
+                "change_pct": safe_float(data.get("f170"), 0),
+                "timestamp": time.time(),
+            }
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            logger.debug("USStockSource realtime parse error: %s", e)
+        return None
+
+    @staticmethod
+    async def fetch_history(symbol: str, period: str = "1y", kline_type: str = "daily", adjust: str = "") -> pd.DataFrame | None:
+        try:
+            if ak is None:
+                return None
+            clean = re.sub(r"^(us|US)", "", str(symbol)).strip().upper()
+            df = await asyncio.to_thread(ak.stock_us_hist, symbol=clean, period=kline_type, adjust=adjust or "")
+            if df is not None and not df.empty:
+                rename_map = {"日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"}
+                df = df.rename(columns=rename_map)
+                for col in ["open", "high", "low", "close", "volume", "amount"]:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                return df
+        except Exception as e:
+            logger.debug("USStockSource history error: %s", e)
+        return None
+
+
+class DataNormalizer:
+    REQUIRED_FIELDS = {"date", "open", "high", "low", "close", "volume"}
+
+    @staticmethod
+    def normalize_kline(df: pd.DataFrame, source: str = "") -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+        result = df.copy()
+        cn_to_en = {"日期": "date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount", "换手率": "turnover_rate"}
+        result = result.rename(columns=cn_to_en)
+        for col in DataNormalizer.REQUIRED_FIELDS - {"date"}:
+            if col in result.columns:
+                result[col] = pd.to_numeric(result[col], errors="coerce")
+        if "date" in result.columns:
+            result["date"] = pd.to_datetime(result["date"], errors="coerce")
+        return result
+
+    @staticmethod
+    def validate_ohlcv(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+        warnings = []
+        if df is None or df.empty:
+            return pd.DataFrame(), ["empty_dataframe"]
+        cleaned = df.copy()
+        if {"high", "low", "close"}.issubset(cleaned.columns):
+            bad_high = cleaned["high"] < cleaned["close"]
+            bad_low = cleaned["low"] > cleaned["close"]
+            if bad_high.any():
+                cleaned.loc[bad_high, "high"] = cleaned.loc[bad_high, "close"]
+                warnings.append(f"high_lt_close_fixed:{int(bad_high.sum())}")
+            if bad_low.any():
+                cleaned.loc[bad_low, "low"] = cleaned.loc[bad_low, "close"]
+                warnings.append(f"low_gt_close_fixed:{int(bad_low.sum())}")
+        if "volume" in cleaned.columns:
+            neg_vol = (cleaned["volume"] < 0).sum()
+            if neg_vol:
+                cleaned.loc[cleaned["volume"] < 0, "volume"] = 0
+                warnings.append(f"negative_volume_fixed:{int(neg_vol)}")
+        if "close" in cleaned.columns:
+            pct = cleaned["close"].pct_change()
+            suspicious = pct.abs() > 0.15
+            if suspicious.any():
+                warnings.append(f"suspicious_price_move:{int(suspicious.sum())}")
+        return cleaned, warnings
+
+
 class CircuitBreakerError(Exception):
     """Circuit breaker exception raised when circuit is open"""
     pass
@@ -1212,27 +1410,39 @@ class SmartDataFetcher:
             return cached
 
         inflight_key = f"rt:{cache_key}"
+        should_fetch_direct = False
         async with _inflight_lock:
             if inflight_key in _inflight_requests:
-                return await _inflight_requests[inflight_key]
-            if len(_inflight_requests) >= _INFLIGHT_MAX:
-                result = await self._fetch_realtime_from_sources(symbol, market, cache_key)
-                if result and validate_realtime_data(result, symbol):
-                    _realtime_cache.set(cache_key, result)
-                return result
-            loop = asyncio.get_running_loop()
-            fut = loop.create_future()
-            _inflight_requests[inflight_key] = fut
+                existing_fut = _inflight_requests[inflight_key]
+            else:
+                existing_fut = None
+            if existing_fut is None and len(_inflight_requests) >= _INFLIGHT_MAX:
+                should_fetch_direct = True
+            elif existing_fut is None:
+                loop = asyncio.get_running_loop()
+                fut = loop.create_future()
+                _inflight_requests[inflight_key] = fut
+
+        if existing_fut is not None:
+            return await existing_fut
+
+        if should_fetch_direct:
+            result = await self._fetch_realtime_from_sources(symbol, market, cache_key)
+            if result and validate_realtime_data(result, symbol):
+                _realtime_cache.set(cache_key, result)
+            return result
 
         try:
             result = await self._fetch_realtime_from_sources(symbol, market, cache_key)
             if result and validate_realtime_data(result, symbol):
                 _realtime_cache.set(cache_key, result)
-            fut.set_result(result)
+            if not fut.done():
+                fut.set_result(result)
             return result
         except Exception as e:
             logger.debug("Realtime fetch failed for %s", symbol, exc_info=True)
-            fut.set_exception(e)
+            if not fut.done():
+                fut.set_exception(e)
             return None
         finally:
             async with _inflight_lock:
@@ -1336,17 +1546,27 @@ class SmartDataFetcher:
             return db_df
 
         inflight_key = f"hist:{cache_key}"
+        should_fetch_direct = False
         async with _inflight_lock:
             if inflight_key in _inflight_requests:
-                return await _inflight_requests[inflight_key]
-            if len(_inflight_requests) >= _INFLIGHT_MAX:
-                df = await self._fetch_history_from_sources(clean_symbol, market, kline_type, adjust, period)
-                if df is not None and not df.empty:
-                    _history_cache.set(cache_key, df)
-                return df if df is not None else pd.DataFrame()
-            loop = asyncio.get_running_loop()
-            fut = loop.create_future()
-            _inflight_requests[inflight_key] = fut
+                existing_fut = _inflight_requests[inflight_key]
+            else:
+                existing_fut = None
+            if existing_fut is None and len(_inflight_requests) >= _INFLIGHT_MAX:
+                should_fetch_direct = True
+            elif existing_fut is None:
+                loop = asyncio.get_running_loop()
+                fut = loop.create_future()
+                _inflight_requests[inflight_key] = fut
+
+        if existing_fut is not None:
+            return await existing_fut
+
+        if should_fetch_direct:
+            df = await self._fetch_history_from_sources(clean_symbol, market, kline_type, adjust, period)
+            if df is not None and not df.empty:
+                _history_cache.set(cache_key, df)
+            return df if df is not None else pd.DataFrame()
 
         try:
             df = await self._fetch_history_from_sources(clean_symbol, market, kline_type, adjust, period)
@@ -1356,19 +1576,23 @@ class SmartDataFetcher:
                     logger.debug("Data quality warnings for %s: %s", symbol, warnings)
                 if not validate_kline_data(df, symbol):
                     result = pd.DataFrame()
-                    fut.set_result(result)
+                    if not fut.done():
+                        fut.set_result(result)
                     return result
                 rows = df.to_dict("records")
                 self._db.upsert_kline_rows(symbol, market, kline_type, adjust, rows)
                 _history_cache.set(cache_key, df)
-                fut.set_result(df)
+                if not fut.done():
+                    fut.set_result(df)
                 return df
             result = pd.DataFrame()
-            fut.set_result(result)
+            if not fut.done():
+                fut.set_result(result)
             return result
         except Exception as e:
             logger.debug("History fetch failed for %s", symbol, exc_info=True)
-            fut.set_exception(e)
+            if not fut.done():
+                fut.set_exception(e)
             return pd.DataFrame()
         finally:
             async with _inflight_lock:
@@ -1981,3 +2205,102 @@ def get_fetcher() -> SmartDataFetcher:
             if _shared_fetcher is None:
                 _shared_fetcher = SmartDataFetcher()
     return _shared_fetcher
+
+
+class DataSourceRouter:
+    def __init__(self):
+        self._health_scores: dict[str, float] = {}
+        self._latency_p95: dict[str, float] = {}
+        self._error_rates: dict[str, float] = {}
+        self._request_counts: dict[str, int] = {}
+        self._error_counts: dict[str, int] = {}
+        self._total_latency: dict[str, float] = {}
+
+    def _source_key(self, source_name: str, market: str, data_type: str) -> str:
+        return f"{source_name}:{market}:{data_type}"
+
+    def record_success(self, source_name: str, market: str, data_type: str, latency_ms: float) -> None:
+        key = self._source_key(source_name, market, data_type)
+        self._request_counts[key] = self._request_counts.get(key, 0) + 1
+        self._total_latency[key] = self._total_latency.get(key, 0) + latency_ms
+        self._health_scores[key] = min(100.0, self._health_scores.get(key, 50.0) + 2)
+        errors = self._error_counts.get(key, 0)
+        total = self._request_counts.get(key, 1)
+        self._error_rates[key] = errors / total
+
+    def record_failure(self, source_name: str, market: str, data_type: str) -> None:
+        key = self._source_key(source_name, market, data_type)
+        self._request_counts[key] = self._request_counts.get(key, 0) + 1
+        self._error_counts[key] = self._error_counts.get(key, 0) + 1
+        self._health_scores[key] = max(0.0, self._health_scores.get(key, 50.0) - 10)
+        errors = self._error_counts.get(key, 0)
+        total = self._request_counts.get(key, 1)
+        self._error_rates[key] = errors / total
+
+    def get_source_ranking(self, market: str, data_type: str) -> list[str]:
+        priority_map = {
+            ("A", "realtime"): ["eastmoney_push2", "tencent", "sina", "juhe"],
+            ("A", "history"): ["eastmoney_kline", "akshare", "baostock", "tushare"],
+            ("HK", "realtime"): ["eastmoney_hk", "akshare_hk", "sina_hk"],
+            ("HK", "history"): ["akshare_hk", "eastmoney_hk", "sina_hk"],
+            ("US", "realtime"): ["sina_us", "yahoo", "alpha_vantage"],
+            ("US", "history"): ["yahoo", "akshare_us", "alpha_vantage"],
+        }
+        sources = priority_map.get((market, data_type), ["eastmoney_push2", "akshare", "sina"])
+        def sort_key(s: str) -> float:
+            key = self._source_key(s, market, data_type)
+            return -self._health_scores.get(key, 50.0)
+        return sorted(sources, key=sort_key)
+
+    async def fetch_with_fallback(
+        self,
+        symbol: str,
+        market: str,
+        data_type: str,
+        timeout: float = 5.0,
+    ) -> dict | pd.DataFrame | None:
+        ranking = self.get_source_ranking(market, data_type)
+        for source_name in ranking:
+            start = time.monotonic()
+            try:
+                result = await self._fetch_from_source(source_name, symbol, market, data_type, timeout)
+                latency_ms = (time.monotonic() - start) * 1000
+                self.record_success(source_name, market, data_type, latency_ms)
+                return result
+            except Exception:
+                self.record_failure(source_name, market, data_type)
+        return None
+
+    async def _fetch_from_source(
+        self, source_name: str, symbol: str, market: str, data_type: str, timeout: float,
+    ) -> dict | pd.DataFrame | None:
+        fetcher = get_fetcher()
+        if data_type == "realtime":
+            return await fetcher.get_realtime(symbol)
+        elif data_type == "history":
+            return await fetcher.get_history(symbol, period="1y", kline_type="daily", adjust="qfq")
+        return None
+
+    def get_health_report(self) -> dict[str, dict]:
+        report = {}
+        for key, score in self._health_scores.items():
+            parts = key.split(":")
+            report[key] = {
+                "source": parts[0] if len(parts) > 0 else "",
+                "market": parts[1] if len(parts) > 1 else "",
+                "data_type": parts[2] if len(parts) > 2 else "",
+                "health_score": round(score, 1),
+                "error_rate": round(self._error_rates.get(key, 0), 4),
+                "request_count": self._request_counts.get(key, 0),
+            }
+        return report
+
+
+_data_source_router: DataSourceRouter | None = None
+
+
+def get_data_source_router() -> DataSourceRouter:
+    global _data_source_router
+    if _data_source_router is None:
+        _data_source_router = DataSourceRouter()
+    return _data_source_router

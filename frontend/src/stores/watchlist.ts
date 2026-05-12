@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 
 interface WatchlistState {
   symbols: string[];
@@ -19,7 +20,7 @@ function saveToStorage(symbols: string[]): void {
   try { localStorage.setItem('qc_watchlist', JSON.stringify(symbols)); } catch { /* silent */ }
 }
 
-export const useWatchlistStore = create<WatchlistState>((set) => ({
+export const useWatchlistStore = create<WatchlistState>()(devtools((set) => ({
   symbols: loadFromStorage(),
 
   add: (symbol) => set((s) => {
@@ -47,4 +48,4 @@ export const useWatchlistStore = create<WatchlistState>((set) => ({
     saveToStorage(next);
     return { symbols: next };
   }),
-}));
+}), { name: 'WatchlistStore', enabled: import.meta.env.DEV }));

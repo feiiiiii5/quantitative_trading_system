@@ -1,14 +1,31 @@
 import { useEffect, useState, useMemo, memo } from 'react';
 import { apiGet } from '@/api/client';
-import { useMarketStore } from '@/stores/market';
-import { useRiskStore } from '@/stores/risk';
-import { useWatchlistStore } from '@/stores/watchlist';
+import { useMarketOverview, useMarketStocks, useMarketSectors } from '@/hooks/queries/useMarketQueries';
+import { usePortfolioRiskDashboard } from '@/hooks/queries/usePortfolioQueries';
+import { useWatchlist } from '@/hooks/queries/useWatchlistQueries';
+import { useReadiness } from '@/hooks/queries/useSystemQueries';
 import { Sparkline } from '@/components/charts/Sparkline';
 import { HeatmapCanvas } from '@/components/charts/HeatmapCanvas';
 import { RiskBanner } from '@/components/ui/RiskBanner';
 import { SignalBadge } from '@/components/ui/SignalBadge';
 import { formatPercent, priceColor } from '@/utils/format';
 import type { IndexQuote, SignalItem } from '@/types';
+
+interface ReadinessResponse {
+  status: string;
+  checks: Record<string, string>;
+  timestamp: string;
+}
+
+interface SystemMetricsResponse {
+  api_caches: Record<string, {
+    size: number;
+    maxsize: number;
+    hits: number;
+    misses: number;
+    hit_rate: number;
+  }>;
+}
 
 interface DataSourceHealth {
   sources: Record<string, {
@@ -349,12 +366,25 @@ const SystemHealthPanel = memo(function SystemHealthPanel() {
   useEffect(() => {
     let cancelled = false;
     Promise.allSettled([
-      apiGet<DataSourceHealth>('/datasource/health'),
-      apiGet<CacheStats>('/cache/stats'),
-    ]).then(([dsResult, cacheResult]) => {
+      apiGet<ReadinessResponse>('/readiness'),
+      apiGet<SystemMetricsResponse>('/system/metrics'),
+    ]).then(([readinessResult, metricsResult]) => {
       if (cancelled) return;
-      if (dsResult.status === 'fulfilled') setDsHealth(dsResult.value);
-      if (cacheResult.status === 'fulfilled') setCacheStats(cacheResult.value);
+      if (readinessResult.status === 'fulfilled') {
+        const checks = readinessResult.value.checks;
+        const sources: DataSourceHealth['sources'] = {};
+        for (const [name, state] of Object.entries(checks)) {
+          sources[name] = {
+            state: state === 'ready' ? 'OPEN' : 'CLOSED',
+            failure_count: state === 'ready' ? 0 : 1,
+            last_failure: state === 'ready' ? null : readinessResult.value.timestamp,
+          };
+        }
+        setDsHealth({ sources });
+      }
+      if (metricsResult.status === 'fulfilled') {
+        setCacheStats({ caches: metricsResult.value.api_caches });
+      }
     });
     return () => { cancelled = true; };
   }, []);
@@ -681,46 +711,35 @@ const AISummaryCard = memo(function AISummaryCard() {
 });
 
 export function DashboardPage() {
-  const { indices, stocks, sectors, northFlow, fetchIndices, fetchStocks, fetchSectors, fetchBreadth } = useMarketStore();
-  const { riskLevel, maxDrawdown, alerts } = useRiskStore();
-  const watchlistSymbols = useWatchlistStore(s => s.symbols);
-  const [displayIndices, setDisplayIndices] = useState<IndexQuote[]>(DEFAULT_INDICES);
-  const [signals, setSignals] = useState<SignalItem[]>([]);
-  const [marketData, setMarketData] = useState<MarketOverviewData | null>(null);
+  const { data: marketData } = useMarketOverview();
+  const { data: stocks = [] } = useMarketStocks('A');
+  const { data: sectors = {} } = useMarketSectors();
+  const { data: watchlistData } = useWatchlist();
+  const { data: riskDashboard } = usePortfolioRiskDashboard();
+  const { data: systemHealth } = useReadiness();
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      await Promise.allSettled([fetchIndices(), fetchStocks(), fetchSectors(), fetchBreadth()]);
-      if (cancelled) return;
-    };
-    load();
-    return () => { cancelled = true; };
-  }, [fetchIndices, fetchStocks, fetchSectors, fetchBreadth]);
+  const watchlistSymbols = watchlistData?.symbols ?? [];
+  const indices = marketData?.indices ?? [];
+  const northFlow = marketData?.north_flow ?? null;
+  const riskLevel = riskDashboard?.drawdown?.drawdown_status === 'critical' ? 'HIGH' : 
+                    riskDashboard?.drawdown?.drawdown_status === 'warning' ? 'MEDIUM' : 'LOW';
+  const maxDrawdown = riskDashboard?.risk_metrics?.max_drawdown ?? 0;
+  const alerts = riskDashboard?.stress_summary?.map(s => s.scenario) ?? [];
 
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<MarketOverviewData>('/market/overview').then(d => {
-      if (!cancelled) setMarketData(d);
-    }).catch(() => { /* silent */ });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    if (indices.length > 0) setDisplayIndices(indices);
+  const displayIndices = useMemo(() => {
+    if (indices.length > 0) return indices;
+    return DEFAULT_INDICES;
   }, [indices]);
 
-  useEffect(() => {
-    if (stocks.length > 0) {
-      const sigs: SignalItem[] = stocks.slice(0, 12).map(s => ({
-        symbol: s.symbol,
-        name: s.name,
-        action: s.change_pct > 1 ? 'BUY' : s.change_pct < -1 ? 'SELL' : 'HOLD' as const,
-        change_pct: s.change_pct,
-        confidence: Math.min(Math.abs(s.change_pct) * 20, 100),
-      }));
-      setSignals(sigs);
-    }
+  const signals = useMemo(() => {
+    if (stocks.length === 0) return [];
+    return stocks.slice(0, 12).map(s => ({
+      symbol: s.symbol,
+      name: s.name,
+      action: s.change_pct > 1 ? 'BUY' as const : s.change_pct < -1 ? 'SELL' as const : 'HOLD' as const,
+      change_pct: s.change_pct,
+      confidence: Math.min(Math.abs(s.change_pct) * 20, 100),
+    }));
   }, [stocks]);
 
   const watchlistStocks = useMemo(

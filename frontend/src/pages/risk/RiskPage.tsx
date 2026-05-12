@@ -4,8 +4,10 @@ import { useCanvas } from '@/hooks/useCanvas';
 import { CorrelationMatrix } from '@/components/charts/CorrelationMatrix';
 import { VolatilityCone } from '@/components/charts/VolatilityCone';
 import { formatRatio } from '@/utils/format';
-import { apiGet, apiPost } from '@/api/client';
-import type { RiskLevel } from '@/types';
+import { apiGet } from '@/api/client';
+import type { RiskLevel, RiskMetrics } from '@/types';
+import { usePortfolioRiskDashboard, useStressScenarios } from '@/hooks/queries/usePortfolioQueries';
+import { useRiskPortfolio, useRiskExposure, useDrawdownAnalysis, useEfficientFrontier, useMonteCarloVaR, useCorrelationMatrix, useBlackLitterman, useKellyCalculator, useRunStressTest } from '@/hooks/queries/useRiskQueries';
 
 const FALLBACK_DECOMPOSITION = [
   { source: 'Market', contribution: 0.45 },
@@ -750,18 +752,9 @@ const OptimalPortfolioCard = memo(function OptimalPortfolioCard({ title, point, 
 });
 
 const EfficientFrontierPanel = memo(function EfficientFrontierPanel() {
-  const [data, setData] = useState<EfficientFrontierData | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const { data, isLoading } = useEfficientFrontier();
 
-  useEffect(() => {
-    let cancelled = false;
-    apiPost<EfficientFrontierData>('/portfolio/efficient-frontier', { symbols: ['600519', '000001', '601318'], n_points: 15 })
-      .then(res => { if (!cancelled) { setData(res); setLoaded(true); } })
-      .catch(() => { if (!cancelled) setLoaded(true); });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (!loaded) return <LoadingPlaceholder />;
+  if (isLoading) return <LoadingPlaceholder />;
   if (!data || data.frontier.length === 0) return <NoDataPlaceholder />;
 
   return (
@@ -896,18 +889,9 @@ const MonteCarloVaRCanvas = memo(function MonteCarloVaRCanvas({ data }: { data: 
 });
 
 const MonteCarloVaRPanel = memo(function MonteCarloVaRPanel() {
-  const [data, setData] = useState<MonteCarloVaRData | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const { data, isLoading } = useMonteCarloVaR();
 
-  useEffect(() => {
-    let cancelled = false;
-    apiPost<MonteCarloVaRData>('/portfolio/monte-carlo-var', { symbols: ['600519', '000001', '601318'], n_simulations: 1000, time_horizon: 22 })
-      .then(res => { if (!cancelled) { setData(res); setLoaded(true); } })
-      .catch(() => { if (!cancelled) setLoaded(true); });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (!loaded) return <LoadingPlaceholder />;
+  if (isLoading) return <LoadingPlaceholder />;
   if (!data) return <NoDataPlaceholder />;
 
   const metrics: Array<{ label: string; value: string; color: string }> = [
@@ -946,18 +930,9 @@ const MonteCarloVaRPanel = memo(function MonteCarloVaRPanel() {
 });
 
 const CorrelationPanel = memo(function CorrelationPanel() {
-  const [data, setData] = useState<CorrelationMatrixData | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const { data, isLoading } = useCorrelationMatrix();
 
-  useEffect(() => {
-    let cancelled = false;
-    apiPost<CorrelationMatrixData>('/correlation/matrix', { symbols: ['600519', '000001', '601318'], period: '3mo' })
-      .then(res => { if (!cancelled) { setData(res); setLoaded(true); } })
-      .catch(() => { if (!cancelled) setLoaded(true); });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (!loaded) return <LoadingPlaceholder />;
+  if (isLoading) return <LoadingPlaceholder />;
   if (!data) return <NoDataPlaceholder />;
 
   const symbols = data.symbols;
@@ -988,18 +963,9 @@ const CorrelationPanel = memo(function CorrelationPanel() {
 });
 
 const BlackLittermanPanel = memo(function BlackLittermanPanel() {
-  const [data, setData] = useState<BlackLittermanData | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const { data, isLoading } = useBlackLitterman();
 
-  useEffect(() => {
-    let cancelled = false;
-    apiPost<BlackLittermanData>('/portfolio/black-litterman', { symbols: ['600519', '000001', '601318'], market_portfolio: '600519' })
-      .then(res => { if (!cancelled) { setData(res); setLoaded(true); } })
-      .catch(() => { if (!cancelled) setLoaded(true); });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (!loaded) return <LoadingPlaceholder />;
+  if (isLoading) return <LoadingPlaceholder />;
   if (!data) return <NoDataPlaceholder />;
 
   const weightEntries = Object.entries(data.weights);
@@ -1084,24 +1050,20 @@ const BlackLittermanPanel = memo(function BlackLittermanPanel() {
 });
 
 const KellyCalculatorPanel = memo(function KellyCalculatorPanel() {
-  const [data, setData] = useState<KellyData | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
   const [winRate, setWinRate] = useState('0.55');
   const [avgWin, setAvgWin] = useState('0.08');
   const [avgLoss, setAvgLoss] = useState('0.05');
+  const [queryParams, setQueryParams] = useState({ winRate: 0.55, avgWin: 0.08, avgLoss: 0.05 });
 
-  const fetchKelly = useCallback(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    apiGet<KellyData>('/position/kelly', { win_rate: parseFloat(winRate), avg_win: parseFloat(avgWin), avg_loss: parseFloat(avgLoss) })
-      .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
-      .catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
-    return () => { cancelled = true; };
-  }, [winRate, avgWin, avgLoss]);
+  const { data, isLoading, isError } = useKellyCalculator(queryParams.winRate, queryParams.avgWin, queryParams.avgLoss);
 
-  useEffect(() => { fetchKelly(); }, []);
+  const handleCalculate = () => {
+    setQueryParams({
+      winRate: parseFloat(winRate),
+      avgWin: parseFloat(avgWin),
+      avgLoss: parseFloat(avgLoss),
+    });
+  };
 
   const inputStyle: React.CSSProperties = {
     width: '100%', height: 36, background: 'var(--bg-overlay)',
@@ -1140,20 +1102,20 @@ const KellyCalculatorPanel = memo(function KellyCalculatorPanel() {
       </div>
 
       <button
-        onClick={fetchKelly}
-        disabled={loading}
+        onClick={handleCalculate}
+        disabled={isLoading}
         style={{
-          height: 36, background: loading ? 'var(--bg-overlay)' : 'var(--accent)',
-          color: loading ? 'var(--label-quaternary)' : '#fff',
-          border: 'none', borderRadius: 'var(--r-sm)', cursor: loading ? 'not-allowed' : 'pointer',
+          height: 36, background: isLoading ? 'var(--bg-overlay)' : 'var(--accent)',
+          color: isLoading ? 'var(--label-quaternary)' : '#fff',
+          border: 'none', borderRadius: 'var(--r-sm)', cursor: isLoading ? 'not-allowed' : 'pointer',
           fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600,
           letterSpacing: '0.06em', transition: 'all var(--dur-fast)',
         }}
       >
-        {loading ? '计算中...' : '计算 Kelly'}
+        {isLoading ? '计算中...' : '计算 Kelly'}
       </button>
 
-      {error && (
+      {isError && (
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: '#FF1744', padding: '8px 12px', background: 'rgba(255,23,68,0.08)', borderRadius: 'var(--r-sm)', border: '1px solid rgba(255,23,68,0.2)' }}>
           计算失败，请检查参数
         </div>
@@ -1198,26 +1160,12 @@ const KellyCalculatorPanel = memo(function KellyCalculatorPanel() {
 });
 
 const StressTestPanel = memo(function StressTestPanel() {
-  const [results, setResults] = useState<StressTestResult | null>(null);
-  const [running, setRunning] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [symbols, setSymbols] = useState('000001.SZ,000002.SZ,600519.SH');
+  const { isLoading: scenariosLoading } = useStressScenarios();
+  const stressTest = useRunStressTest();
 
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<StressScenario[]>('/portfolio/stress/scenarios').then(() => {
-      if (!cancelled) setLoading(false);
-    }).catch(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  const runStressTest = () => {
-    let cancelled = false;
-    setRunning(true);
-    apiPost<StressTestResult>('/portfolio/stress/run', { symbols: symbols.split(',').map(s => s.trim()) })
-      .then(data => { if (!cancelled) { setResults(data); setRunning(false); } })
-      .catch(() => { if (!cancelled) setRunning(false); });
-    return () => { cancelled = true; };
+  const handleRunStressTest = () => {
+    stressTest.mutate(symbols.split(',').map(s => s.trim()));
   };
 
   const scenarioColors: Record<string, string> = {
@@ -1235,23 +1183,23 @@ const StressTestPanel = memo(function StressTestPanel() {
           style={{ flex: 1, height: 32, background: 'var(--bg-overlay)', border: '1px solid var(--separator)', borderRadius: 'var(--r-sm)', padding: '0 10px', color: 'var(--label-primary)', fontFamily: 'var(--font-mono)', fontSize: 10, outline: 'none' }}
         />
         <button
-          onClick={runStressTest}
-          disabled={running || loading}
-          style={{ height: 32, padding: '0 14px', borderRadius: 'var(--r-sm)', border: 'none', background: running ? 'var(--bg-overlay)' : 'var(--accent)', color: running ? 'rgba(255,255,255,0.4)' : '#fff', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, cursor: running ? 'not-allowed' : 'pointer' }}
+          onClick={handleRunStressTest}
+          disabled={stressTest.isPending || scenariosLoading}
+          style={{ height: 32, padding: '0 14px', borderRadius: 'var(--r-sm)', border: 'none', background: stressTest.isPending ? 'var(--bg-overlay)' : 'var(--accent)', color: stressTest.isPending ? 'rgba(255,255,255,0.4)' : '#fff', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, cursor: stressTest.isPending ? 'not-allowed' : 'pointer' }}
         >
-          {running ? '运行中...' : '压力测试'}
+          {stressTest.isPending ? '运行中...' : '压力测试'}
         </button>
       </div>
 
-      {loading && <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>加载场景...</span></div>}
+      {scenariosLoading && <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>加载场景...</span></div>}
 
-      {results && (
+      {stressTest.data && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
             {[
-              { label: '最坏情况', value: `${(results.summary.worst_case * 100).toFixed(1)}%`, color: '#FF1744' },
-              { label: '平均影响', value: `${(results.summary.average_impact * 100).toFixed(1)}%`, color: '#FF9100' },
-              { label: '压力得分', value: results.summary.stress_score.toFixed(0), color: results.summary.stress_score > 70 ? '#FF1744' : results.summary.stress_score > 40 ? '#FF9100' : '#00C853' },
+              { label: '最坏情况', value: `${(stressTest.data.summary.worst_case * 100).toFixed(1)}%`, color: '#FF1744' },
+              { label: '平均影响', value: `${(stressTest.data.summary.average_impact * 100).toFixed(1)}%`, color: '#FF9100' },
+              { label: '压力得分', value: stressTest.data.summary.stress_score.toFixed(0), color: stressTest.data.summary.stress_score > 70 ? '#FF1744' : stressTest.data.summary.stress_score > 40 ? '#FF9100' : '#00C853' },
             ].map(m => (
               <div key={m.label} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 'var(--r-sm)', padding: '10px 8px', border: `1px solid ${m.color}33` }}>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--label-tertiary)', textTransform: 'uppercase', marginBottom: 4 }}>{m.label}</div>
@@ -1261,7 +1209,7 @@ const StressTestPanel = memo(function StressTestPanel() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {results.scenarios.map(s => (
+            {stressTest.data.scenarios.map(s => (
               <div key={s.name} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 'var(--r-sm)', padding: '10px 12px', borderLeft: `3px solid ${scenarioColors[s.name] ?? '#666'}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--label-primary)' }}>{s.name}</span>
@@ -1406,42 +1354,32 @@ const PortfolioAttributionPanel = memo(function PortfolioAttributionPanel() {
 });
 
 export function RiskPage() {
-  const { var95, cvar, maxDrawdown, sharpe, beta, alerts, riskLevel, metrics, fetchMetrics } = useRiskStore();
+  const { alerts } = useRiskStore();
+  const { data: dashboardData } = usePortfolioRiskDashboard();
+  const { data: portfolioData, isLoading: portfolioLoading } = useRiskPortfolio();
+  const { data: exposureData, isLoading: exposureLoading } = useRiskExposure();
+  const { data: drawdownData, isLoading: drawdownLoading } = useDrawdownAnalysis('000001');
 
-  const [portfolioData, setPortfolioData] = useState<PortfolioData | null>(null);
-  const [portfolioLoaded, setPortfolioLoaded] = useState(false);
-  const [exposureData, setExposureData] = useState<ExposureData | null>(null);
-  const [exposureLoaded, setExposureLoaded] = useState(false);
-  const [drawdownData, setDrawdownData] = useState<DrawdownData | null>(null);
-  const [drawdownLoaded, setDrawdownLoaded] = useState(false);
-
-  useEffect(() => {
-    fetchMetrics();
-  }, [fetchMetrics]);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<PortfolioData>('/risk/portfolio')
-      .then(data => { if (!cancelled) { setPortfolioData(data); setPortfolioLoaded(true); } })
-      .catch(() => { if (!cancelled) setPortfolioLoaded(true); });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<ExposureData>('/risk/exposure')
-      .then(data => { if (!cancelled) { setExposureData(data); setExposureLoaded(true); } })
-      .catch(() => { if (!cancelled) setExposureLoaded(true); });
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiGet<DrawdownData>('/drawdown/analysis/000001')
-      .then(data => { if (!cancelled) { setDrawdownData(data); setDrawdownLoaded(true); } })
-      .catch(() => { if (!cancelled) setDrawdownLoaded(true); });
-    return () => { cancelled = true; };
-  }, []);
+  const rm = dashboardData?.risk_metrics;
+  const var95 = rm?.var_95 ?? 0;
+  const cvar = rm?.cvar_95 ?? 0;
+  const maxDrawdown = rm?.max_drawdown ?? 0;
+  const sharpe = rm?.portfolio_sharpe ?? 0;
+  const beta = 1;
+  const riskLevel: RiskLevel = var95 > 0.05 || maxDrawdown > 0.15 ? 'HIGH' : var95 > 0.03 || maxDrawdown > 0.08 ? 'MEDIUM' : 'LOW';
+  const metrics: RiskMetrics | null = dashboardData ? {
+    riskLevel,
+    var95,
+    cvar,
+    maxDrawdown,
+    sharpe,
+    beta,
+    riskDecomposition: [],
+    correlationMatrix: { labels: [], values: [[]] },
+    historicalVol: [],
+    impliedVol: [],
+    volDates: [],
+  } : null;
 
   const loading = isDataLoading(var95, cvar, maxDrawdown, sharpe, beta);
 
@@ -1517,7 +1455,7 @@ export function RiskPage() {
 
         <div style={panelStyle}>
           <div style={panelTitleStyle}>投资组合风险</div>
-          {!portfolioLoaded ? <LoadingPlaceholder /> : !portfolioData ? <NoDataPlaceholder /> : (
+          {portfolioLoading ? <LoadingPlaceholder /> : !portfolioData ? <NoDataPlaceholder /> : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
               <div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>持仓数量</div>
@@ -1569,7 +1507,7 @@ export function RiskPage() {
 
         <div style={panelStyle}>
           <div style={panelTitleStyle}>风险暴露度</div>
-          {!exposureLoaded ? <LoadingPlaceholder /> : !exposureData ? <NoDataPlaceholder /> : (
+          {exposureLoading ? <LoadingPlaceholder /> : !exposureData ? <NoDataPlaceholder /> : (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--label-tertiary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
@@ -1605,7 +1543,7 @@ export function RiskPage() {
 
         <div style={panelStyle}>
           <div style={panelTitleStyle}>回撤分析</div>
-          {!drawdownLoaded ? <LoadingPlaceholder /> : !drawdownData ? <NoDataPlaceholder /> : (
+          {drawdownLoading ? <LoadingPlaceholder /> : !drawdownData ? <NoDataPlaceholder /> : (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
                 <div>

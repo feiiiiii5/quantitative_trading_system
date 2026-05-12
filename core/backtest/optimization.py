@@ -1,5 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from itertools import product as _itertools_product
 
 import numpy as np
 import pandas as pd
@@ -310,4 +311,140 @@ def parameter_sensitivity(
         "results": results,
         "sensitivity": sensitivity,
         "robustness": robustness,
+    }
+
+
+def walk_forward_analysis(
+    engine,
+    strategy_cls,
+    df: pd.DataFrame,
+    is_window: int = 252,
+    oos_window: int = 63,
+    anchored: bool = False,
+    metric: str = "sharpe_ratio",
+    base_params: dict | None = None,
+    param_ranges: dict | None = None,
+) -> dict:
+    if df is None or len(df) < is_window + oos_window:
+        return {"error": f"数据不足，至少需要{is_window + oos_window}根K线"}
+
+    base_params = base_params or {}
+    param_ranges = param_ranges or (strategy_cls.get_param_space() if hasattr(strategy_cls, "get_param_space") else {})
+
+    if not param_ranges:
+        results = []
+        step = oos_window
+        for start in range(0, len(df) - is_window - oos_window + 1, step):
+            is_end = start + is_window
+            oos_end = min(is_end + oos_window, len(df))
+            if oos_end <= is_end:
+                break
+            is_df = df.iloc[start:is_end]
+            oos_df = df.iloc[is_end:oos_end]
+            try:
+                is_result = engine.run(strategy_cls(**base_params), is_df)
+                oos_result = engine.run(strategy_cls(**base_params), oos_df)
+                results.append({
+                    "is_start": int(start),
+                    "is_end": int(is_end),
+                    "oos_end": int(oos_end),
+                    "is_sharpe": round(float(is_result.sharpe_ratio), 4),
+                    "oos_sharpe": round(float(oos_result.sharpe_ratio), 4),
+                    "is_return": round(float(is_result.total_return), 4),
+                    "oos_return": round(float(oos_result.total_return), 4),
+                    "is_max_dd": round(float(is_result.max_drawdown), 4),
+                    "oos_max_dd": round(float(oos_result.max_drawdown), 4),
+                })
+            except Exception as e:
+                logger.debug("WFA window failed: %s", e)
+        if not results:
+            return {"error": "所有窗口回测失败"}
+        is_sharpes = [r["is_sharpe"] for r in results]
+        oos_sharpes = [r["oos_sharpe"] for r in results]
+        median_is = float(np.median(is_sharpes))
+        median_oos = float(np.median(oos_sharpes))
+        wfa_efficiency = median_oos / median_is if abs(median_is) > 1e-9 else 0.0
+        profitable_oos = sum(1 for s in oos_sharpes if s > 0)
+        return {
+            "windows": results,
+            "n_windows": len(results),
+            "is_median_sharpe": round(median_is, 4),
+            "oos_median_sharpe": round(median_oos, 4),
+            "wfa_efficiency": round(wfa_efficiency, 4),
+            "oos_profitable_pct": round(profitable_oos / max(len(results), 1) * 100, 1),
+            "is_oos_ratio": f"{is_window}:{oos_window}",
+            "curve_fitted": wfa_efficiency < 0.3,
+        }
+
+    results = []
+    step = oos_window
+    for start in range(0, len(df) - is_window - oos_window + 1, step):
+        is_start = 0 if anchored else start
+        is_end = start + is_window
+        oos_end = min(is_end + oos_window, len(df))
+        if oos_end <= is_end:
+            break
+        is_df = df.iloc[is_start:is_end]
+        oos_df = df.iloc[is_end:oos_end]
+
+        best_params = dict(base_params)
+        best_sharpe = -np.inf
+        param_names = list(param_ranges.keys())[:3]
+        if param_names:
+            grid_values = []
+            for name in param_names:
+                spec = param_ranges[name]
+                p_min = spec.get("min", 5)
+                p_max = spec.get("max", 60)
+                grid_values.append(np.linspace(p_min, p_max, 5).tolist())
+            for combo in _itertools_product(*grid_values):
+                params = dict(base_params)
+                for i, name in enumerate(param_names):
+                    base_val = base_params.get(name, 10)
+                    params[name] = int(round(combo[i])) if isinstance(base_val, int) else round(float(combo[i]), 4)
+                try:
+                    r = engine.run(strategy_cls(**params), is_df)
+                    val = getattr(r, metric, 0.0)
+                    if val > best_sharpe:
+                        best_sharpe = val
+                        best_params = params
+                except Exception:
+                    continue
+
+        try:
+            oos_result = engine.run(strategy_cls(**best_params), oos_df)
+            is_result = engine.run(strategy_cls(**best_params), is_df)
+            results.append({
+                "is_start": int(is_start),
+                "is_end": int(is_end),
+                "oos_end": int(oos_end),
+                "best_params": {k: v for k, v in best_params.items() if k in param_names},
+                "is_sharpe": round(float(is_result.sharpe_ratio), 4),
+                "oos_sharpe": round(float(oos_result.sharpe_ratio), 4),
+                "is_return": round(float(is_result.total_return), 4),
+                "oos_return": round(float(oos_result.total_return), 4),
+                "oos_max_dd": round(float(oos_result.max_drawdown), 4),
+            })
+        except Exception as e:
+            logger.debug("WFA optimized window failed: %s", e)
+
+    if not results:
+        return {"error": "所有窗口回测失败"}
+
+    is_sharpes = [r["is_sharpe"] for r in results]
+    oos_sharpes = [r["oos_sharpe"] for r in results]
+    median_is = float(np.median(is_sharpes))
+    median_oos = float(np.median(oos_sharpes))
+    wfa_efficiency = median_oos / median_is if abs(median_is) > 1e-9 else 0.0
+    profitable_oos = sum(1 for s in oos_sharpes if s > 0)
+
+    return {
+        "windows": results,
+        "n_windows": len(results),
+        "is_median_sharpe": round(median_is, 4),
+        "oos_median_sharpe": round(median_oos, 4),
+        "wfa_efficiency": round(wfa_efficiency, 4),
+        "oos_profitable_pct": round(profitable_oos / max(len(results), 1) * 100, 1),
+        "is_oos_ratio": f"{is_window}:{oos_window}",
+        "curve_fitted": wfa_efficiency < 0.3,
     }

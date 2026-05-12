@@ -11,7 +11,6 @@ from typing import Any
 
 from fastapi import Request, WebSocket
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
 
 from api.auth import decode_token
 from core.database import ThreadSafeLRU
@@ -497,7 +496,7 @@ async def _check_price_alerts(quotes_data: dict):
             for alert_data in triggered_alerts:
                 msg = _build_message("alert_triggered", alert_data)
                 await _manager.broadcast(msg)
-            logger.info("Triggered %s price alerts", len)
+            logger.info("Triggered %d price alerts", len(triggered_alerts))
     except Exception as e:
         logger.debug("Alert check error: %s", e)
 

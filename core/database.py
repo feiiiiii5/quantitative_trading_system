@@ -805,18 +805,33 @@ class SQLiteStore:
         sql += " LIMIT 1000"
         return self.fetchall(sql, tuple(params))
 
+    _hot_config_cache: dict[str, tuple[Any, float]] = {}
+    _HOT_CONFIG_KEYS = frozenset({"watchlist", "portfolio_snapshot", "price_alerts", "strategy_settings", "user_preferences"})
+    _HOT_CONFIG_TTL = 30.0
+
     def get_config(self, key: str, default: Any = None) -> Any:
+        if key in self._HOT_CONFIG_KEYS:
+            cached = self._hot_config_cache.get(key)
+            if cached is not None:
+                value, ts = cached
+                if time.monotonic() - ts < self._HOT_CONFIG_TTL:
+                    return value
         row = self.fetchone("SELECT value FROM config WHERE key=?", (key,))
         if row:
             try:
-                return json.loads(row["value"])
+                result = json.loads(row["value"])
             except (json.JSONDecodeError, TypeError):
-                return row["value"]
+                result = row["value"]
+            if key in self._HOT_CONFIG_KEYS:
+                self._hot_config_cache[key] = (result, time.monotonic())
+            return result
         return default
 
     def set_config(self, key: str, value: Any) -> None:
         value_str = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
         self.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value_str))
+        if key in self._HOT_CONFIG_KEYS:
+            self._hot_config_cache[key] = (value, time.monotonic())
 
     def get_realtime_cache(self, symbol: str) -> dict | None:
         row = self.fetchone("SELECT data, update_time FROM realtime_cache WHERE symbol=?", (symbol,))

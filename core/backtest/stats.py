@@ -123,7 +123,7 @@ def compute_backtest_statistics(
                 omega_ratio = 999.0
             q95 = float(np.percentile(ret_arr, 95))
             q05 = float(np.percentile(ret_arr, 5))
-            tail_ratio = abs(q95 / q05) if abs(q05) > 1e-09 else 0.0
+            tail_ratio = abs(q95 / q05) if abs(q05) > 1e-6 else 0.0
 
     recovery_factor = (total_return / max_dd) if max_dd > 1e-9 else 0.0
     avg_mae = np.mean([abs(t.get("mae", 0)) for t in sell_trades]) if sell_trades else 0.0
@@ -145,7 +145,7 @@ def compute_backtest_statistics(
             annual_vol = float(np.std(ret_arr) * np.sqrt(252))
             neg_rets = ret_arr[ret_arr < 0]
             if len(neg_rets) > 0:
-                downside_dev_val = float(np.std(neg_rets) * np.sqrt(252))
+                downside_dev_val = float(np.sqrt(np.mean(neg_rets ** 2)) * np.sqrt(252))
             var_5 = float(np.percentile(ret_arr, 5))
             var_95 = -var_5
             tail_5 = ret_arr[ret_arr <= var_5]

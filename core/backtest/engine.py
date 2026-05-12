@@ -82,6 +82,16 @@ class BacktestEngine:
         if self._data_quality is not None:
             df = self._data_quality.process(df, symbol)
 
+        try:
+            from core.backtest.preprocessor import BacktestDataPreprocessor
+            preprocessor = BacktestDataPreprocessor()
+            preprocessed = preprocessor.process(df, symbol)
+            if preprocessed.is_valid and len(preprocessed.df) >= MIN_BARS_REQUIRED:
+                df = preprocessed.df
+            self._preprocessing_report = preprocessed.quality_report
+        except Exception:
+            self._preprocessing_report = {}
+
         strategy.reset()
         self._event_bus.publish(Event(EventType.INIT, {"strategy": strategy.name}))
 
@@ -131,10 +141,10 @@ class BacktestEngine:
         strategy: BaseStrategy,
         symbol: str = "",
     ) -> BacktestResult:
-        closes = df["close"].values.astype(float) if "close" in df.columns else np.array([])
-        opens = df["open"].values.astype(float) if "open" in df.columns else closes
-        highs = df["high"].values.astype(float) if "high" in df.columns else closes
-        lows = df["low"].values.astype(float) if "low" in df.columns else closes
+        closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float) if "close" in df.columns else np.array([])
+        opens = pd.to_numeric(df["open"], errors="coerce").dropna().values.astype(float) if "open" in df.columns else closes
+        highs = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float) if "high" in df.columns else closes
+        lows = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float) if "low" in df.columns else closes
         dates_col = df["date"].values if "date" in df.columns else np.arange(len(closes))
 
         if len(closes) < 2:
@@ -142,6 +152,7 @@ class BacktestEngine:
 
         n = len(closes)
         self._progress_tracker.start(name, n)
+        self._progress_tracker.report_phase("data_fetch", "数据准备", 5.0, f"加载{n}根K线")
         cash = float(self._initial_capital)
         shares = 0
         position = None
@@ -169,8 +180,8 @@ class BacktestEngine:
             if n > window:
                 atr_values[window:] = (cumsum[window:] - cumsum[:-window]) / window
 
-        volumes = df["volume"].values.astype(float) if "volume" in df.columns else None
-        amounts_col = df["amount"].values.astype(float) if "amount" in df.columns else None
+        volumes = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else None
+        amounts_col = pd.to_numeric(df["amount"], errors="coerce").dropna().values.astype(float) if "amount" in df.columns else None
 
         prev_closes = np.empty_like(closes)
         prev_closes[0] = closes[0] if len(closes) > 0 else 0
@@ -197,8 +208,6 @@ class BacktestEngine:
             for sig in sigs:
                 action = sig.get("action", "hold")
                 if action not in ("buy", "sell"):
-                    continue
-                if action == "buy" and action == "sell":
                     continue
                 if action == "buy" and bar_sell:
                     continue
@@ -454,6 +463,10 @@ class BacktestEngine:
             date_str_progress = str(dates_col[i])[:10] if i < len(dates_col) else ""
             if i % 50 == 0 or i == n - 1:
                 self._progress_tracker.on_bar(i, bar_equity, date_str_progress)
+                if i > 0 and n > 0:
+                    backtest_pct = 20.0 + 50.0 * (i / n)
+                    detail = f"已处理 {i}/{n} 根K线 | 当前权益: {bar_equity:,.0f}"
+                    self._progress_tracker.report_phase("backtesting", "策略回测执行", backtest_pct, detail)
 
         dates_list = []
         for d in dates_col:
@@ -477,10 +490,11 @@ class BacktestEngine:
             shares = 0
             position = None
 
+        self._progress_tracker.report_phase("statistics", "计算统计指标", 85.0, "计算收益风险指标")
         stats = compute_backtest_statistics(equity_curve, closes, trades, dates_list)
 
         kline_with_signals = []
-        vols = df["volume"].values.astype(float) if "volume" in df.columns else np.zeros(n)
+        vols = pd.to_numeric(df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in df.columns else np.zeros(n)
         for idx in range(n):
             item = {
                 "d": dates_list[idx] if idx < len(dates_list) else "",
@@ -535,6 +549,7 @@ class BacktestEngine:
             expectancy=stats["expectancy"],
             payoff_ratio=stats["payoff_ratio"],
         )
+        self._progress_tracker.report_phase("saving", "保存结果", 98.0, "构建回测结果")
         result.downsample_curves(500)
         self._progress_tracker.complete(result.summary_dict())
         return result

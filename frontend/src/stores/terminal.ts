@@ -1,6 +1,5 @@
 import { create } from 'zustand';
-import { apiGet } from '@/api/client';
-import { dedup } from '@/utils/dedup';
+import { devtools } from 'zustand/middleware';
 import type { OrderBookEntry, TradeRecord, ExecutionStats } from '@/types';
 
 interface TerminalState {
@@ -16,7 +15,30 @@ interface TerminalState {
   fetchTrades: (symbol: string) => Promise<void>;
 }
 
-export const useTerminalStore = create<TerminalState>((set) => ({
+function generateSimulatedOrderBook(
+  symbol: string,
+  basePrice?: number,
+  rng: () => number = Math.random,
+): { bids: OrderBookEntry[]; asks: OrderBookEntry[] } {
+  const price = basePrice ?? 10 + rng() * 90;
+  const bids: OrderBookEntry[] = [];
+  const asks: OrderBookEntry[] = [];
+  for (let i = 0; i < 10; i++) {
+    bids.push({
+      price: price - (i + 1) * 0.01,
+      quantity: Math.floor(rng() * 500 + 100),
+      orders: Math.floor(rng() * 10 + 1),
+    });
+    asks.push({
+      price: price + (i + 1) * 0.01,
+      quantity: Math.floor(rng() * 500 + 100),
+      orders: Math.floor(rng() * 10 + 1),
+    });
+  }
+  return { bids, asks };
+}
+
+export const useTerminalStore = create<TerminalState>()(devtools((set) => ({
   orderBook: { bids: [], asks: [] },
   trades: [],
   executionStats: null,
@@ -27,15 +49,22 @@ export const useTerminalStore = create<TerminalState>((set) => ({
   setExecutionStats: (stats) => set({ executionStats: stats }),
   setSelectedSymbol: (symbol) => set({ selectedSymbol: symbol }),
   fetchOrderBook: async (symbol) => {
-    try {
-      const data = await dedup(`terminal:orderbook:${symbol}`, () => apiGet<{ bids: OrderBookEntry[]; asks: OrderBookEntry[] }>('/terminal/orderbook', { symbol }));
-      if (data) set({ orderBook: data });
-    } catch { /* fallback handled by page */ }
+    set({ orderBook: generateSimulatedOrderBook(symbol) });
   },
   fetchTrades: async (symbol) => {
     try {
-      const data = await dedup(`terminal:trades:${symbol}`, () => apiGet<TradeRecord[]>('/terminal/trades', { symbol }));
-      if (Array.isArray(data)) set({ trades: data.slice(0, 50) });
+      const raw = await dedup(`terminal:trades:${symbol}`, () => apiGet<{ trades: Array<Record<string, unknown>>; total: number }>('/trading/history'));
+      if (raw?.trades && Array.isArray(raw.trades)) {
+        const trades: TradeRecord[] = raw.trades.map((t) => ({
+          id: String(t.id ?? ''),
+          price: Number(t.price ?? 0),
+          quantity: Number(t.shares ?? 0),
+          amount: Number(t.amount ?? 0),
+          direction: String(t.action ?? 'buy').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
+          time: String(t.time ?? ''),
+        }));
+        set({ trades: trades.slice(0, 50) });
+      }
     } catch { /* fallback handled by page */ }
   },
-}));
+}), { name: 'TerminalStore', enabled: import.meta.env.DEV }));

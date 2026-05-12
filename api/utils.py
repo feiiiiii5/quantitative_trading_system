@@ -100,7 +100,7 @@ def sanitize(obj, _depth: int = 0):
 
 
 def json_response(success: bool, data=None, error: str = ""):
-    return {"success": success, "data": sanitize(data), "error": error}
+    return orjson_response(success, data, error)
 
 
 def orjson_response(success: bool, data=None, error: str = "", status_code: int = 200) -> Response:

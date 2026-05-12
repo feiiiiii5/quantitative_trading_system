@@ -103,6 +103,11 @@ button {
   50% { opacity: 0.4; }
 }
 
+@keyframes skeleton-pulse {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }

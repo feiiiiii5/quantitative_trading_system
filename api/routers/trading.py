@@ -1,9 +1,8 @@
 import asyncio
 import logging
 import time
-from datetime import datetime
 
-from fastapi import APIRouter, Path, Query, Request
+from fastapi import APIRouter, Query, Request
 
 from api.connection_manager import push_signal_event, set_symbol_priority, _PRIORITY_POSITION, _PRIORITY_WATCHLIST
 from api.routers.models import (
@@ -11,8 +10,7 @@ from api.routers.models import (
     TCAExecutionRecommendRequest, TradingBuyRequest, TradingSellRequest,
 )
 from api.utils import json_response as _json_response
-from api.utils import get_trading, rate_limiter, safe_error, validate_symbol
-from core.database import get_db
+from api.utils import get_trading, rate_limiter, safe_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

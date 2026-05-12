@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { apiGet } from '@/api/client';
 import { dedup } from '@/utils/dedup';
 import type { RiskLevel, RiskAlert, RiskMetrics } from '@/types';
@@ -22,7 +23,7 @@ interface RiskState {
   fetchMetrics: () => Promise<void>;
 }
 
-export const useRiskStore = create<RiskState>((set) => ({
+export const useRiskStore = create<RiskState>()(devtools((set) => ({
   riskLevel: 'LOW',
   var95: 0,
   cvar: 0,
@@ -49,16 +50,35 @@ export const useRiskStore = create<RiskState>((set) => ({
   resetKillSwitch: () => set({ killSwitchActive: false }),
   fetchMetrics: async () => {
     try {
-      const data = await dedup('risk:metrics', () => apiGet<RiskMetrics>('/risk/metrics'));
-      if (data) set({
-        metrics: data,
-        riskLevel: data.riskLevel,
-        var95: data.var95,
-        cvar: data.cvar,
-        maxDrawdown: data.maxDrawdown,
-        sharpe: data.sharpe,
-        beta: data.beta,
-      });
+      const raw = await dedup('risk:metrics', () => apiGet<Record<string, unknown>>('/portfolio/risk/dashboard'));
+      if (raw) {
+        const rm = (raw.risk_metrics ?? {}) as Record<string, number>;
+        const var95 = rm.var_95 ?? 0;
+        const maxDrawdown = rm.max_drawdown ?? 0;
+        const riskLevel: RiskLevel = var95 > 0.05 || maxDrawdown > 0.15 ? 'HIGH' : var95 > 0.03 || maxDrawdown > 0.08 ? 'MEDIUM' : 'LOW';
+        const data: RiskMetrics = {
+          riskLevel,
+          var95,
+          cvar: rm.cvar_95 ?? 0,
+          maxDrawdown,
+          sharpe: rm.portfolio_sharpe ?? 0,
+          beta: 1,
+          riskDecomposition: [],
+          correlationMatrix: { labels: [], values: [[]] },
+          historicalVol: [],
+          impliedVol: [],
+          volDates: [],
+        };
+        set({
+          metrics: data,
+          riskLevel: data.riskLevel,
+          var95: data.var95,
+          cvar: data.cvar,
+          maxDrawdown: data.maxDrawdown,
+          sharpe: data.sharpe,
+          beta: data.beta,
+        });
+      }
     } catch { /* fallback handled by page */ }
   },
-}));
+}), { name: 'RiskStore', enabled: import.meta.env.DEV }));

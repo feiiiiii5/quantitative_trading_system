@@ -138,8 +138,11 @@ class ModelValidityMonitor:
         actual_valid = actual[valid]
         pred_ranks = pd.Series(pred_valid).rank().values
         actual_ranks = pd.Series(actual_valid).rank().values
-        corr = np.corrcoef(pred_ranks, actual_ranks)[0, 1]
-        rank_ic = float(corr) if np.isfinite(corr) else 0.0
+        if np.std(pred_ranks) < 1e-12 or np.std(actual_ranks) < 1e-12:
+            rank_ic = 0.0
+        else:
+            corr = np.corrcoef(pred_ranks, actual_ranks)[0, 1]
+            rank_ic = float(corr) if np.isfinite(corr) else 0.0
         self._rank_ic_history[model_name].append(
             _RankICRecord(date=date, rank_ic=rank_ic, n_stocks=int(valid.sum()))
         )

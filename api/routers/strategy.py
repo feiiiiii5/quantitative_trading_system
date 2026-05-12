@@ -7,10 +7,9 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Path, Query, Request
 
-from api.connection_manager import cache_response
 from api.routers.models import AlphaEvolveRequest, AuditStrategyRequest
 from api.utils import json_response as _json_response
-from api.utils import rate_limiter, safe_error, validate_symbol
+from api.utils import safe_error, validate_symbol
 from core.data_fetcher import SmartDataFetcher, get_fetcher
 from core.database import get_db
 from core.strategies import STRATEGY_REGISTRY
@@ -578,8 +577,8 @@ async def execution_simulate(
         if method not in ("market", "twap", "vwap"):
             return _json_response(False, error="method must be 'market', 'twap', or 'vwap'")
 
-        fetcher = get_fetcher()
-        rt = fetcher.get_realtime(symbol)
+        fetcher = request.app.state.fetcher
+        rt = await fetcher.get_realtime(symbol)
         if not rt or rt.get("price", 0) <= 0:
             return _json_response(False, error="No realtime price available")
 

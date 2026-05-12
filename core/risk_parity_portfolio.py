@@ -59,6 +59,8 @@ class RiskParityPortfolio:
         self._factor_monitor.update(symbol, predicted_score, actual_return)
 
     def compute_target_weights(self) -> PortfolioState:
+        if self._n_assets == 0:
+            return PortfolioState()
         if len(self._returns_buffer) < 20:
             equal_w = 1.0 / self._n_assets
             return PortfolioState(

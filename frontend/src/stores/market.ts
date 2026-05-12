@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { apiGet } from '@/api/client';
 import { dedup } from '@/utils/dedup';
 import type { StockQuote, IndexQuote, SectorData, BreadthData } from '@/types';
@@ -11,6 +12,7 @@ interface MarketState {
   northFlow: number | null;
   wsConnected: boolean;
   loading: boolean;
+  error: string | null;
   fetchIndices: () => Promise<void>;
   fetchStocks: () => Promise<void>;
   fetchSectors: () => Promise<void>;
@@ -21,7 +23,7 @@ interface MarketState {
   searchStocks: (query: string) => Promise<Array<{ symbol: string; name: string; code: string; market: string }>>;
 }
 
-export const useMarketStore = create<MarketState>((set, get) => ({
+export const useMarketStore = create<MarketState>()(devtools((set, get) => ({
   indices: [],
   stocks: [],
   sectors: [],
@@ -29,10 +31,12 @@ export const useMarketStore = create<MarketState>((set, get) => ({
   northFlow: null,
   wsConnected: false,
   loading: false,
+  error: null,
 
   fetchIndices: async () => {
     const { wsConnected } = get();
     if (wsConnected) return;
+    set({ loading: true, error: null });
     try {
       const data = await dedup('market:overview', () => apiGet<Record<string, unknown>>('/market/overview'));
       const cnIndices = (data?.cn_indices ?? {}) as Record<string, IndexQuote>;
@@ -47,8 +51,10 @@ export const useMarketStore = create<MarketState>((set, get) => ({
         change: val.change ?? 0,
         change_pct: val.change_pct ?? 0,
       }));
-      set({ indices: parsed, northFlow });
-    } catch { /* silent */ }
+      set({ indices: parsed, northFlow, loading: false, error: null });
+    } catch (e) {
+      set({ loading: false, error: (e as Error).message });
+    }
   },
 
   fetchStocks: async () => {
@@ -57,23 +63,27 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       set({ loading: false });
       return;
     }
-    set({ loading: true });
+    set({ loading: true, error: null });
     try {
       const data = await dedup('market:stocks', () => apiGet<StockQuote[]>('/market/stocks'));
-      set({ stocks: Array.isArray(data) ? data : [], loading: false });
-    } catch {
-      set({ stocks: [], loading: false });
+      set({ stocks: Array.isArray(data) ? data : [], loading: false, error: null });
+    } catch (e) {
+      set({ stocks: [], loading: false, error: (e as Error).message });
     }
   },
 
   fetchSectors: async () => {
+    set({ loading: true, error: null });
     try {
       const data = await apiGet<{ items: SectorData[] }>('/market/heatmap');
-      set({ sectors: data?.items ?? [] });
-    } catch { /* silent */ }
+      set({ sectors: data?.items ?? [], loading: false, error: null });
+    } catch (e) {
+      set({ loading: false, error: (e as Error).message });
+    }
   },
 
   fetchBreadth: async () => {
+    set({ loading: true, error: null });
     try {
       const symbols = 'sh000001,sz399001,sz399006,sh000300,sh000905,sh000688';
       const raw = await apiGet<{
@@ -82,7 +92,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       }>('/market/breadth', { symbols });
       const ad = raw?.advance_decline;
       const pma = raw?.percent_above_ma;
-      if (!ad) { set({ breadth: null }); return; }
+      if (!ad) { set({ breadth: null, loading: false, error: null }); return; }
       set({
         breadth: {
           advancing: (ad.advancing as number) ?? 0,
@@ -101,9 +111,11 @@ export const useMarketStore = create<MarketState>((set, get) => ({
           pct_above_ma: (pma?.pct_above_ma as number) ?? 0,
           ma_signal: (pma?.signal as string) ?? 'neutral',
         },
+        loading: false,
+        error: null,
       });
-    } catch {
-      set({ breadth: null });
+    } catch (e) {
+      set({ breadth: null, loading: false, error: (e as Error).message });
     }
   },
 
@@ -133,4 +145,4 @@ export const useMarketStore = create<MarketState>((set, get) => ({
       return [];
     }
   },
-}));
+}), { name: 'MarketStore', enabled: import.meta.env.DEV }));

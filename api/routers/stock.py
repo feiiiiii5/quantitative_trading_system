@@ -8,9 +8,8 @@ from fastapi.responses import StreamingResponse
 
 from api.connection_manager import cache_response
 from api.utils import json_response as _json_response
-from api.utils import rate_limiter, safe_error, validate_symbol
-from core.data_fetcher import SmartDataFetcher, get_fetcher
-from core.database import get_db
+from api.utils import rate_limiter, safe_error
+from core.data_fetcher import SmartDataFetcher
 from core.indicators import calc_all_indicators
 from core.market_detector import MarketDetector
 

@@ -1,8 +1,8 @@
 import { useState, useCallback, useMemo, useEffect, useRef, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, type CandlestickData, type Time } from 'lightweight-charts';
-import { useMarketStore } from '@/stores/market';
-import { useWatchlistStore } from '@/stores/watchlist';
+import { useMarketStocks, useMarketSectors } from '@/hooks/queries/useMarketQueries';
+import { useWatchlist, useAddToWatchlist, useRemoveFromWatchlist } from '@/hooks/queries/useWatchlistQueries';
 import { VirtualList } from '@/components/ui/VirtualList';
 import { apiGet } from '@/api/client';
 import { formatPrice, formatPercent, formatVolume, formatAmount, priceColor } from '@/utils/format';
@@ -1178,10 +1178,29 @@ const StockDrawer = memo(function StockDrawer({
 });
 
 export function MarketPage() {
-  const { stocks, loading, sectors, fetchStocks, fetchSectors } = useMarketStore();
-  const watchlist = useWatchlistStore(s => s.symbols);
-  const toggleWatch = useWatchlistStore(s => s.toggle);
+  const { data: stocks = [], isLoading: loading } = useMarketStocks('A');
+  const { data: sectorsData = {} } = useMarketSectors();
+  const { data: watchlistData } = useWatchlist();
+  const addMutation = useAddToWatchlist();
+  const removeMutation = useRemoveFromWatchlist();
   const navigate = useNavigate();
+
+  const watchlist = watchlistData?.symbols ?? [];
+  const toggleWatch = (symbol: string) => {
+    if (watchlist.includes(symbol)) {
+      removeMutation.mutate(symbol);
+    } else {
+      addMutation.mutate(symbol);
+    }
+  };
+
+  const sectors = useMemo(() => {
+    return Object.entries(sectorsData).map(([key, val]) => ({
+      name: (val as { name?: string })?.name ?? key,
+      change_pct: (val as { change_pct?: number })?.change_pct ?? 0,
+      stocks: (val as { stocks?: string[] })?.stocks ?? [],
+    }));
+  }, [sectorsData]);
 
   const [sortKey, setSortKey] = useState<SortKey>('symbol');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -1192,11 +1211,6 @@ export function MarketPage() {
   const [sectorFilter, setSectorFilter] = useState('');
   const [showSectorDropdown, setShowSectorDropdown] = useState(false);
   const [contentTab, setContentTab] = useState<ContentTab>('market');
-
-  useEffect(() => {
-    fetchStocks();
-    fetchSectors();
-  }, [fetchStocks, fetchSectors]);
 
   const sectorNames = useMemo(() => {
     const names = new Set(sectors.map(s => s.name));

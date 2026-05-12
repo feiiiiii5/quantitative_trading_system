@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
 import { useTerminalStore } from '@/stores/terminal';
 import { useRiskStore } from '@/stores/risk';
+import { useTradingHistory } from '@/hooks/queries';
 import { apiPost } from '@/api/client';
 import { formatPrice, formatVolume, formatAmount } from '@/utils/format';
 import type { OrderBookEntry, TradeRecord } from '@/types';
@@ -875,13 +876,25 @@ const KillSwitchPanel = memo(function KillSwitchPanel() {
 });
 
 export function TerminalPage() {
-  const { orderBook, trades, selectedSymbol, fetchOrderBook, fetchTrades } = useTerminalStore();
+  const { orderBook, selectedSymbol, fetchOrderBook } = useTerminalStore();
+  const { data: tradesData } = useTradingHistory();
+
+  const trades: TradeRecord[] = useMemo(() => {
+    if (!tradesData?.trades) return [];
+    return tradesData.trades.map((t) => ({
+      id: t.id,
+      price: t.price,
+      quantity: t.shares,
+      amount: t.amount,
+      direction: t.action.toUpperCase() === 'SELL' ? 'SELL' as const : 'BUY' as const,
+      time: t.timestamp,
+    })).slice(0, 50);
+  }, [tradesData]);
 
   useEffect(() => {
     const sym = selectedSymbol || '000001.SZ';
     fetchOrderBook(sym);
-    fetchTrades(sym);
-  }, [selectedSymbol, fetchOrderBook, fetchTrades]);
+  }, [selectedSymbol, fetchOrderBook]);
 
   return (
     <div style={{ background: 'var(--bg-base)', minHeight: '100%', padding: 24, boxSizing: 'border-box' }}>

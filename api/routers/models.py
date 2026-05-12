@@ -189,6 +189,7 @@ class MonteCarloVaRRequest(BaseModel):
     confidence_level: float = Field(0.95, ge=0.9, le=0.99)
     time_horizon: int = Field(1, ge=1, le=252)
     n_simulations: int = Field(10000, ge=1000, le=100000)
+    method: str = Field("parametric", pattern=r"^(parametric|historical)$")
     period: str = Field("1y", max_length=5)
 
 

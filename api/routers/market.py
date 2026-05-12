@@ -8,12 +8,11 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Path, Query, Request
 
-from api.connection_manager import _is_trading_hours, cache_response
+from api.connection_manager import cache_response
 from api.routers.models import FactorPipelineRequest
 from api.utils import json_response as _json_response
-from api.utils import rate_limiter, safe_error, validate_symbol
-from core.data_fetcher import SmartDataFetcher, get_fetcher
-from core.market_detector import MarketDetector
+from api.utils import safe_error
+from core.data_fetcher import SmartDataFetcher
 from core.market_hours import MarketHours
 
 logger = logging.getLogger(__name__)

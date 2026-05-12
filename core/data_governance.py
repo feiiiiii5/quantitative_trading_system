@@ -885,7 +885,7 @@ class DataQualityPipeline:
             df = self._suspension.forward_fill_suspension(df)
 
         if "close" in df.columns and len(df) > 1:
-            pct = pd.to_numeric(df["close"], errors="coerce").pct_change().abs()
+            pct = pd.to_numeric(df["close"], errors="coerce").pct_change(fill_method=None).abs()
             df["is_anomaly"] = pct > self._A_SHARE_MAIN_LIMIT
         else:
             df["is_anomaly"] = False
@@ -902,7 +902,7 @@ class DataQualityPipeline:
 
         if "close" in df.columns and "is_suspended" in df.columns:
             closes = pd.to_numeric(df["close"], errors="coerce")
-            returns = closes.pct_change()
+            returns = closes.pct_change(fill_method=None)
             suspended_mask = df["is_suspended"].fillna(False)
             returns[suspended_mask] = 0.0
             df["return"] = returns

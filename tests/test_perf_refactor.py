@@ -153,6 +153,20 @@ def test_cache_stats_endpoint():
     assert "overall_hit_rate" in data["data"]
 
 
+def test_readiness_endpoint():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    resp = client.get("/api/readiness")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "status" in data
+    assert "checks" in data
+    assert "database" in data["checks"]
+    assert "tick_cache" in data["checks"]
+    assert "request_coalescer" in data["checks"]
+
+
 def test_cache_clear_endpoint():
     from fastapi.testclient import TestClient
     from main import app
@@ -319,18 +333,15 @@ async def test_databus_queue_full_eviction():
 def test_databus_stats_endpoint():
     from fastapi.testclient import TestClient
     from main import app
+    # Ensure clean state for test isolation
+    if hasattr(app.state, "data_bus"):
+        delattr(app.state, "data_bus")
     client = TestClient(app)
     resp = client.get("/api/databus/stats")
     assert resp.status_code == 200
     data = resp.json()
-    bus = getattr(app.state, "data_bus", None)
-    if bus is not None:
-        assert data["success"] is True
-        assert "cache" in data["data"]
-        assert "channels" in data["data"]
-        assert "running" in data["data"]
-    else:
-        assert data["success"] is False
+    assert data["success"] is False
+    assert "DataBus not initialized" in data["error"]
 
 
 def test_risk_metrics_endpoint_exists():

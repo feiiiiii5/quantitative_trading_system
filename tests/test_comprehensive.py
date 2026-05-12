@@ -784,13 +784,16 @@ class TestApiUtils:
         assert sanitize([np.float64(1.0), np.int64(2)]) == [1.0, 2]
 
     def test_json_response(self):
+        import orjson
         from api.utils import json_response
         resp = json_response(True, data={"key": "value"}, error="")
-        assert resp["success"] is True
-        assert resp["data"]["key"] == "value"
+        body = orjson.loads(resp.body)
+        assert body["success"] is True
+        assert body["data"]["key"] == "value"
         resp2 = json_response(False, error="something wrong")
-        assert resp2["success"] is False
-        assert resp2["error"] == "something wrong"
+        body2 = orjson.loads(resp2.body)
+        assert body2["success"] is False
+        assert body2["error"] == "something wrong"
 
 
 class TestDataFetcherUtils:

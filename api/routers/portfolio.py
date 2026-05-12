@@ -3,8 +3,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timedelta
-from itertools import combinations
+from datetime import datetime
 
 import numpy as np
 import orjson
@@ -17,7 +16,7 @@ from api.routers.models import (
     BlackLittermanRequest, MonteCarloVaRRequest, RebalanceScheduleRequest,
 )
 from api.utils import json_response as _json_response
-from api.utils import get_trading, rate_limiter, safe_error, validate_symbol
+from api.utils import rate_limiter, safe_error, validate_symbol
 from core.data_fetcher import SmartDataFetcher
 from core.database import SQLiteStore, get_db
 from core.market_detector import MarketDetector

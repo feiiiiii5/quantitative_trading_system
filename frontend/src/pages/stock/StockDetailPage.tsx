@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { createChart, CandlestickSeries, HistogramSeries, type IChartApi, type CandlestickData, type HistogramData, type Time } from 'lightweight-charts';
-import { apiGet } from '@/api/client';
+import { useStockRealtime, useStockHistory, useStockIndicators, useStockAnalysis } from '@/hooks/queries/useStockQueries';
+import { useChipDistribution, useStockNews, useNewsSentiment, useGarchVolatility, useHmmRegime, useRollingRisk, useSeasonality } from '@/hooks/queries/useStockDetailQueries';
 import { useCanvas } from '@/hooks/useCanvas';
 import { formatPrice, formatPercent, formatVolume, formatAmount } from '@/utils/format';
 import type { StockQuote } from '@/types';
@@ -170,27 +171,15 @@ function msToTime(ts: number): Time {
 }
 
 const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) {
-  const [data, setData] = useState<MoneyFlowData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    apiGet<MoneyFlowData>(`/moneyflow/stock/${symbol}`)
-      .then(d => { if (!cancelled) setData(d); })
-      .catch(() => { if (!cancelled) setError(true); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [symbol]);
+  const { data, isLoading, isError } = useStockAnalysis(symbol);
+  const flowData = data as unknown as MoneyFlowData | undefined;
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
-      if (!data) return;
+      if (!flowData) return;
       ctx.clearRect(0, 0, w, h);
 
-      const history = data.history ?? [];
+      const history = flowData.history ?? [];
       if (history.length === 0) return;
 
       const padLeft = 8;
@@ -253,13 +242,13 @@ const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) 
           ctx.fillText(item.date.slice(5, 10), x, h - 6);
         }
       }
-    }, [data]),
-    [data],
+    }, [flowData]),
+    [flowData],
   );
 
-  useEffect(() => { redrawChart(); }, [data, redrawChart]);
+  useEffect(() => { redrawChart(); }, [flowData, redrawChart]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
@@ -267,7 +256,7 @@ const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) 
     );
   }
 
-  if (error || !data) {
+  if (isError || !flowData) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>资金流向数据暂无</span>
@@ -275,7 +264,7 @@ const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) 
     );
   }
 
-  const rt = data.realtime;
+  const rt = flowData.realtime;
   const retailNet = -(rt.medium_net + rt.small_net);
   const flowCategories = [
     { label: '超大单', value: rt.super_large_net },
@@ -337,28 +326,16 @@ const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) 
 });
 
 const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symbol: string }) {
-  const [data, setData] = useState<ChipData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    apiGet<ChipData>(`/chip/${symbol}`)
-      .then(d => { if (!cancelled) setData(d); })
-      .catch(() => { if (!cancelled) setError(true); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [symbol]);
+  const { data, isLoading, isError } = useChipDistribution(symbol);
+  const chipData = data as unknown as ChipData | undefined;
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
-      if (!data) return;
+      if (!chipData) return;
       ctx.clearRect(0, 0, w, h);
 
-      const dist = data.distribution ?? [];
-      const prices = data.prices ?? [];
+      const dist = chipData.distribution ?? [];
+      const prices = chipData.prices ?? [];
       if (dist.length === 0 || prices.length === 0) return;
       const len = Math.min(dist.length, prices.length);
 
@@ -377,7 +354,7 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
       const barHeight = Math.max(2, (chartH / len) * 0.7);
       const barSpacing = chartH / len;
 
-      const currentPrice = data.current_price;
+      const currentPrice = chipData.current_price;
 
       for (let i = 0; i < len; i++) {
         const vol = dist[i]!;
@@ -406,7 +383,7 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
         ctx.fillText(price.toFixed(2), padLeft - 4, y + 3);
       }
 
-      const avgY = padTop + ((data.avg_cost - minPrice) / priceRange) * chartH;
+      const avgY = padTop + ((chipData.avg_cost - minPrice) / priceRange) * chartH;
       ctx.strokeStyle = '#0A84FF';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 3]);
@@ -419,7 +396,7 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
       ctx.fillStyle = '#0A84FF';
       ctx.font = '8px monospace';
       ctx.textAlign = 'left';
-      ctx.fillText(`成本 ${data.avg_cost.toFixed(2)}`, w - padRight - 64, avgY - 4);
+      ctx.fillText(`成本 ${chipData.avg_cost.toFixed(2)}`, w - padRight - 64, avgY - 4);
 
       ctx.strokeStyle = 'rgba(255,255,255,0.06)';
       ctx.lineWidth = 1;
@@ -427,13 +404,13 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
       ctx.moveTo(padLeft, padTop);
       ctx.lineTo(padLeft, h - padBottom);
       ctx.stroke();
-    }, [data]),
-    [data],
+    }, [chipData]),
+    [chipData],
   );
 
-  useEffect(() => { redrawChart(); }, [data, redrawChart]);
+  useEffect(() => { redrawChart(); }, [chipData, redrawChart]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
@@ -441,7 +418,7 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
     );
   }
 
-  if (error || !data) {
+  if (isError || !chipData) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>筹码分布数据暂无</span>
@@ -455,19 +432,19 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
         <div style={{ flex: '1 1 100px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>获利比例</span>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: '16px', fontWeight: 600, color: '#FF1744', fontVariantNumeric: 'tabular-nums' }}>
-            {(data.profit_ratio * 100).toFixed(1)}%
+            {(chipData.profit_ratio * 100).toFixed(1)}%
           </span>
         </div>
         <div style={{ flex: '1 1 100px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>平均成本</span>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: '16px', fontWeight: 600, color: 'rgba(255,255,255,0.95)', fontVariantNumeric: 'tabular-nums' }}>
-            {data.avg_cost.toFixed(2)}
+            {chipData.avg_cost.toFixed(2)}
           </span>
         </div>
         <div style={{ flex: '1 1 100px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>集中度</span>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: '16px', fontWeight: 600, color: '#0A84FF', fontVariantNumeric: 'tabular-nums' }}>
-            {(data.concentration * 100).toFixed(1)}%
+            {(chipData.concentration * 100).toFixed(1)}%
           </span>
         </div>
       </div>
@@ -493,31 +470,13 @@ const ChipDistributionTab = memo(function ChipDistributionTab({ symbol }: { symb
 });
 
 const NewsTab = memo(function NewsTab({ symbol }: { symbol: string }) {
-  const [news, setNews] = useState<NewsItem[]>([]);
-  const [sentiment, setSentiment] = useState<SentimentData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+  const { data: newsRaw, isLoading: newsLoading, isError: newsError } = useStockNews(symbol);
+  const { data: sentiment, isLoading: sentimentLoading, isError: sentimentError } = useNewsSentiment(symbol);
+  const news = Array.isArray(newsRaw) ? newsRaw : [];
+  const isLoading = newsLoading || sentimentLoading;
+  const isError = newsError || sentimentError;
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    Promise.all([
-      apiGet<NewsItem[]>(`/news/stock/${symbol}`, { limit: 10 }),
-      apiGet<SentimentData>(`/news/sentiment`, { symbol }),
-    ])
-      .then(([n, s]) => {
-        if (!cancelled) {
-          setNews(Array.isArray(n) ? n : []);
-          setSentiment(s);
-        }
-      })
-      .catch(() => { if (!cancelled) setError(true); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [symbol]);
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
@@ -525,7 +484,7 @@ const NewsTab = memo(function NewsTab({ symbol }: { symbol: string }) {
     );
   }
 
-  if (error) {
+  if (isError) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>资讯数据暂无</span>
@@ -646,29 +605,12 @@ const NewsTab = memo(function NewsTab({ symbol }: { symbol: string }) {
 });
 
 const VolatilityTab = memo(function VolatilityTab({ symbol }: { symbol: string }) {
-  const [garch, setGarch] = useState<GarchData | null>(null);
-  const [hmm, setHmm] = useState<HmmData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    Promise.all([
-      apiGet<GarchData>(`/volatility/garch/${symbol}`),
-      apiGet<HmmData>(`/regime/hmm/${symbol}`),
-    ])
-      .then(([g, h]) => {
-        if (!cancelled) {
-          setGarch(g);
-          setHmm(h);
-        }
-      })
-      .catch(() => { if (!cancelled) setError(true); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [symbol]);
+  const { data: garchRaw, isLoading: garchLoading, isError: garchError } = useGarchVolatility(symbol);
+  const { data: hmmRaw, isLoading: hmmLoading, isError: hmmError } = useHmmRegime(symbol);
+  const garch = garchRaw as unknown as GarchData | undefined;
+  const hmm = hmmRaw as unknown as HmmData | undefined;
+  const isLoading = garchLoading || hmmLoading;
+  const isError = garchError || hmmError;
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
@@ -747,7 +689,7 @@ const VolatilityTab = memo(function VolatilityTab({ symbol }: { symbol: string }
 
   useEffect(() => { redrawChart(); }, [garch, redrawChart]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
@@ -755,7 +697,7 @@ const VolatilityTab = memo(function VolatilityTab({ symbol }: { symbol: string }
     );
   }
 
-  if (error) {
+  if (isError) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>波动率数据暂无</span>
@@ -867,27 +809,15 @@ const VolatilityTab = memo(function VolatilityTab({ symbol }: { symbol: string }
 });
 
 const RollingRiskTab = memo(function RollingRiskTab({ symbol }: { symbol: string }) {
-  const [data, setData] = useState<RollingRiskData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    apiGet<RollingRiskData>(`/rolling-risk/${symbol}`)
-      .then(d => { if (!cancelled) setData(d); })
-      .catch(() => { if (!cancelled) setError(true); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [symbol]);
+  const { data, isLoading, isError } = useRollingRisk(symbol);
+  const riskData = data as unknown as RollingRiskData | undefined;
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
-      if (!data) return;
+      if (!riskData) return;
       ctx.clearRect(0, 0, w, h);
 
-      const history = data.history ?? [];
+      const history = riskData.history ?? [];
       if (history.length === 0) return;
 
       const padLeft = 48;
@@ -950,13 +880,13 @@ const RollingRiskTab = memo(function RollingRiskTab({ symbol }: { symbol: string
           ctx.fillText(history[i]!.date.slice(5, 10), x, h - 6);
         }
       }
-    }, [data]),
-    [data],
+    }, [riskData]),
+    [riskData],
   );
 
-  useEffect(() => { redrawChart(); }, [data, redrawChart]);
+  useEffect(() => { redrawChart(); }, [riskData, redrawChart]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
@@ -964,7 +894,7 @@ const RollingRiskTab = memo(function RollingRiskTab({ symbol }: { symbol: string
     );
   }
 
-  if (error || !data) {
+  if (isError || !riskData) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>滚动风险数据暂无</span>
@@ -972,7 +902,7 @@ const RollingRiskTab = memo(function RollingRiskTab({ symbol }: { symbol: string
     );
   }
 
-  const latest = data.latest;
+  const latest = riskData.latest;
   const aColor = (v: number) => v >= 0 ? '#FF1744' : '#00C853';
 
   const metrics = [
@@ -1011,27 +941,15 @@ const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 const DAY_LABELS: Record<string, string> = { Mon: '周一', Tue: '周二', Wed: '周三', Thu: '周四', Fri: '周五' };
 
 const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string }) {
-  const [data, setData] = useState<SeasonalityData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(false);
-    apiGet<SeasonalityData>(`/seasonality/${symbol}`)
-      .then(d => { if (!cancelled) setData(d); })
-      .catch(() => { if (!cancelled) setError(true); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [symbol]);
+  const { data, isLoading, isError } = useSeasonality(symbol);
+  const seasonData = data as unknown as SeasonalityData | undefined;
 
   const { ref: chartRef, redraw: redrawChart } = useCanvas(
     useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
-      if (!data) return;
+      if (!seasonData) return;
       ctx.clearRect(0, 0, w, h);
 
-      const monthlyReturns = data.monthly_returns ?? {};
+      const monthlyReturns = seasonData.monthly_returns ?? {};
       const entries = MONTH_ORDER.map(m => ({ month: m, value: monthlyReturns[m] ?? 0 }));
       if (entries.length === 0) return;
 
@@ -1076,8 +994,8 @@ const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string
         const x = padLeft + i * barGroupWidth + barGroupWidth / 2;
         const barH = (entry.value / maxAbs) * (chartH / 2);
         const isPositive = entry.value >= 0;
-        const isBest = entry.month === data.best_month;
-        const isWorst = entry.month === data.worst_month;
+        const isBest = entry.month === seasonData.best_month;
+        const isWorst = entry.month === seasonData.worst_month;
 
         ctx.fillStyle = isPositive ? '#FF1744' : '#00C853';
         if (isBest) ctx.fillStyle = '#FFD600';
@@ -1107,13 +1025,13 @@ const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string
         ctx.textAlign = 'center';
         ctx.fillText(MONTH_LABELS[entry.month] ?? entry.month, x, h - 6);
       }
-    }, [data]),
-    [data],
+    }, [seasonData]),
+    [seasonData],
   );
 
-  useEffect(() => { redrawChart(); }, [data, redrawChart]);
+  useEffect(() => { redrawChart(); }, [seasonData, redrawChart]);
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>LOADING...</span>
@@ -1121,7 +1039,7 @@ const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string
     );
   }
 
-  if (error || !data) {
+  if (isError || !seasonData) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>季节性数据暂无</span>
@@ -1129,12 +1047,12 @@ const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string
     );
   }
 
-  const dayReturns = data.day_of_week_returns ?? {};
+  const dayReturns = seasonData.day_of_week_returns ?? {};
   const dayEntries = DAY_ORDER.map(d => ({ day: d, value: dayReturns[d] ?? 0 }));
   const maxDayAbs = Math.max(0.001, ...dayEntries.map(e => Math.abs(e.value)));
 
-  const tom = data.turn_of_month_effect;
-  const strengthPct = Math.min(100, Math.max(0, data.seasonality_strength * 100));
+  const tom = seasonData.turn_of_month_effect;
+  const strengthPct = Math.min(100, Math.max(0, seasonData.seasonality_strength * 100));
   const strengthColor = strengthPct > 60 ? '#FFD600' : strengthPct > 30 ? '#FF9100' : 'rgba(255,255,255,0.45)';
 
   return (
@@ -1168,8 +1086,8 @@ const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string
           {dayEntries.map(entry => {
             const pct = maxDayAbs > 0 ? (entry.value / maxDayAbs) * 50 : 0;
             const isPositive = entry.value >= 0;
-            const isBest = entry.day === data.best_day;
-            const isWorst = entry.day === data.worst_day;
+            const isBest = entry.day === seasonData.best_day;
+            const isWorst = entry.day === seasonData.worst_day;
             let barColor = isPositive ? '#FF1744' : '#00C853';
             if (isBest) barColor = '#FFD600';
             if (isWorst) barColor = '#AA00FF';
@@ -1259,10 +1177,14 @@ const SeasonalityTab = memo(function SeasonalityTab({ symbol }: { symbol: string
 const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const candleSeriesRef = useRef<ReturnType<IChartApi['addSeries']> | null>(null);
+  const volumeSeriesRef = useRef<ReturnType<IChartApi['addSeries']> | null>(null);
+
+  const { data: klineRaw } = useStockHistory(symbol);
+  const klineData = klineRaw as unknown as KlineRaw[] | undefined;
 
   useEffect(() => {
     if (!containerRef.current) return;
-    let cancelled = false;
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 480,
@@ -1288,42 +1210,17 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
       wickUpColor: '#FF1744',
       wickDownColor: '#00C853',
     });
+    candleSeriesRef.current = candleSeries;
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: 'volume',
     });
+    volumeSeriesRef.current = volumeSeries;
 
     chart.priceScale('volume').applyOptions({
       scaleMargins: { top: 0.85, bottom: 0 },
     });
-
-    const loadKline = async () => {
-      try {
-        const data = await apiGet<KlineRaw[]>('/market/kline', { symbol, period: '1y', kline_type: 'daily', adjust: 'qfq' });
-        if (cancelled) return;
-        if (Array.isArray(data) && data.length > 0) {
-          const candleData: CandlestickData<Time>[] = [];
-          const volData: HistogramData<Time>[] = [];
-
-          for (const d of data) {
-            const t = msToTime(d.time);
-            candleData.push({ time: t, open: d.open, high: d.high, low: d.low, close: d.close });
-            const isUp = d.close >= d.open;
-            volData.push({
-              time: t,
-              value: d.volume,
-              color: isUp ? 'rgba(255,23,68,0.35)' : 'rgba(0,200,83,0.35)',
-            });
-          }
-
-          candleSeries.setData(candleData);
-          volumeSeries.setData(volData);
-          chart.timeScale().fitContent();
-        }
-      } catch { /* kline not available */ }
-    };
-    loadKline();
 
     const onResize = () => {
       if (containerRef.current) {
@@ -1332,12 +1229,36 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
     };
     window.addEventListener('resize', onResize);
     return () => {
-      cancelled = true;
       window.removeEventListener('resize', onResize);
       chart.remove();
       chartRef.current = null;
+      candleSeriesRef.current = null;
+      volumeSeriesRef.current = null;
     };
   }, [symbol]);
+
+  useEffect(() => {
+    if (!klineData || !candleSeriesRef.current || !volumeSeriesRef.current || !chartRef.current) return;
+    if (Array.isArray(klineData) && klineData.length > 0) {
+      const candleData: CandlestickData<Time>[] = [];
+      const volData: HistogramData<Time>[] = [];
+
+      for (const d of klineData) {
+        const t = msToTime(d.time);
+        candleData.push({ time: t, open: d.open, high: d.high, low: d.low, close: d.close });
+        const isUp = d.close >= d.open;
+        volData.push({
+          time: t,
+          value: d.volume,
+          color: isUp ? 'rgba(255,23,68,0.35)' : 'rgba(0,200,83,0.35)',
+        });
+      }
+
+      candleSeriesRef.current.setData(candleData);
+      volumeSeriesRef.current.setData(volData);
+      chartRef.current.timeScale().fitContent();
+    }
+  }, [klineData]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '480px' }} />;
 });
@@ -1349,20 +1270,12 @@ interface IndicatorData {
 
 const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string }) {
   const [expanded, setExpanded] = useState(false);
-  const [data, setData] = useState<IndicatorData>({});
+  const { data: indicatorsRaw } = useStockIndicators(symbol);
+  const data = (indicatorsRaw ?? {}) as unknown as IndicatorData;
   const macdContainerRef = useRef<HTMLDivElement>(null);
   const rsiContainerRef = useRef<HTMLDivElement>(null);
   const macdChartRef = useRef<IChartApi | null>(null);
   const rsiChartRef = useRef<IChartApi | null>(null);
-
-  useEffect(() => {
-    if (!expanded) return;
-    let cancelled = false;
-    apiGet<IndicatorData>('/market/indicators', { symbol, indicators: 'macd,rsi' })
-      .then(d => { if (!cancelled) setData(d ?? {}); })
-      .catch(() => { /* indicators optional */ });
-    return () => { cancelled = true; };
-  }, [symbol, expanded]);
 
   useEffect(() => {
     if (!expanded || !data.macd?.length) return;
@@ -1536,60 +1449,10 @@ const GLASS: React.CSSProperties = {
 export function StockDetailPage() {
   const { symbol } = useParams<{ symbol: string }>();
   const navigate = useNavigate();
-  const [quote, setQuote] = useState<StockQuote | null>(null);
-  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<ChartTab>('kline');
 
-  useEffect(() => {
-    if (!symbol) return;
-    let cancelled = false;
-    setLoading(true);
-
-    apiGet<StockQuote>('/market/quote', { symbol })
-      .then(data => {
-        if (cancelled) return;
-        if (data) {
-          setQuote(data);
-          return;
-        }
-        return apiGet<StockQuote[]>('/market/stocks').then(stocks => {
-          if (cancelled) return;
-          if (Array.isArray(stocks)) {
-            const found = stocks.find(s => s.symbol === symbol);
-            if (found) {
-              setQuote({
-                ...found,
-                close: found.last_close ?? found.close,
-                turnover: found.turnover_rate ?? found.turnover,
-              });
-              return;
-            }
-          }
-          setQuote(null);
-        });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        return apiGet<StockQuote[]>('/market/stocks').then(stocks => {
-          if (cancelled) return;
-          if (Array.isArray(stocks)) {
-            const found = stocks.find(s => s.symbol === symbol);
-            if (found) {
-              setQuote({
-                ...found,
-                close: found.last_close ?? found.close,
-                turnover: found.turnover_rate ?? found.turnover,
-              });
-              return;
-            }
-          }
-          setQuote(null);
-        }).catch(() => { if (!cancelled) setQuote(null); });
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
-
-    return () => { cancelled = true; };
-  }, [symbol]);
+  const { data: quoteRaw, isLoading, isError } = useStockRealtime(symbol ?? '');
+  const quote = quoteRaw ? (quoteRaw as unknown as StockQuote) : null;
 
   const handleBack = useCallback(() => {
     navigate(-1);
@@ -1597,7 +1460,7 @@ export function StockDetailPage() {
 
   const marketTag = symbol ? resolveMarketTag(symbol) : null;
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000000' }}>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'rgba(255,255,255,0.20)', letterSpacing: '0.06em' }}>

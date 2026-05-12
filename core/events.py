@@ -374,6 +374,21 @@ class BacktestProgressTracker:
                 "error": error_msg,
             }))
 
+    def report_phase(self, phase: str, phase_label: str, pct: float, detail: str = "") -> None:
+        if self._event_bus:
+            elapsed_ms = int((time.monotonic() - self._start_time) * 1000) if self._start_time else 0
+            eta_ms = int(elapsed_ms / max(pct, 0.01) * (1 - pct)) if pct > 0 else 0
+            self._event_bus.publish(Event(EventType.BACKTEST_PROGRESS, {
+                "event": "progress",
+                "strategy": self._strategy_name,
+                "phase": phase,
+                "phase_label": phase_label,
+                "pct": round(pct, 2),
+                "detail": detail,
+                "elapsed_ms": elapsed_ms,
+                "eta_ms": eta_ms,
+            }))
+
     @property
     def progress(self) -> float:
         return self._current_bar / self._total_bars if self._total_bars > 0 else 0.0

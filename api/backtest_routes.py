@@ -196,7 +196,7 @@ async def strategy_performance_heatmap(request: Request):
                 logger.debug("Heatmap strategy %s failed: %s", sname, e)
             return sname, None
 
-        pairs = await asyncio.gather(*[_run_strategy(s) for s in strategies])
+        pairs = await asyncio.gather(*[_run_strategy(s) for s in strategies], return_exceptions=True)
         for sname, data in pairs:
             if data is not None:
                 heatmap_data[sname] = data
@@ -432,10 +432,10 @@ async def recommend_strategy(
             if len(work_df) < 30:
                 return _json_response(False, error="数据不足，请更换股票代码或时间范围")
 
-        c = work_df["close"].values.astype(float)
-        h = work_df["high"].values.astype(float)
-        low_arr = work_df["low"].values.astype(float)
-        v = work_df["volume"].values.astype(float) if "volume" in work_df.columns else np.ones(len(c))
+        c = pd.to_numeric(work_df["close"], errors="coerce").dropna().values.astype(float)
+        h = pd.to_numeric(work_df["high"], errors="coerce").dropna().values.astype(float)
+        low_arr = pd.to_numeric(work_df["low"], errors="coerce").dropna().values.astype(float)
+        v = pd.to_numeric(work_df["volume"], errors="coerce").dropna().values.astype(float) if "volume" in work_df.columns else np.ones(len(c))
 
         returns = np.diff(c) / np.where(c[:-1] > 0, c[:-1], 1)
         returns = np.where(np.isfinite(returns), returns, 0)
@@ -711,7 +711,7 @@ async def performance_overview(
 
         strategy_results.sort(key=lambda x: x["sharpe_ratio"], reverse=True)
 
-        c = df["close"].values.astype(float)
+        c = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float)
         bh_return = round((c[-1] - c[0]) / c[0], 4) if len(c) > 1 and c[0] > 0 else 0
         returns = np.diff(c) / np.where(c[:-1] > 0, c[:-1], 1)
         returns = np.where(np.isfinite(returns), returns, 0)
@@ -810,7 +810,7 @@ async def strategy_compare(request: Request, body: StrategyCompareRequest):
                 logger.debug("策略 %s 比较失败: %s", sname, e)
             return None, sname, None
 
-        pairs = await asyncio.gather(*[_compare_strategy(s) for s in body.strategies])
+        pairs = await asyncio.gather(*[_compare_strategy(s) for s in body.strategies], return_exceptions=True)
         for sd, sname, rets in pairs:
             if sd is not None:
                 strategy_results.append(sd)
@@ -997,7 +997,7 @@ async def compute_efficient_frontier(request: Request, body: EfficientFrontierRe
                 logger.debug("Return calc failed for %s: %s", sym, e)
                 return sym, None
 
-        pairs = await asyncio.gather(*[_fetch_returns(s) for s in body.symbols])
+        pairs = await asyncio.gather(*[_fetch_returns(s) for s in body.symbols], return_exceptions=True)
         for sym, rets in pairs:
             if rets is not None:
                 valid_symbols.append(sym)

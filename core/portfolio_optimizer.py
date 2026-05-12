@@ -179,7 +179,7 @@ class PortfolioOptimizer:
 
         symbols = list(returns.columns)
         n = len(symbols)
-        mean_ret = returns.mean().values.astype(float)
+        mean_ret = pd.to_numeric(returns.mean(), errors="coerce").fillna(0).values.astype(float)
         cov_mat = returns.cov().values.astype(float)
         if cov is not None:
             cov_mat = cov.values.astype(float) if hasattr(cov, "values") else np.asarray(cov, dtype=float)
@@ -310,7 +310,9 @@ class PortfolioOptimizer:
                 return w
             except np.linalg.LinAlgError:
                 logger.warning("Covariance matrix singular, using diagonal inversion")
-                diag_inv = 1.0 / np.diag(cov)
+                diag = np.diag(cov)
+                diag = np.where(diag > 1e-12, diag, 1e-12)
+                diag_inv = 1.0 / diag
                 w = diag_inv / diag_inv.sum()
         else:
             try:
@@ -320,7 +322,9 @@ class PortfolioOptimizer:
                 w = w / w.sum()
                 return w
             except np.linalg.LinAlgError:
-                diag_inv = 1.0 / np.diag(cov)
+                diag = np.diag(cov)
+                diag = np.where(diag > 1e-12, diag, 1e-12)
+                diag_inv = 1.0 / diag
                 w = diag_inv / diag_inv.sum()
         return w
 
@@ -350,7 +354,9 @@ class PortfolioOptimizer:
                     return np.ones(n) / n
                 return np.array(w, dtype=float)
             except np.linalg.LinAlgError:
-                ratios = (mean_ret - self._rf) / np.diag(cov)
+                diag = np.diag(cov)
+                diag = np.where(diag > 1e-12, diag, 1e-12)
+                ratios = (mean_ret - self._rf) / diag
                 w = np.maximum(ratios, 0)
                 total = w.sum()
                 if total > 0:
@@ -366,7 +372,9 @@ class PortfolioOptimizer:
                     return np.array(w / s, dtype=float)
                 return np.ones(n) / n
             except np.linalg.LinAlgError:
-                ratios = (mean_ret - self._rf) / np.diag(cov)
+                diag = np.diag(cov)
+                diag = np.where(diag > 1e-12, diag, 1e-12)
+                ratios = (mean_ret - self._rf) / diag
                 w = np.maximum(ratios, 0)
                 total = w.sum()
                 if total > 0:

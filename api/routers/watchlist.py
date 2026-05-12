@@ -9,9 +9,7 @@ from fastapi import APIRouter, Form, Path, Query, Request
 from api.routers.models import (
     AlertAddRequest,
     AlertRemoveRequest,
-    PriceAlertRequest,
     WatchlistAddRemoveRequest,
-    WatchlistAddRequest,
     WatchlistReorderRequest,
 )
 from api.utils import json_response as _json_response

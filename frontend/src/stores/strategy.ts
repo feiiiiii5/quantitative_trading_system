@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
 import { apiGet } from '@/api/client';
 import type { StrategyInfo, BacktestResult } from '@/types';
 
@@ -15,6 +16,39 @@ export function isBacktestResult(x: unknown): x is BacktestResult {
 }
 
 type CategorizedStrategies = Record<string, StrategyInfo[]>;
+
+const DEFAULT_STRATEGIES: StrategyInfo[] = [
+  { name: 'dual_ma', aliases: ['双均线'], description: 'Trend following strategy' },
+  { name: 'rsi_reversal', aliases: ['RSI反转'], description: 'Mean reversion strategy' },
+  { name: 'bollinger_breakout', aliases: ['布林突破'], description: 'Volatility breakout strategy' },
+  { name: 'macd_divergence', aliases: ['MACD背离'], description: 'Momentum divergence strategy' },
+  { name: 'turtle_trading', aliases: ['海龟交易'], description: 'Trend following with ATR' },
+];
+
+const DEFAULT_CATEGORIZED: CategorizedStrategies = {
+  '趋势跟踪': [
+    { name: 'dual_ma', aliases: ['双均线'], description: 'Trend following strategy' },
+    { name: 'turtle_trading', aliases: ['海龟交易'], description: 'Trend following with ATR' },
+  ],
+  '均值回归': [
+    { name: 'rsi_reversal', aliases: ['RSI反转'], description: 'Mean reversion strategy' },
+    { name: 'bollinger_breakout', aliases: ['布林突破'], description: 'Volatility breakout strategy' },
+  ],
+  '动量策略': [
+    { name: 'macd_divergence', aliases: ['MACD背离'], description: 'Momentum divergence strategy' },
+  ],
+};
+
+function inferCategory(name: string, description: string): string {
+  const text = `${name} ${description}`.toLowerCase();
+  if (text.includes('趋势') || text.includes('均线') || text.includes('ma') || text.includes('trend') || text.includes('adaptive') || text.includes('turtle')) return '趋势跟踪';
+  if (text.includes('均值') || text.includes('回归') || text.includes('rsi') || text.includes('reversion') || text.includes('bollinger') || text.includes('mean')) return '均值回归';
+  if (text.includes('动量') || text.includes('momentum') || text.includes('macd') || text.includes('kdj')) return '动量策略';
+  if (text.includes('量') || text.includes('obv') || text.includes('volume') || text.includes('pricevolume')) return '量价策略';
+  if (text.includes('形态') || text.includes('pattern')) return '形态策略';
+  if (text.includes('波动') || text.includes('volatility') || text.includes('squeeze')) return '波动率策略';
+  return '其他';
+}
 
 interface StrategyState {
   strategies: StrategyInfo[];
@@ -34,7 +68,7 @@ interface StrategyState {
 
 let runBacktestAbortController: AbortController | null = null;
 
-export const useStrategyStore = create<StrategyState>((set, get) => ({
+export const useStrategyStore = create<StrategyState>()(devtools((set, get) => ({
   strategies: [],
   categorizedStrategies: {},
   selectedStrategy: null,
@@ -45,33 +79,32 @@ export const useStrategyStore = create<StrategyState>((set, get) => ({
 
   fetchStrategies: async () => {
     try {
-      const data = await apiGet<Record<string, { name: string; type: string; version: string; param_space?: Record<string, unknown> }>>('/backtest/strategies');
-      if (data && typeof data === 'object' && !Array.isArray(data)) {
-        const list = Object.values(data).map(v => ({
-          name: v.name,
-          aliases: [] as string[],
-          description: `${v.type} v${v.version}`,
-        }));
-        set({ strategies: list });
-      } else if (Array.isArray(data)) {
-        set({ strategies: data });
+      const data = await apiGet<{ total: number; strategies: Array<{ name: string; aliases: string[]; description: string }> }>('/strategies/list');
+      if (data?.strategies && Array.isArray(data.strategies)) {
+        set({ strategies: data.strategies });
+      } else {
+        set({ strategies: DEFAULT_STRATEGIES });
       }
-    } catch { /* silent */ }
+    } catch {
+      set({ strategies: DEFAULT_STRATEGIES });
+    }
   },
 
   fetchCategorizedStrategies: async () => {
     try {
-      const data = await apiGet<{ strategies: Array<{ name: string; key: string; category: string; has_param_space: boolean; has_vectorized: boolean }> }>('/backtest/strategies/categorized');
+      const data = await apiGet<{ total: number; strategies: Array<{ name: string; aliases: string[]; description: string }> }>('/strategies/list');
       if (data?.strategies && Array.isArray(data.strategies)) {
         const grouped: CategorizedStrategies = {};
         for (const s of data.strategies) {
-          const cat = s.category ?? 'other';
+          const cat = inferCategory(s.name, s.description);
           if (!grouped[cat]) grouped[cat] = [];
-          grouped[cat].push({ name: s.name, aliases: [s.key], description: `${s.category} strategy` });
+          grouped[cat].push({ name: s.name, aliases: s.aliases, description: s.description });
         }
         set({ categorizedStrategies: grouped });
       }
-    } catch { /* silent */ }
+    } catch {
+      set({ categorizedStrategies: DEFAULT_CATEGORIZED });
+    }
   },
 
   selectStrategy: (name) => set({ selectedStrategy: name }),
@@ -92,7 +125,7 @@ export const useStrategyStore = create<StrategyState>((set, get) => ({
     };
 
     try {
-      const response = await fetch('/api/backtest/run/stream', {
+      const jobResponse = await fetch('/api/backtest/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -105,40 +138,78 @@ export const useStrategyStore = create<StrategyState>((set, get) => ({
         signal: ac.signal,
       });
 
-      if (!response.ok) {
-        throw new Error(`Backtest request failed: ${response.status} ${response.statusText}`);
+      if (!jobResponse.ok) {
+        throw new Error(`Backtest request failed: ${jobResponse.status} ${jobResponse.statusText}`);
       }
 
-      const reader = response.body?.getReader();
+      const jobData = await jobResponse.json();
+      const jobId = jobData.job_id;
+      if (!jobId) {
+        throw new Error('No job_id returned from backtest stream endpoint');
+      }
+
+      addLog(`Job created: ${jobId}`);
+
+      const sseResponse = await fetch(`/api/backtest/stream/${jobId}`, { signal: ac.signal });
+      if (!sseResponse.ok) {
+        throw new Error(`SSE connection failed: ${sseResponse.status}`);
+      }
+
+      const reader = sseResponse.body?.getReader();
       if (!reader) {
         throw new Error('Response body is not readable');
       }
 
-      const decoder = new TextDecoder();
-      let buffer = '';
+      try {
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (ac.signal.aborted) break;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (ac.signal.aborted) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
 
+            if (trimmed.startsWith('data:')) {
+              const payload = trimmed.slice(5).trim();
+              if (payload === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(payload);
+                if (parsed.type === 'log' && typeof parsed.message === 'string') {
+                  addLog(parsed.message);
+                } else if (parsed.type === 'progress' && typeof parsed.message === 'string') {
+                  addLog(parsed.message);
+                } else if (parsed.type === 'result' && parsed.data) {
+                  if (isBacktestResult(parsed.data)) set({ backtestResult: parsed.data });
+                } else if (parsed.type === 'error') {
+                  addLog(`[ERROR] ${parsed.message}`);
+                } else if (parsed.total_trades !== undefined) {
+                  if (isBacktestResult(parsed)) set({ backtestResult: parsed });
+                }
+              } catch {
+                addLog(payload);
+              }
+            } else {
+              addLog(trimmed);
+            }
+          }
+        }
+
+        if (buffer.trim()) {
+          const trimmed = buffer.trim();
           if (trimmed.startsWith('data:')) {
             const payload = trimmed.slice(5).trim();
-            if (payload === '[DONE]') continue;
-
             try {
               const parsed = JSON.parse(payload);
-              if (parsed.type === 'log' && typeof parsed.message === 'string') {
-                addLog(parsed.message);
-              } else if (parsed.type === 'result' && parsed.data) {
+              if (parsed.type === 'result' && parsed.data) {
                 if (isBacktestResult(parsed.data)) set({ backtestResult: parsed.data });
               } else if (parsed.total_trades !== undefined) {
                 if (isBacktestResult(parsed)) set({ backtestResult: parsed });
@@ -150,29 +221,12 @@ export const useStrategyStore = create<StrategyState>((set, get) => ({
             addLog(trimmed);
           }
         }
-      }
 
-      if (buffer.trim()) {
-        const trimmed = buffer.trim();
-        if (trimmed.startsWith('data:')) {
-          const payload = trimmed.slice(5).trim();
-          try {
-            const parsed = JSON.parse(payload);
-            if (parsed.type === 'result' && parsed.data) {
-              if (isBacktestResult(parsed.data)) set({ backtestResult: parsed.data });
-            } else if (parsed.total_trades !== undefined) {
-              if (isBacktestResult(parsed)) set({ backtestResult: parsed });
-            }
-          } catch {
-            addLog(payload);
-          }
-        } else {
-          addLog(trimmed);
+        if (!ac.signal.aborted) {
+          addLog(`[${new Date().toLocaleTimeString()}] Done.`);
         }
-      }
-
-      if (!ac.signal.aborted) {
-        addLog(`[${new Date().toLocaleTimeString()}] Done.`);
+      } finally {
+        reader.releaseLock();
       }
     } catch (e) {
       if (ac.signal.aborted) return;
@@ -189,10 +243,10 @@ export const useStrategyStore = create<StrategyState>((set, get) => ({
 
   fetchBacktestHistory: async () => {
     try {
-      const data = await apiGet<BacktestResult[]>('/backtest/result/history');
+      const data = await apiGet<BacktestResult[]>('/backtest/history');
       set({ backtestHistory: Array.isArray(data) ? data : [] });
     } catch { /* silent */ }
   },
 
   clearResult: () => set({ backtestResult: null, backtestLogs: [] }),
-}));
+}), { name: 'StrategyStore', enabled: import.meta.env.DEV }));

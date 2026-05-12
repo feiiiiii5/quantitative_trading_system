@@ -3,17 +3,14 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Query, Request, WebSocket, WebSocketDisconnect
 from starlette.responses import StreamingResponse
 
 from api.connection_manager import (
-    _MAX_SUBSCRIBE_SYMBOLS, _PNL_MAX_CONNECTIONS, _PNL_STALE_TIMEOUT,
-    _PORTFOLIO_CACHE_TTL, _PORTFOLIO_MAX_CONNECTIONS, _PORTFOLIO_PUSH_INTERVAL,
-    _REGIME_MAX_CONNECTIONS, _REGIME_STALE_TIMEOUT, _SIGNAL_MAX_CONNECTIONS,
-    _SIGNAL_STALE_TIMEOUT, _SSE_KEEPALIVE_INTERVAL, _SSE_MAX_SYMBOLS,
+    _MAX_SUBSCRIBE_SYMBOLS, _PNL_MAX_CONNECTIONS, _PORTFOLIO_MAX_CONNECTIONS, _REGIME_MAX_CONNECTIONS, _SIGNAL_MAX_CONNECTIONS,
+    _SSE_KEEPALIVE_INTERVAL, _SSE_MAX_SYMBOLS,
     _manager, _pnl_connections, _pnl_last_active, _pnl_lock,
     _portfolio_cache_timestamps, _portfolio_connections, _portfolio_lock,
     _portfolio_metrics_cache, _regime_connections, _regime_last_active,

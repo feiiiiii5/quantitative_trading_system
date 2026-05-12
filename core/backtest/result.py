@@ -95,6 +95,12 @@ class BacktestResult:
     optimization: dict = field(default_factory=dict)
     expectancy: float = 0.0
     payoff_ratio: float = 0.0
+    preprocessing_report: dict = field(default_factory=dict)
+    monthly_pnl_heatmap: dict = field(default_factory=dict)
+    drawdown_periods: list[dict] = field(default_factory=list)
+    rolling_sharpe_90d: list[float] = field(default_factory=list)
+    trade_distribution: dict = field(default_factory=dict)
+    benchmark_comparison: dict = field(default_factory=dict)
 
     def to_dict(self, max_equity: int = 500, max_trades: int = 200, max_kline: int = 500) -> dict:
         """统一的BacktestResult序列化方法，避免各API端点手动构建dict导致属性名错误"""
@@ -138,6 +144,12 @@ class BacktestResult:
             "drawdown_curve": self.drawdown_curve[-max_equity:] if self.drawdown_curve else [],
             "trades": self.trades[-max_trades:] if self.trades else [],
             "kline_with_signals": self.kline_with_signals[-max_kline:] if self.kline_with_signals else [],
+            "preprocessing_report": self.preprocessing_report,
+            "monthly_pnl_heatmap": self.monthly_pnl_heatmap,
+            "drawdown_periods": self.drawdown_periods,
+            "rolling_sharpe_90d": self.rolling_sharpe_90d[-100:] if self.rolling_sharpe_90d else [],
+            "trade_distribution": self.trade_distribution,
+            "benchmark_comparison": self.benchmark_comparison,
         }
 
     def summary_dict(self) -> dict:
