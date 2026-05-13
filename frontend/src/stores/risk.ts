@@ -14,6 +14,7 @@ interface RiskState {
   alerts: RiskAlert[];
   killSwitchActive: boolean;
   metrics: RiskMetrics | null;
+  error: string | null;
   setRiskLevel: (level: RiskLevel) => void;
   setMetrics: (m: RiskMetrics) => void;
   addAlert: (alert: RiskAlert) => void;
@@ -21,6 +22,7 @@ interface RiskState {
   triggerKillSwitch: () => void;
   resetKillSwitch: () => void;
   fetchMetrics: () => Promise<void>;
+  clearError: () => void;
 }
 
 export const useRiskStore = create<RiskState>()(devtools((set) => ({
@@ -33,6 +35,7 @@ export const useRiskStore = create<RiskState>()(devtools((set) => ({
   alerts: [],
   killSwitchActive: false,
   metrics: null,
+  error: null,
 
   setRiskLevel: (level) => set({ riskLevel: level }),
   setMetrics: (m) => set({
@@ -50,6 +53,7 @@ export const useRiskStore = create<RiskState>()(devtools((set) => ({
   resetKillSwitch: () => set({ killSwitchActive: false }),
   fetchMetrics: async () => {
     try {
+      set({ error: null });
       const raw = await dedup('risk:metrics', () => apiGet<Record<string, unknown>>('/portfolio/risk/dashboard'));
       if (raw) {
         const rm = (raw.risk_metrics ?? {}) as Record<string, number>;
@@ -79,6 +83,7 @@ export const useRiskStore = create<RiskState>()(devtools((set) => ({
           beta: data.beta,
         });
       }
-    } catch { /* fallback handled by page */ }
+    } catch (e) { set({ error: (e as Error).message }); }
   },
+  clearError: () => set({ error: null }),
 }), { name: 'RiskStore', enabled: import.meta.env.DEV }));

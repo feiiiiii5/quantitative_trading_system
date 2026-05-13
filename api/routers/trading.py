@@ -75,7 +75,9 @@ async def trading_buy(
                 pos_dict[sym] = {"market_value": mv}
 
         order_value = shares * (market_price if market_price > 0 else price)
-        if total_assets > 0 and (order_value / total_assets) > MAX_SINGLE_POSITION_PCT:
+        if total_assets <= 0:
+            return _json_response(False, error="账户资产信息异常，无法执行交易")
+        if (order_value / total_assets) > MAX_SINGLE_POSITION_PCT:
             return _json_response(False, error=f"单笔仓位超过{MAX_SINGLE_POSITION_PCT*100:.0f}%限制")
 
         risk_order = Order(
@@ -87,8 +89,8 @@ async def trading_buy(
             price=market_price if market_price > 0 else price,
         )
         risk_ctx = {
-            "total_assets": total_assets if total_assets > 0 else order_value * 10,
-            "cash": available_cash if available_cash > 0 else order_value * 5,
+            "total_assets": total_assets,
+            "cash": available_cash,
             "current_positions": pos_dict,
         }
         risk_manager = getattr(request.app.state, "risk_manager", None)
@@ -199,6 +201,9 @@ async def trading_sell(
 
         sell_order_value = sell_shares * (market_price if market_price > 0 else price)
 
+        if total_assets <= 0:
+            return _json_response(False, error="账户资产信息异常，无法执行交易")
+
         risk_order = Order(
             order_id=f"pre_trade_{symbol}_sell_{int(time.time())}",
             symbol=symbol,
@@ -208,13 +213,13 @@ async def trading_sell(
             price=market_price if market_price > 0 else price,
         )
         risk_ctx = {
-            "total_assets": total_assets if total_assets > 0 else sell_order_value * 10,
-            "cash": sell_available_cash if sell_available_cash > 0 else sell_order_value * 5,
+            "total_assets": total_assets,
+            "cash": sell_available_cash,
             "current_positions": pos_dict,
         }
         risk_manager = getattr(request.app.state, "risk_manager", None)
         if risk_manager is None:
-            risk_manager = EnhancedRiskManager(initial_capital=total_assets if total_assets > 0 else 1000000)
+            risk_manager = EnhancedRiskManager(initial_capital=total_assets)
             request.app.state.risk_manager = risk_manager
 
         risk_ok, risk_reason = risk_manager.check_order(risk_order, risk_ctx)

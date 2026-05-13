@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { createChart, CandlestickSeries, LineSeries, HistogramSeries, type IChartApi, type CandlestickData, type HistogramData, type Time } from 'lightweight-charts';
+import { CandlestickSeries, LineSeries, HistogramSeries, type IChartApi, type CandlestickData, type HistogramData, type Time } from 'lightweight-charts';
+import { createQuantChart, CANDLE_STYLE } from '@/utils/chartFactory';
 import { useStockRealtime, useStockHistory, useStockIndicators } from '@/hooks/queries/useStockQueries';
 import { useApiGet } from '@/hooks/useApi';
 import { useChipDistribution, useStockNews, useNewsSentiment, useGarchVolatility, useHmmRegime, useRollingRisk, useSeasonality } from '@/hooks/queries/useStockDetailQueries';
 import { useCanvas } from '@/hooks/useCanvas';
 import { useSSEQuote } from '@/hooks/useSSEQuote';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { WaterfallChart } from '@/components/charts/WaterfallChart';
 import { formatPrice, formatPercent, formatVolume, formatAmount } from '@/utils/format';
 import type { StockQuote } from '@/types';
 
@@ -268,6 +270,19 @@ const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) 
 
   const rt = flowData.realtime;
   const retailNet = -(rt.medium_net + rt.small_net);
+
+  const waterfallItems = useMemo(() => {
+    if (!flowData) return [];
+    const r = flowData.realtime;
+    return [
+      { label: '超大单', value: r.super_large_net ?? 0 },
+      { label: '大单', value: r.large_net ?? 0 },
+      { label: '中单', value: r.medium_net ?? 0 },
+      { label: '小单', value: r.small_net ?? 0 },
+      { label: '净流入', value: r.super_large_net + r.large_net + r.medium_net + r.small_net, isTotal: true },
+    ];
+  }, [flowData]);
+
   const flowCategories = [
     { label: '超大单', value: rt.super_large_net },
     { label: '大单', value: rt.large_net },
@@ -281,6 +296,8 @@ const MoneyFlowTab = memo(function MoneyFlowTab({ symbol }: { symbol: string }) 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--s4)' }}>
       <canvas ref={chartRef} style={{ width: '100%', height: '260px', display: 'block' }} />
+
+      {waterfallItems.length > 0 && <WaterfallChart items={waterfallItems} height={240} />}
 
       <div style={{ display: 'flex', gap: 'var(--s4)', flexWrap: 'wrap' }}>
         <div style={{ flex: '1 1 140px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
@@ -1222,31 +1239,16 @@ const KlineChart = memo(function KlineChart({ symbol, period }: { symbol: string
 
   useEffect(() => {
     if (!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
+    const chart = createQuantChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 480,
-      layout: {
-        background: { color: 'transparent' as const },
-        textColor: 'rgba(255,255,255,0.35)',
-      },
-      grid: {
-        vertLines: { color: 'rgba(255,255,255,0.06)' },
-        horzLines: { color: 'rgba(255,255,255,0.06)' },
-      },
-      crosshair: { mode: 0 },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: periodConfig.period === '1min' },
+      layout: { textColor: 'rgba(255,255,255,0.35)' },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.06)' }, horzLines: { color: 'rgba(255,255,255,0.06)' } },
+      timeScale: { timeVisible: periodConfig.period === '1min' },
     });
     chartRef.current = chart;
 
-    const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#FF1744',
-      downColor: '#00C853',
-      borderUpColor: '#FF1744',
-      borderDownColor: '#00C853',
-      wickUpColor: '#FF1744',
-      wickDownColor: '#00C853',
-    });
+    const candleSeries = chart.addSeries(CandlestickSeries, CANDLE_STYLE);
     candleSeriesRef.current = candleSeries;
 
     const volumeSeries = chart.addSeries(HistogramSeries, {
@@ -1345,13 +1347,10 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
 
     if (macdChartRef.current) { macdChartRef.current.remove(); macdChartRef.current = null; }
 
-    const chart = createChart(macdContainerRef.current, {
+    const chart = createQuantChart(macdContainerRef.current, {
       width: macdContainerRef.current.clientWidth,
       height: 140,
-      layout: { background: { color: 'transparent' as const }, textColor: 'rgba(255,255,255,0.30)' },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: false },
+      timeScale: { timeVisible: false },
     });
     macdChartRef.current = chart;
 
@@ -1402,13 +1401,10 @@ const IndicatorPanel = memo(function IndicatorPanel({ symbol }: { symbol: string
 
     if (rsiChartRef.current) { rsiChartRef.current.remove(); rsiChartRef.current = null; }
 
-    const chart = createChart(rsiContainerRef.current, {
+    const chart = createQuantChart(rsiContainerRef.current, {
       width: rsiContainerRef.current.clientWidth,
       height: 120,
-      layout: { background: { color: 'transparent' as const }, textColor: 'rgba(255,255,255,0.30)' },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: false },
+      timeScale: { timeVisible: false },
     });
     rsiChartRef.current = chart;
 

@@ -2,7 +2,8 @@ import { useState, useCallback, useEffect, memo } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Topbar } from '@/components/layout/Topbar';
-import { SearchModal } from '@/components/ui/SearchModal';
+import { CommandPalette } from '@/components/CommandPalette';
+import { KeyboardShortcuts } from '@/components/KeyboardShortcuts';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { ToastContainer } from '@/components/ui/ToastContainer';
 import { useHotkeys } from '@/hooks/useHotkeys';
@@ -26,17 +27,17 @@ function LayoutHotkeys({ onSearchOpen }: { onSearchOpen: () => void }) {
 }
 
 export const AppLayout = memo(function AppLayout() {
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [cmdOpen, setCmdOpen] = useState(false);
 
-  const onSearchOpen = useCallback(() => setSearchOpen(true), []);
-  const onSearchClose = useCallback(() => setSearchOpen(false), []);
+  const onCmdOpen = useCallback(() => setCmdOpen(true), []);
+  const onCmdClose = useCallback(() => setCmdOpen(false), []);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSearchOpen(false);
+      if (e.key === 'Escape') setCmdOpen(false);
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
-        setSearchOpen((v) => !v);
+        setCmdOpen((v) => !v);
       }
     };
     window.addEventListener('keydown', handler);
@@ -107,7 +108,7 @@ export const AppLayout = memo(function AppLayout() {
           zIndex: 1,
         }}
       >
-        <Topbar onSearchOpen={onSearchOpen} />
+        <Topbar onSearchOpen={onCmdOpen} />
         <main
           style={{
             flex: 1,
@@ -121,8 +122,9 @@ export const AppLayout = memo(function AppLayout() {
       <ToastContainer />
         </main>
       </div>
-      <SearchModal open={searchOpen} onClose={onSearchClose} />
-      <LayoutHotkeys onSearchOpen={onSearchOpen} />
+      <CommandPalette open={cmdOpen} onClose={onCmdClose} />
+      <KeyboardShortcuts />
+      <LayoutHotkeys onSearchOpen={onCmdOpen} />
     </div>
   );
 });

@@ -357,6 +357,7 @@ def walk_forward_analysis(
                 })
             except Exception as e:
                 logger.debug("WFA window failed: %s", e)
+            del is_df, oos_df
         if not results:
             return {"error": "所有窗口回测失败"}
         is_sharpes = [r["is_sharpe"] for r in results]
@@ -428,6 +429,7 @@ def walk_forward_analysis(
             })
         except Exception as e:
             logger.debug("WFA optimized window failed: %s", e)
+        del is_df, oos_df
 
     if not results:
         return {"error": "所有窗口回测失败"}

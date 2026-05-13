@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, memo, type CSSProperties } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { DraggableWatchlist } from '@/components/DraggableWatchlist';
 
 interface NavItem {
   path: string;
@@ -237,6 +238,21 @@ export const Sidebar = memo(function Sidebar() {
             </div>
           );
         })}
+      </div>
+
+      <div
+        style={{
+          opacity: expanded ? 1 : 0,
+          maxHeight: expanded ? 400 : 0,
+          overflow: 'hidden',
+          transition: 'opacity var(--dur-base) var(--ease-apple), max-height var(--dur-base) var(--ease-apple)',
+          borderTop: '1px solid var(--separator)',
+        }}
+      >
+        <div style={{ padding: '10px 20px 6px', fontSize: 11, fontWeight: 600, color: 'var(--label-tertiary)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+          自选股
+        </div>
+        <DraggableWatchlist />
       </div>
 
       <div

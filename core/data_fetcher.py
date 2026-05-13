@@ -18,7 +18,7 @@ import aiohttp
 import numpy as np
 import pandas as pd
 
-from core.database import SQLiteStore, ThreadSafeLRU, get_db
+from core.database import SQLiteStore, OptimizedTTLCache, ThreadSafeLRU, get_db
 from core.market_detector import MarketDetector
 
 logger = logging.getLogger(__name__)
@@ -172,9 +172,9 @@ US_INDICES = {
     ".INX": "标普500",
 }
 
-_realtime_cache = ThreadSafeLRU(maxsize=50000, ttl=8)
-_history_cache = ThreadSafeLRU(maxsize=30000, ttl=1800)
-_indicator_cache = ThreadSafeLRU(maxsize=6000, ttl=900)
+_realtime_cache = OptimizedTTLCache(maxsize=5000, ttl=8, cleanup_interval=60)
+_history_cache = OptimizedTTLCache(maxsize=3000, ttl=1800, cleanup_interval=600)
+_indicator_cache = OptimizedTTLCache(maxsize=2000, ttl=900, cleanup_interval=300)
 _financial_cache = ThreadSafeLRU(maxsize=3000, ttl=10800)
 _northbound_cache = ThreadSafeLRU(maxsize=1000, ttl=180)
 _market_overview_cache = ThreadSafeLRU(maxsize=500, ttl=60)
@@ -194,8 +194,15 @@ def _set_hot_symbols(symbols: list[str]) -> None:
         _hot_symbols_cache = list(symbols)
 
 _inflight_requests: dict[str, asyncio.Future] = {}
-_inflight_lock = asyncio.Lock()
+_inflight_lock: asyncio.Lock | None = None
 _INFLIGHT_MAX = 500
+
+
+def _get_inflight_lock() -> asyncio.Lock:
+    global _inflight_lock
+    if _inflight_lock is None:
+        _inflight_lock = asyncio.Lock()
+    return _inflight_lock
 
 
 class RequestCoalescer:
@@ -1141,7 +1148,8 @@ class CircuitBreaker:
         func_name = getattr(func, '__name__', 'source')
         if not await self._acquire_permission(func_name):
             raise CircuitBreakerError(f"Circuit breaker OPEN for {func_name}")
-        is_half_open = self.state == "HALF_OPEN"
+        async with self._lock:
+            is_half_open = self.state == "HALF_OPEN"
         try:
             if is_half_open:
                 async with self._half_open_sem:
@@ -1410,15 +1418,13 @@ class SmartDataFetcher:
             return cached
 
         inflight_key = f"rt:{cache_key}"
-        should_fetch_direct = False
-        async with _inflight_lock:
+        fut = None
+        async with _get_inflight_lock():
             if inflight_key in _inflight_requests:
                 existing_fut = _inflight_requests[inflight_key]
             else:
                 existing_fut = None
-            if existing_fut is None and len(_inflight_requests) >= _INFLIGHT_MAX:
-                should_fetch_direct = True
-            elif existing_fut is None:
+            if existing_fut is None:
                 loop = asyncio.get_running_loop()
                 fut = loop.create_future()
                 _inflight_requests[inflight_key] = fut
@@ -1426,27 +1432,22 @@ class SmartDataFetcher:
         if existing_fut is not None:
             return await existing_fut
 
-        if should_fetch_direct:
-            result = await self._fetch_realtime_from_sources(symbol, market, cache_key)
-            if result and validate_realtime_data(result, symbol):
-                _realtime_cache.set(cache_key, result)
-            return result
-
         try:
             result = await self._fetch_realtime_from_sources(symbol, market, cache_key)
             if result and validate_realtime_data(result, symbol):
                 _realtime_cache.set(cache_key, result)
-            if not fut.done():
+            if fut is not None and not fut.done():
                 fut.set_result(result)
             return result
         except Exception as e:
             logger.debug("Realtime fetch failed for %s", symbol, exc_info=True)
-            if not fut.done():
+            if fut is not None and not fut.done():
                 fut.set_exception(e)
             return None
         finally:
-            async with _inflight_lock:
-                _inflight_requests.pop(inflight_key, None)
+            if fut is not None:
+                async with _get_inflight_lock():
+                    _inflight_requests.pop(inflight_key, None)
 
     async def _fetch_realtime_from_sources(self, symbol: str, market: str, cache_key: str) -> dict | None:
         ranked = self._health.rank_sources(["eastmoney", "tencent", "sina"], "realtime")
@@ -1547,7 +1548,7 @@ class SmartDataFetcher:
 
         inflight_key = f"hist:{cache_key}"
         should_fetch_direct = False
-        async with _inflight_lock:
+        async with _get_inflight_lock():
             if inflight_key in _inflight_requests:
                 existing_fut = _inflight_requests[inflight_key]
             else:
@@ -1595,14 +1596,17 @@ class SmartDataFetcher:
                 fut.set_exception(e)
             return pd.DataFrame()
         finally:
-            async with _inflight_lock:
+            async with _get_inflight_lock():
                 _inflight_requests.pop(inflight_key, None)
 
     async def get_history_batch(self, symbols: list[str], period: str = "1y",
                                 kline_type: str = "daily", adjust: str = "qfq",
-                                max_concurrent: int = 16) -> dict[str, pd.DataFrame]:
+                                max_concurrent: int | None = None) -> dict[str, pd.DataFrame]:
         if not symbols:
             return {}
+        if max_concurrent is None:
+            import os
+            max_concurrent = min(32, (os.cpu_count() or 4) * 4)
         sem = asyncio.Semaphore(max_concurrent)
 
         async def _fetch_one(sym):

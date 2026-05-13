@@ -25,20 +25,6 @@ const DEFAULT_STRATEGIES: StrategyInfo[] = [
   { name: 'turtle_trading', aliases: ['海龟交易'], description: 'Trend following with ATR' },
 ];
 
-const DEFAULT_CATEGORIZED: CategorizedStrategies = {
-  '趋势跟踪': [
-    { name: 'dual_ma', aliases: ['双均线'], description: 'Trend following strategy' },
-    { name: 'turtle_trading', aliases: ['海龟交易'], description: 'Trend following with ATR' },
-  ],
-  '均值回归': [
-    { name: 'rsi_reversal', aliases: ['RSI反转'], description: 'Mean reversion strategy' },
-    { name: 'bollinger_breakout', aliases: ['布林突破'], description: 'Volatility breakout strategy' },
-  ],
-  '动量策略': [
-    { name: 'macd_divergence', aliases: ['MACD背离'], description: 'Momentum divergence strategy' },
-  ],
-};
-
 function inferCategory(name: string, description: string): string {
   const text = `${name} ${description}`.toLowerCase();
   if (text.includes('趋势') || text.includes('均线') || text.includes('ma') || text.includes('trend') || text.includes('adaptive') || text.includes('turtle')) return '趋势跟踪';
@@ -48,6 +34,22 @@ function inferCategory(name: string, description: string): string {
   if (text.includes('形态') || text.includes('pattern')) return '形态策略';
   if (text.includes('波动') || text.includes('volatility') || text.includes('squeeze')) return '波动率策略';
   return '其他';
+}
+
+const DEFAULT_CATEGORIZED: CategorizedStrategies = DEFAULT_STRATEGIES.reduce<CategorizedStrategies>((acc, s) => {
+  const cat = inferCategory(s.name, s.description);
+  if (!acc[cat]) acc[cat] = [];
+  acc[cat].push(s);
+  return acc;
+}, {});
+
+function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
+  if (init.signal) {
+    init.signal.addEventListener('abort', () => controller.abort());
+  }
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(id));
 }
 
 interface StrategyState {
@@ -125,7 +127,7 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
     };
 
     try {
-      const jobResponse = await fetch('/api/backtest/stream', {
+      const jobResponse = await fetchWithTimeout('/api/backtest/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -136,7 +138,7 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
           initial_capital: params.initial_capital,
         }),
         signal: ac.signal,
-      });
+      }, 30_000);
 
       if (!jobResponse.ok) {
         throw new Error(`Backtest request failed: ${jobResponse.status} ${jobResponse.statusText}`);
@@ -150,7 +152,7 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
 
       addLog(`Job created: ${jobId}`);
 
-      const sseResponse = await fetch(`/api/backtest/stream/${jobId}`, { signal: ac.signal });
+      const sseResponse = await fetchWithTimeout(`/api/backtest/stream/${jobId}`, { signal: ac.signal }, 60_000);
       if (!sseResponse.ok) {
         throw new Error(`SSE connection failed: ${sseResponse.status}`);
       }
@@ -226,7 +228,8 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
           addLog(`[${new Date().toLocaleTimeString()}] Done.`);
         }
       } finally {
-        try { reader.releaseLock(); } catch { /* already released */ }
+        try { reader.cancel(); } catch {}
+        try { reader.releaseLock(); } catch {}
       }
     } catch (e) {
       if (ac.signal.aborted) return;
@@ -245,7 +248,7 @@ export const useStrategyStore = create<StrategyState>()(devtools((set, get) => (
     try {
       const data = await apiGet<BacktestResult[]>('/backtest/history');
       set({ backtestHistory: Array.isArray(data) ? data : [] });
-    } catch { /* silent */ }
+    } catch {}
   },
 
   clearResult: () => set({ backtestResult: null, backtestLogs: [] }),

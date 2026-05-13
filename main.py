@@ -36,7 +36,7 @@ from api.auth import APIAuthMiddleware
 from api.backtest_routes import backtest_router
 from api.duckdb_routes import duckdb_router
 from api.feature_routes import feature_router
-from api.middleware import RequestValidationMiddleware
+from api.middleware import RequestBodyLimitMiddleware, RequestDedupMiddleware, RequestValidationMiddleware, StructuredTraceMiddleware, GracefulShutdownMiddleware, AdaptiveThrottleMiddleware, correlation_id, span_buffer, trace_id_var, set_draining, is_draining, inflight_count, get_drain_event, bump_lifespan_gen
 from api.perf_routes import perf_router
 from api.routes import _manager, push_portfolio_metrics, push_realtime_data, router
 from core.async_utils import FastJSONResponse
@@ -184,7 +184,7 @@ async def lifespan(app: FastAPI):
     app.state.composite_strategy = CompositeStrategy()
     app.state.backtest_engine = BacktestEngine()
     app.state.trading = SimulatedTrading()
-    app.state.start_time = time.time()
+    app.state.start_time = time.monotonic()
 
     from api.websocket_manager import OptimizedWSManager
     app.state.ws_manager = OptimizedWSManager()
@@ -314,10 +314,30 @@ async def lifespan(app: FastAPI):
     os.makedirs(BASE_DIR / "data", exist_ok=True)
     os.makedirs(BASE_DIR / "static", exist_ok=True)
 
+    set_draining(False)
+    bump_lifespan_gen()
+    app.state.draining = False
     logger.info(f"QuantCore 启动完成 -> http://localhost:{PORT}")
     yield
 
     logger.info("QuantCore 正在关闭...")
+
+    set_draining(True)
+    app.state.draining = True
+    logger.info("Drain mode activated — rejecting new requests, waiting for %d in-flight", inflight_count())
+
+    try:
+        drain_evt = get_drain_event()
+        if inflight_count() > 0:
+            try:
+                await asyncio.wait_for(drain_evt.wait(), timeout=30.0)
+                logger.info("All in-flight requests completed")
+            except asyncio.TimeoutError:
+                logger.warning("Drain timeout — %d requests still in-flight", inflight_count())
+        else:
+            logger.info("No in-flight requests — proceeding with shutdown")
+    except Exception as e:
+        logger.warning("Drain phase error: %s", e)
 
     try:
         for task in app.state._bg_tasks:
@@ -587,6 +607,10 @@ async def value_error_handler(request: Request, exc: ValueError):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    from api.errors import AppError
+    if isinstance(exc, AppError):
+        resp = exc.to_response()
+        return JSONResponse(status_code=exc.http_status, content=resp)
     logger.error(f"Unhandled exception: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
     return JSONResponse(
         status_code=500,
@@ -654,6 +678,11 @@ class _SecurityHeadersMiddleware:
         await self._app(scope, receive, _send)
 
 
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=10_485_760)
+app.add_middleware(RequestDedupMiddleware)
+app.add_middleware(StructuredTraceMiddleware)
+app.add_middleware(GracefulShutdownMiddleware)
+app.add_middleware(AdaptiveThrottleMiddleware, base_rps=100)
 app.add_middleware(_SecurityHeadersMiddleware)
 app.add_middleware(_RequestTimingMiddleware)
 app.add_middleware(RequestValidationMiddleware)
@@ -763,16 +792,18 @@ async def health_check():
     except Exception:
         pass
 
-    uptime = time.time() - getattr(app.state, "start_time", time.time())
+    uptime = time.monotonic() - getattr(app.state, "start_time", time.monotonic())
 
     all_ok = db_ok and trading_ok and fetcher_ok
+    overall = "healthy" if all_ok else "degraded"
     return {
-        "status": "healthy" if all_ok else "degraded",
+        "status": overall,
         "checks": checks,
         "data_sources": data_sources,
         "cache_info": cache_info,
         "uptime_seconds": round(uptime, 1),
         "version": "3.0.0",
+        "request_id": correlation_id.get(),
     }
 
 
@@ -910,7 +941,7 @@ async def health_check(request: Request):
     except Exception as e:
         checks["config"] = {"status": "warning", "message": str(e)}
 
-    uptime = time.time() - getattr(request.app.state, "start_time", time.time())
+    uptime = time.monotonic() - getattr(request.app.state, "start_time", time.monotonic())
     request_count = getattr(request.app.state, "_request_count", 0)
     total_response_time = getattr(request.app.state, "_total_response_time", 0.0)
     all_ok = all(v.get("status") == "ok" for v in checks.values())
@@ -966,7 +997,7 @@ async def system_stats(request: Request):
             "total_response_time_ms": getattr(request.app.state, "_total_response_time", 0),
             "latency_buckets": getattr(request.app.state, "_latency_buckets", {}),
             "error_count": getattr(request.app.state, "_error_count", 0),
-            "uptime_seconds": round(time.time() - getattr(request.app.state, "start_time", time.time())),
+            "uptime_seconds": round(time.monotonic() - getattr(request.app.state, "start_time", time.monotonic())),
         },
     }
 

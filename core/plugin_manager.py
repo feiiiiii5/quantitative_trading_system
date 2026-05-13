@@ -71,7 +71,7 @@ class PluginManager:
             )
 
     def discover_plugins(self) -> list[str]:
-        now = time.time()
+        now = time.monotonic()
         if now - self._last_discovery < self._cache_ttl and self._discovery_cache:
             return list(self._discovery_cache.keys())
 

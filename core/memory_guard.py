@@ -90,7 +90,7 @@ def reclaim_memory(force: bool = False) -> bool:
     global _LAST_GC_TIME
 
     with _LOCK:
-        now = time.time()
+        now = time.monotonic()
         if not force and (now - _LAST_GC_TIME) < _GC_COOLDOWN:
             return False
 
@@ -104,7 +104,7 @@ def reclaim_memory(force: bool = False) -> bool:
 
         gc.collect()
 
-        _LAST_GC_TIME = time.time()
+        _LAST_GC_TIME = time.monotonic()
 
         after = get_memory_usage().get("rss_mb", 0)
         freed = before - after

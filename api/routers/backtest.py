@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import threading
@@ -16,10 +17,13 @@ from api.routers.models import BacktestOptimizeRequest, MultiSymbolBacktestReque
 from api.utils import json_response as _json_response
 from api.utils import rate_limiter, safe_error
 from core.data_fetcher import SmartDataFetcher
+from core.database import OptimizedTTLCache
 from core.strategies import STRATEGY_REGISTRY
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_bt_result_cache = OptimizedTTLCache(maxsize=200, ttl=600, cleanup_interval=120)
 
 
 @router.get("/backtest/attribution")
@@ -392,58 +396,70 @@ _job_lock = threading.Lock()
 
 class BacktestJobManager:
     _state: dict[str, dict] = {}
+    _lock = threading.Lock()
 
     @classmethod
     def submit(cls, job_id: str, progress: float, phase: str, message: str, result: dict | None = None, error: str | None = None) -> None:
-        cls._state[job_id] = {
-            "progress": progress,
-            "phase": phase,
-            "message": message,
-            "result": result,
-            "error": error,
-            "updated_at": time.time(),
-        }
+        with cls._lock:
+            cls._state[job_id] = {
+                "progress": progress,
+                "phase": phase,
+                "message": message,
+                "result": result,
+                "error": error,
+                "updated_at": time.time(),
+            }
 
     @classmethod
     def get(cls, job_id: str) -> dict | None:
-        return cls._state.get(job_id)
+        with cls._lock:
+            return cls._state.get(job_id)
 
     @classmethod
     def poll(cls, job_id: str) -> dict:
-        job = cls._state.get(job_id)
-        if not job:
-            return {"status": "not_found"}
-        if job.get("result") is not None or job.get("error") is not None:
-            return {"status": "completed", **job}
-        return {"status": "running", **job}
+        with cls._lock:
+            job = cls._state.get(job_id)
+            if not job:
+                return {"status": "not_found"}
+            if job.get("result") is not None or job.get("error") is not None:
+                return {"status": "completed", **job}
+            return {"status": "running", **job}
 
     @classmethod
     def set_result(cls, job_id: str, result: dict) -> None:
-        if job_id in cls._state:
-            cls._state[job_id]["result"] = result
-            cls._state[job_id]["progress"] = 1.0
-            cls._state[job_id]["phase"] = "completed"
+        with cls._lock:
+            if job_id in cls._state:
+                cls._state[job_id]["result"] = result
+                cls._state[job_id]["progress"] = 1.0
+                cls._state[job_id]["phase"] = "completed"
 
     @classmethod
     def set_error(cls, job_id: str, error: str) -> None:
-        if job_id in cls._state:
-            cls._state[job_id]["error"] = error
-            cls._state[job_id]["phase"] = "error"
+        with cls._lock:
+            if job_id in cls._state:
+                cls._state[job_id]["error"] = error
+                cls._state[job_id]["phase"] = "error"
 
     @classmethod
     def cleanup(cls, job_id: str) -> None:
-        cls._state.pop(job_id, None)
+        with cls._lock:
+            cls._state.pop(job_id, None)
 
 
 @router.post("/backtest/stream")
 async def submit_backtest_stream(request: Request, body: BacktestAdvancedRequest):
+    cache_key_parts = f"{body.symbol}:{body.strategy_name or body.strategy_type}:{body.start_date}:{body.end_date}:{body.initial_capital}:{body.leverage}"
+    cache_key = hashlib.sha256(cache_key_parts.encode()).hexdigest()[:16]
+    cached = _bt_result_cache.get(cache_key)
+    if cached is not None:
+        return {"job_id": cached["job_id"], "status": "completed", "cached": True, "result": cached["result"]}
     job_id = str(uuid.uuid4())[:8]
     BacktestJobManager.submit(job_id, 0.0, "queued", f"任务 {job_id} 已加入队列，等待执行...")
-    asyncio.create_task(_run_backtest_stream(job_id, request.app, body))
+    asyncio.create_task(_run_backtest_stream(job_id, request.app, body, cache_key))
     return {"job_id": job_id, "status": "queued"}
 
 
-async def _run_backtest_stream(job_id: str, app, body: BacktestAdvancedRequest) -> None:
+async def _run_backtest_stream(job_id: str, app, body: BacktestAdvancedRequest, cache_key: str = "") -> None:
     try:
         BacktestJobManager.submit(job_id, 0.05, "data_fetch", "正在获取历史数据...")
         fetcher: SmartDataFetcher = app.state.fetcher
@@ -510,6 +526,8 @@ async def _run_backtest_stream(job_id: str, app, body: BacktestAdvancedRequest) 
             result["id"] = db.save_backtest_result(effective_strategy, body.symbol, body.start_date, body.end_date, {}, result)
 
         BacktestJobManager.set_result(job_id, result)
+        if cache_key:
+            _bt_result_cache.set(cache_key, {"job_id": job_id, "result": result})
 
     except Exception as e:
         logger.error("Backtest stream job %s failed: %s", job_id, e, exc_info=True)
@@ -519,9 +537,9 @@ async def _run_backtest_stream(job_id: str, app, body: BacktestAdvancedRequest) 
 @router.get("/backtest/stream/{job_id}")
 async def stream_backtest_result(job_id: str):
     async def event_generator():
-        start_time = time.time()
+        start_time = time.monotonic()
         last_progress = -1.0
-        while time.time() - start_time < 300:
+        while time.monotonic() - start_time < 300:
             job = BacktestJobManager.poll(job_id)
             status = job.get("status", "not_found")
 

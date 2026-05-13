@@ -1,9 +1,9 @@
 import asyncio
-import json
 import logging
 import time
 from typing import Dict, Set
 
+import orjson
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ class OptimizedWSManager:
             await ws.accept()
             self._connections.add(ws)
             self._ws_channels[ws] = set()
-            self._last_active[ws] = time.time()
+            self._last_active[ws] = time.monotonic()
             if channels:
                 for ch in channels:
                     self._channels.setdefault(ch, set()).add(ws)
@@ -52,14 +52,14 @@ class OptimizedWSManager:
 
     async def subscribe(self, ws: WebSocket, channels: list[str]):
         async with self._lock:
-            self._last_active[ws] = time.time()
+            self._last_active[ws] = time.monotonic()
             for ch in channels:
                 self._channels.setdefault(ch, set()).add(ws)
                 self._ws_channels.setdefault(ws, set()).add(ch)
 
     async def unsubscribe(self, ws: WebSocket, channels: list[str]):
         async with self._lock:
-            self._last_active[ws] = time.time()
+            self._last_active[ws] = time.monotonic()
             for ch in channels:
                 subs = self._channels.get(ch)
                 if subs:
@@ -73,7 +73,7 @@ class OptimizedWSManager:
 
     async def touch(self, ws: WebSocket):
         async with self._lock:
-            self._last_active[ws] = time.time()
+            self._last_active[ws] = time.monotonic()
 
     async def broadcast_to_channel(self, channel: str, data: dict):
         subscribers = self._channels.get(channel)
@@ -85,11 +85,11 @@ class OptimizedWSManager:
         if not diff:
             return 0
         self._last_sent[channel] = {**last, **diff}
-        payload = json.dumps({
+        payload = orjson.dumps({
             "channel": channel,
             "data": diff,
             "ts": int(time.time() * 1000),
-        })
+        }).decode("utf-8")
         dead: Set[WebSocket] = set()
         tasks = [self._safe_send(ws, payload) for ws in subscribers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -107,11 +107,11 @@ class OptimizedWSManager:
             return 0
         subscribers = subscribers.copy()
         self._last_sent[channel] = data
-        payload = json.dumps({
+        payload = orjson.dumps({
             "channel": channel,
             "data": data,
             "ts": int(time.time() * 1000),
-        })
+        }).decode("utf-8")
         dead: Set[WebSocket] = set()
         tasks = [self._safe_send(ws, payload) for ws in subscribers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -124,7 +124,7 @@ class OptimizedWSManager:
         return len(subscribers) - len(dead)
 
     async def send_to(self, ws: WebSocket, data: dict):
-        payload = json.dumps(data)
+        payload = orjson.dumps(data).decode("utf-8")
         try:
             await asyncio.wait_for(ws.send_text(payload), timeout=self.SEND_TIMEOUT)
         except Exception as e:
@@ -135,7 +135,7 @@ class OptimizedWSManager:
         await asyncio.wait_for(ws.send_text(payload), timeout=self.SEND_TIMEOUT)
 
     async def sweep_stale_connections(self) -> int:
-        now = time.time()
+        now = time.monotonic()
         stale = []
         async with self._lock:
             for ws in list(self._last_active):
@@ -146,7 +146,6 @@ class OptimizedWSManager:
                 await ws.close(code=1000, reason="Idle timeout")
             except Exception as e:
                 logger.debug("Failed to close stale WebSocket: %s", e)
-                pass
             await self.disconnect(ws)
         return len(stale)
 

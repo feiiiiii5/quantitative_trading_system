@@ -90,20 +90,20 @@ class SmartAlertEngine:
             stats.last_price = price
             stats.last_volume = volume
 
-            now = time.time()
-            if now - stats.last_alert_time < self._cooldown_seconds:
+            mono_now = time.monotonic()
+            if mono_now - stats.last_alert_time < self._cooldown_seconds:
                 return []
 
-            price_alert = self._check_price_anomaly(symbol, name, stats, now)
+            price_alert = self._check_price_anomaly(symbol, name, stats, time.time())
             if price_alert:
                 alerts.append(price_alert)
 
-            volume_alert = self._check_volume_anomaly(symbol, name, stats, now)
+            volume_alert = self._check_volume_anomaly(symbol, name, stats, time.time())
             if volume_alert:
                 alerts.append(volume_alert)
 
             if alerts:
-                stats.last_alert_time = now
+                stats.last_alert_time = mono_now
                 for a in alerts:
                     self._alert_history.append(a)
 
@@ -194,7 +194,7 @@ class SmartAlertEngine:
             }
 
     def cleanup_stale(self, max_age: float = 3600) -> int:
-        now = time.time()
+        now = time.monotonic()
         removed = 0
         with self._lock:
             stale = [

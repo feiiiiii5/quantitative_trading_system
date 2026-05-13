@@ -283,7 +283,7 @@ async def list_holidays(month: int | None = Query(None, ge=1, le=12)):
 async def system_status(request: Request):
     db = get_db()
     pool_status = db.get_pool_status()
-    process_time = time.time() - _start_time
+    process_time = time.monotonic() - _start_time
 
     try:
         import os
@@ -400,7 +400,7 @@ async def get_system_metrics(request: Request):
         except sqlite3.Error as e:
             logger.warning("获取数据库连接池状态失败: %s", e)
         metrics = {
-            "uptime_seconds": round(time.time() - getattr(request.app.state, "start_time", time.time())),
+            "uptime_seconds": round(time.monotonic() - getattr(request.app.state, "start_time", time.monotonic())),
             "memory_mb": round(mem_info.rss / 1024 / 1024, 1),
             "cpu_percent": process.cpu_percent(interval=0.1),
             "threads": process.num_threads(),
@@ -424,7 +424,7 @@ async def get_system_metrics(request: Request):
         total_rt = getattr(request.app.state, "_total_response_time", 0.0)
         avg_rt = total_rt / max(req_count, 1)
         metrics = {
-            "uptime_seconds": time.time() - getattr(request.app.state, "start_time", time.time()),
+            "uptime_seconds": time.monotonic() - getattr(request.app.state, "start_time", time.monotonic()),
             "api_requests_total": req_count,
             "avg_response_time_ms": round(avg_rt, 1),
             "ws_connections": await _manager.connection_count(),
@@ -683,5 +683,94 @@ async def register_feature_flag(request: Request, body: FeatureFlagRegisterReque
             tags=body.tags,
         )
         return _json_response(True, data={"name": body.name, "enabled": body.enabled})
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/system/traces")
+async def query_traces(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=500),
+    path_prefix: str = Query(default=""),
+    min_duration_ms: float = Query(default=0, ge=0),
+    status_code: int | None = Query(default=None),
+    error_only: bool = Query(default=False),
+):
+    try:
+        from api.middleware import span_buffer
+        traces = span_buffer.query(
+            limit=limit,
+            path_prefix=path_prefix,
+            min_duration_ms=min_duration_ms,
+            status_code=status_code,
+            error_only=error_only,
+        )
+        return _json_response(True, data={"traces": traces, "count": len(traces)})
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/system/traces/summary")
+async def traces_summary(request: Request):
+    try:
+        from api.middleware import span_buffer
+        return _json_response(True, data=span_buffer.summary())
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/system/drain-status")
+async def drain_status(request: Request):
+    try:
+        from api.middleware import is_draining, inflight_count
+        return _json_response(True, data={
+            "draining": is_draining(),
+            "inflight_requests": inflight_count(),
+        })
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/system/throttle-status")
+async def throttle_status(request: Request):
+    try:
+        from api.middleware import AdaptiveThrottleMiddleware
+        for mw in request.app.user_middleware:
+            if isinstance(mw.cls, type) and issubclass(mw.cls, AdaptiveThrottleMiddleware):
+                return _json_response(True, data=mw.kwargs)
+        from main import app
+        for mw in app.user_middleware:
+            if isinstance(mw.cls, type) and issubclass(mw.cls, AdaptiveThrottleMiddleware):
+                return _json_response(True, data=mw.kwargs)
+        return _json_response(True, data={"base_rps": 100, "current_rps": 100})
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/system/body-limit-status")
+async def body_limit_status(request: Request):
+    try:
+        from api.middleware import RequestBodyLimitMiddleware
+        for mw in request.app.user_middleware:
+            if isinstance(mw.cls, type) and issubclass(mw.cls, RequestBodyLimitMiddleware):
+                return _json_response(True, data={"max_bytes": mw.kwargs.get("max_bytes", 10_485_760)})
+        return _json_response(True, data={"max_bytes": 10_485_760})
+    except Exception as e:
+        return _json_response(False, error=safe_error(e))
+
+
+@router.get("/system/error-codes")
+async def error_codes_reference():
+    try:
+        from api.errors import ErrorCode
+        codes = {}
+        for ec in ErrorCode:
+            codes[ec.code] = {
+                "name": ec.name,
+                "category": ec.category.value,
+                "http_status": ec.http_status,
+                "retryable": ec.retryable,
+            }
+        return _json_response(True, data={"error_codes": codes, "total": len(codes)})
     except Exception as e:
         return _json_response(False, error=safe_error(e))

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_start_time = time.time()
+_start_time = time.monotonic()
 
 
 def _period_to_history(period: str) -> str:
@@ -253,7 +253,7 @@ async def stream_portfolio_metrics(request: Request):
                         "timestamp": now.isoformat(),
                         "markets": market_status,
                         "metrics": metrics_summary,
-                        "server_uptime": round(time.time() - _start_time, 1),
+                        "server_uptime": round(time.monotonic() - _start_time, 1),
                     }
 
                     if market_status and not any(m.get("is_open") for m in market_status.values()):
@@ -446,15 +446,22 @@ async def get_portfolio_risk_dashboard(
         total_value = 0.0
         daily_pnl = 0.0
 
-        for symbol in watchlist[:20]:
+        symbols = watchlist[:20]
+        rt_tasks = [fetcher.get_realtime(sym, MarketDetector.detect(sym)) for sym in symbols]
+        rt_results = await asyncio.gather(*rt_tasks, return_exceptions=True)
+
+        hist_tasks = [fetcher.get_history(sym, _period_to_history(period), "daily", "qfq") for sym in symbols]
+        hist_results = await asyncio.gather(*hist_tasks, return_exceptions=True)
+
+        for idx, symbol in enumerate(symbols):
             try:
-                market = MarketDetector.detect(symbol)
-                rt = await fetcher.get_realtime(symbol, market)
-                if not rt:
+                rt = rt_results[idx]
+                if isinstance(rt, Exception) or not rt:
                     continue
                 price = float(rt.get("price", 0))
                 change_pct = float(rt.get("change_pct", 0))
                 name = rt.get("name", symbol)
+                market = MarketDetector.detect(symbol)
                 positions.append({
                     "symbol": symbol,
                     "name": name,
@@ -465,10 +472,12 @@ async def get_portfolio_risk_dashboard(
                 total_value += price
                 daily_pnl += change_pct
 
-                df = await fetcher.get_history(symbol, _period_to_history(period), "daily", "qfq")
+                df = hist_results[idx]
+                if isinstance(df, Exception):
+                    continue
                 if df is not None and len(df) >= 30:
-                    c = df["close"].astype(float)
-                    ret = c.pct_change().dropna()
+                    c = pd.to_numeric(df["close"], errors="coerce").dropna()
+                    ret = c.pct_change(fill_method=None).dropna()
                     ret = ret[np.isfinite(ret)]
                     if len(ret) >= 20:
                         all_returns[symbol] = ret.values[-120:]

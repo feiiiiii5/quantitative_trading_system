@@ -9,6 +9,7 @@ import { HeatmapCanvas } from '@/components/charts/HeatmapCanvas';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { RiskBanner } from '@/components/ui/RiskBanner';
 import { SignalBadge } from '@/components/ui/SignalBadge';
+import { PriceAlertPanel } from '@/components/PriceAlertPanel';
 import { formatPercent, priceColor } from '@/utils/format';
 import type { IndexQuote, SectorData, SignalItem } from '@/types';
 
@@ -94,6 +95,54 @@ const DEFAULT_INDICES: IndexQuote[] = [
   { name: '科创50', code: 'sh000688', price: 0, change: 0, change_pct: 0 },
 ];
 
+const INDEX_CARD_OUTER: React.CSSProperties = {
+  flex: '0 0 auto',
+  width: '180px',
+  height: '80px',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--s3)',
+  padding: '0 var(--s4)',
+  background: 'var(--bg-glass)',
+  backdropFilter: 'blur(24px) saturate(120%)',
+  borderRadius: 'var(--r-md)',
+  border: '1px solid var(--separator)',
+};
+
+const INDEX_CARD_INFO: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '2px',
+  minWidth: 0,
+};
+
+const INDEX_CARD_NAME: React.CSSProperties = {
+  fontFamily: 'var(--font-sans)',
+  fontSize: '11px',
+  color: 'var(--label-tertiary)',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
+const INDEX_CARD_PRICE_BASE: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: '18px',
+  fontWeight: 600,
+  fontVariantNumeric: 'tabular-nums',
+  lineHeight: 1.2,
+};
+
+const INDEX_CARD_CHANGE_BASE: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: '10px',
+  padding: '1px 6px',
+  borderRadius: 'var(--r-xs)',
+  fontVariantNumeric: 'tabular-nums',
+  alignSelf: 'flex-start',
+  letterSpacing: '0.02em',
+};
+
 const IndexCard = memo(function IndexCard({ idx }: { idx: IndexQuote }) {
   const isRise = idx.change_pct >= 0;
   const sparkData = useMemo(
@@ -106,57 +155,21 @@ const IndexCard = memo(function IndexCard({ idx }: { idx: IndexQuote }) {
   );
 
   return (
-    <div style={{
-      flex: '0 0 auto',
-      width: '180px',
-      height: '80px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 'var(--s3)',
-      padding: '0 var(--s4)',
-      background: 'var(--bg-glass)',
-      backdropFilter: 'blur(24px) saturate(120%)',
-      borderRadius: 'var(--r-md)',
-      border: '1px solid var(--separator)',
-    }}>
+    <div style={INDEX_CARD_OUTER}>
       <Sparkline
         data={sparkData}
         width={44}
         height={20}
         color={isRise ? '#FF1744' : '#00C853'}
       />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
-        <span style={{
-          fontFamily: 'var(--font-sans)',
-          fontSize: '11px',
-          color: 'var(--label-tertiary)',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}>
+      <div style={INDEX_CARD_INFO}>
+        <span style={INDEX_CARD_NAME}>
           {idx.name}
         </span>
-        <span style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: '18px',
-          fontWeight: 600,
-          color: priceColor(idx.change_pct),
-          fontVariantNumeric: 'tabular-nums',
-          lineHeight: 1.2,
-        }}>
+        <span style={{ ...INDEX_CARD_PRICE_BASE, color: priceColor(idx.change_pct) }}>
           {idx.price != null ? idx.price.toFixed(2) : '—'}
         </span>
-        <span style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: '10px',
-          padding: '1px 6px',
-          borderRadius: 'var(--r-xs)',
-          background: isRise ? 'var(--rise-bg)' : 'var(--fall-bg)',
-          color: priceColor(idx.change_pct),
-          fontVariantNumeric: 'tabular-nums',
-          alignSelf: 'flex-start',
-          letterSpacing: '0.02em',
-        }}>
+        <span style={{ ...INDEX_CARD_CHANGE_BASE, background: isRise ? 'var(--rise-bg)' : 'var(--fall-bg)', color: priceColor(idx.change_pct) }}>
           {idx.change_pct != null ? formatPercent(idx.change_pct) : ''}
         </span>
       </div>
@@ -202,6 +215,38 @@ const AnimatedRiskBanner = memo(function AnimatedRiskBanner({
   );
 });
 
+const POS_CARD_COMPACT: React.CSSProperties = {
+  flex: '0 0 auto', background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '10px 14px', minWidth: 100,
+};
+
+const POS_SYMBOL_BADGE: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--accent)', marginBottom: 4,
+};
+
+const METRIC_STAT_CARD: React.CSSProperties = {
+  background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '10px 8px',
+};
+
+const METRIC_STAT_LABEL: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--label-tertiary)', textTransform: 'uppercase' as const, marginBottom: 4,
+};
+
+const POS_CARD_INLINE: React.CSSProperties = {
+  flex: 1, background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '8px 10px',
+};
+
+const POS_SYMBOL_INLINE: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--accent)', marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+};
+
+const BREADTH_STAT_CARD: React.CSSProperties = {
+  background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '10px 8px', textAlign: 'center' as const,
+};
+
+const BREADTH_STAT_LABEL: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--label-tertiary)', textTransform: 'uppercase' as const, marginBottom: 4,
+};
+
 const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
   const [data, setData] = useState<PortfolioDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -225,8 +270,8 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
     return (
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {positions.slice(0, 8).map(p => (
-          <div key={p.symbol} style={{ flex: '0 0 auto', background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '10px 14px', minWidth: 100 }}>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--accent)', marginBottom: 4 }}>{p.symbol}</div>
+          <div key={p.symbol} style={POS_CARD_COMPACT}>
+            <div style={POS_SYMBOL_BADGE}>{p.symbol}</div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: p.change_pct >= 0 ? '#FF1744' : '#00C853', fontVariantNumeric: 'tabular-nums' }}>
               {p.change_pct >= 0 ? '+' : ''}{p.change_pct.toFixed(2)}%
             </div>
@@ -249,8 +294,8 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
           { label: 'Sortino', value: risk_metrics.portfolio_sortino.toFixed(2), color: '#0A84FF' },
           { label: '波动率', value: `${(risk_metrics.portfolio_volatility * 100).toFixed(1)}%`, color: '#FF9100' },
         ].map(m => (
-          <div key={m.label} style={{ background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '10px 8px' }}>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--label-tertiary)', textTransform: 'uppercase', marginBottom: 4 }}>{m.label}</div>
+          <div key={m.label} style={METRIC_STAT_CARD}>
+            <div style={METRIC_STAT_LABEL}>{m.label}</div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 16, fontWeight: 700, color: m.color, fontVariantNumeric: 'tabular-nums' }}>{m.value}</div>
           </div>
         ))}
@@ -284,8 +329,8 @@ const PortfolioDashboardPanel = memo(function PortfolioDashboardPanel() {
 
       <div style={{ display: 'flex', gap: 8 }}>
         {positions.slice(0, 4).map(p => (
-          <div key={p.symbol} style={{ flex: 1, background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '8px 10px' }}>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--accent)', marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.symbol}</div>
+          <div key={p.symbol} style={POS_CARD_INLINE}>
+            <div style={POS_SYMBOL_INLINE}>{p.symbol}</div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: p.change_pct >= 0 ? '#FF1744' : '#00C853', fontVariantNumeric: 'tabular-nums' }}>
               {p.change_pct >= 0 ? '+' : ''}{p.change_pct.toFixed(2)}%
             </div>
@@ -313,8 +358,8 @@ const MarketBreadthPanel = memo(function MarketBreadthPanel({ data }: { data: Ma
           { label: '下跌', value: down, color: '#00C853' },
           { label: '平盘', value: flat, color: '#888' },
         ].map(m => (
-          <div key={m.label} style={{ background: 'var(--bg-elevated)', borderRadius: 'var(--r-sm)', padding: '10px 8px', textAlign: 'center' }}>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--label-tertiary)', textTransform: 'uppercase', marginBottom: 4 }}>{m.label}</div>
+          <div key={m.label} style={BREADTH_STAT_CARD}>
+            <div style={BREADTH_STAT_LABEL}>{m.label}</div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 700, color: m.color, fontVariantNumeric: 'tabular-nums' }}>{m.value}</div>
           </div>
         ))}
@@ -735,7 +780,7 @@ export function DashboardPage() {
   const riskLevel = riskDashboard?.drawdown?.drawdown_status === 'critical' ? 'HIGH' : 
                     riskDashboard?.drawdown?.drawdown_status === 'warning' ? 'MEDIUM' : 'LOW';
   const maxDrawdown = riskDashboard?.risk_metrics?.max_drawdown ?? 0;
-  const alerts = riskDashboard?.stress_summary?.map(s => s.scenario) ?? [];
+  const alerts = useMemo(() => riskDashboard?.stress_summary?.map(s => s.scenario) ?? [], [riskDashboard?.stress_summary]);
 
   const displayIndices = useMemo(() => {
     if (indices.length > 0) return indices;
@@ -822,6 +867,10 @@ export function DashboardPage() {
           <div style={{ ...GLASS_PANEL, flex: 1 }}>
             <div style={SECTION_LABEL}>异动行情</div>
             <UnusualActivity stocks={stocks} />
+          </div>
+          <div style={{ ...GLASS_PANEL }}>
+            <div style={SECTION_LABEL}>价格预警</div>
+            <PriceAlertPanel />
           </div>
         </div>
       </div>

@@ -142,10 +142,16 @@ class BacktestEngine:
         strategy: BaseStrategy,
         symbol: str = "",
     ) -> BacktestResult:
-        closes = pd.to_numeric(df["close"], errors="coerce").dropna().values.astype(float) if "close" in df.columns else np.array([])
-        opens = pd.to_numeric(df["open"], errors="coerce").dropna().values.astype(float) if "open" in df.columns else closes
-        highs = pd.to_numeric(df["high"], errors="coerce").dropna().values.astype(float) if "high" in df.columns else closes
-        lows = pd.to_numeric(df["low"], errors="coerce").dropna().values.astype(float) if "low" in df.columns else closes
+        numeric_cols = ["open", "high", "low", "close", "volume"]
+        for col in numeric_cols:
+            if col in df.columns:
+                df = df.assign(**{col: pd.to_numeric(df[col], errors="coerce")})
+        df = df.dropna(subset=[c for c in ["close"] if c in df.columns]).reset_index(drop=True)
+
+        closes = df["close"].values.astype(float) if "close" in df.columns else np.array([])
+        opens = df["open"].values.astype(float) if "open" in df.columns else closes
+        highs = df["high"].values.astype(float) if "high" in df.columns else closes
+        lows = df["low"].values.astype(float) if "low" in df.columns else closes
         dates_col = df["date"].values if "date" in df.columns else np.arange(len(closes))
 
         if len(closes) < 2:
@@ -257,6 +263,8 @@ class BacktestEngine:
                     if alloc_amount > cash * 0.98:
                         alloc_amount = cash * 0.98
 
+                    if fill_price <= 1e-9:
+                        continue
                     buy_shares = int(alloc_amount / fill_price / lot_size) * lot_size
                     if buy_shares <= 0:
                         continue
@@ -490,6 +498,8 @@ class BacktestEngine:
             })
             shares = 0
             position = None
+            if equity_curve:
+                equity_curve[-1] = cash
 
         self._progress_tracker.report_phase("statistics", "计算统计指标", 85.0, "计算收益风险指标")
         stats = compute_backtest_statistics(equity_curve, closes, trades, dates_list)

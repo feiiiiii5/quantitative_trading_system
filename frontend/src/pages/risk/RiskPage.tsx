@@ -535,7 +535,7 @@ const LoadingPlaceholder = memo(function LoadingPlaceholder() {
 
 
 const SectorExposureCanvas = memo(function SectorExposureCanvas({ sectors }: { sectors: Record<string, number> }) {
-  const entries = Object.entries(sectors);
+  const entries = useMemo(() => Object.entries(sectors), [sectors]);
   const draw = useCallback((ctx: CanvasRenderingContext2D, w: number, h: number) => {
     if (entries.length === 0) return;
     ctx.clearRect(0, 0, w, h);
@@ -978,8 +978,8 @@ const BlackLittermanPanel = memo(function BlackLittermanPanel() {
   if (isLoading) return <LoadingPlaceholder />;
   if (!data) return <EmptyState title="暂无优化数据" description="请先添加持仓" size="md" />;
 
-  const weightEntries = Object.entries(data.weights);
-  const returnEntries = Object.entries(data.posterior_returns);
+  const weightEntries = useMemo(() => Object.entries(data.weights), [data.weights]);
+  const returnEntries = useMemo(() => Object.entries(data.posterior_returns), [data.posterior_returns]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1393,7 +1393,7 @@ export function RiskPage() {
   const sharpe = rm?.portfolio_sharpe ?? 0;
   const beta = 1;
   const riskLevel: RiskLevel = var95 > 0.05 || maxDrawdown > 0.15 ? 'HIGH' : var95 > 0.03 || maxDrawdown > 0.08 ? 'MEDIUM' : 'LOW';
-  const metrics: RiskMetrics | null = dashboardData ? {
+  const metrics: RiskMetrics | null = useMemo(() => dashboardData ? {
     riskLevel,
     var95,
     cvar,
@@ -1405,7 +1405,7 @@ export function RiskPage() {
     historicalVol: [],
     impliedVol: [],
     volDates: [],
-  } : null;
+  } : null, [dashboardData, riskLevel, var95, cvar, maxDrawdown, sharpe, beta]);
 
   const loading = isDataLoading(var95, cvar, maxDrawdown, sharpe, beta);
 
@@ -1415,13 +1415,13 @@ export function RiskPage() {
   const historicalVol = metrics?.historicalVol ?? FALLBACK_HISTORICAL_VOL;
   const impliedVol = metrics?.impliedVol ?? FALLBACK_IMPLIED_VOL;
 
-  const topMetrics: Array<{ label: string; value: string; color: string; subtitle: string; borderColor: BorderColor }> = [
+  const topMetrics = useMemo<Array<{ label: string; value: string; color: string; subtitle: string; borderColor: BorderColor }>>(() => [
     { label: 'VaR(95%)', value: formatRatio(var95), color: metricColor(var95), subtitle: 'Value at Risk', borderColor: varBorderColor(var95) },
     { label: 'CVaR', value: formatRatio(cvar), color: metricColor(cvar), subtitle: 'Conditional VaR', borderColor: varBorderColor(cvar) },
     { label: 'MAX DRAWDOWN', value: formatRatio(maxDrawdown), color: metricColor(maxDrawdown, true), subtitle: 'Peak to Trough', borderColor: '#FF1744' },
     { label: 'SHARPE', value: sharpe.toFixed(2), color: metricColor(sharpe), subtitle: 'Risk-Adj Return', borderColor: sharpeBorderColor(sharpe) },
     { label: 'BETA', value: beta.toFixed(2), color: beta > 1 ? '#FF9100' : '#00C853', subtitle: 'Market Sensitivity', borderColor: betaBorderColor(beta) },
-  ];
+  ], [var95, cvar, maxDrawdown, sharpe, beta]);
 
   const effectiveRiskLevel: RiskLevel = loading ? 'LOW' : riskLevel;
 

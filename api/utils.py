@@ -22,6 +22,8 @@ _INTERNAL_PATTERNS = [
     re.compile(r"(?:Traceback|File \").*?(?=\n|$)", re.DOTALL),
     re.compile(r"/(?:Users|home|tmp|var)/\S+"),
     re.compile(r"(?:SELECT|INSERT|UPDATE|DELETE|CREATE)\s+", re.IGNORECASE),
+    re.compile(r"(?:password|secret|token|api_key|apikey)\s*[=:]\s*\S+", re.IGNORECASE),
+    re.compile(r"sqlite3\.\w+Error:.*", re.IGNORECASE),
 ]
 
 
@@ -149,7 +151,7 @@ def api_error_handler(
     def decorator(fn: Callable) -> Callable:
         @wraps(fn)
         async def async_wrapper(*args, **kwargs):
-            start_time = time.time()
+            start_time = time.monotonic()
             try:
                 if timeout:
                     result = await asyncio.wait_for(fn(*args, **kwargs), timeout=timeout)
@@ -165,13 +167,13 @@ def api_error_handler(
                     logger.error("API error in %s: %s", fn, e,  exc_info=True)
                 return json_response(False, error=safe_error(e))
             finally:
-                elapsed = time.time() - start_time
+                elapsed = time.monotonic() - start_time
                 if elapsed > 5.0:
                     logger.warning("Slow API call: %s took %ss", fn, elapsed)
 
         @wraps(fn)
         def sync_wrapper(*args, **kwargs):
-            start_time = time.time()
+            start_time = time.monotonic()
             try:
                 result = fn(*args, **kwargs)
                 return result
@@ -180,7 +182,7 @@ def api_error_handler(
                     logger.error("API error in %s: %s", fn, e,  exc_info=True)
                 return json_response(False, error=safe_error(e))
             finally:
-                elapsed = time.time() - start_time
+                elapsed = time.monotonic() - start_time
                 if elapsed > 5.0:
                     logger.warning("Slow API call: %s took %ss", fn, elapsed)
 
@@ -242,7 +244,7 @@ def rate_limiter(max_calls: int = 100, time_window: float = 60.0):
         @wraps(fn)
         async def async_wrapper(*args, **kwargs):
             nonlocal call_timestamps
-            now = time.time()
+            now = time.monotonic()
             with _lock:
                 call_timestamps = [t for t in call_timestamps if now - t < time_window]
                 if len(call_timestamps) >= max_calls:
@@ -253,7 +255,7 @@ def rate_limiter(max_calls: int = 100, time_window: float = 60.0):
         @wraps(fn)
         def sync_wrapper(*args, **kwargs):
             nonlocal call_timestamps
-            now = time.time()
+            now = time.monotonic()
             with _lock:
                 call_timestamps = [t for t in call_timestamps if now - t < time_window]
                 if len(call_timestamps) >= max_calls:

@@ -39,7 +39,7 @@ def compute_backtest_statistics(
         if hd:
             hold_days_list.append(hd)
     win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
-    profit_factor = (total_win / total_loss) if total_loss > 0 else (999.0 if total_win > 0 else 0.0)
+    profit_factor = min(total_win / total_loss, 99.99) if total_loss > 0 else (99.99 if total_win > 0 else 0.0)
     avg_profit = float(np.mean(win_pnls)) if win_pnls else 0.0
     avg_loss = float(np.mean(loss_pnls)) if loss_pnls else 0.0
     avg_hold_days = float(np.mean(hold_days_list)) if hold_days_list else 0.0
@@ -51,7 +51,7 @@ def compute_backtest_statistics(
     else:
         annual_return = total_return
 
-    calmar_ratio = (annual_return / max_dd) if max_dd > 1e-9 and annual_return != 0 else 0.0
+    calmar_ratio = (annual_return / max_dd) if max_dd > 1e-9 and abs(annual_return) > 1e-9 else 0.0
 
     returns = []
     eq_arr_full = np.array(equity_curve)
@@ -120,7 +120,7 @@ def compute_backtest_statistics(
             if losses > 0:
                 omega_ratio = float(gains / losses)
             elif gains > 0:
-                omega_ratio = 999.0
+                omega_ratio = 99.99
             q95 = float(np.percentile(ret_arr, 95))
             q05 = float(np.percentile(ret_arr, 5))
             tail_ratio = abs(q95 / q05) if abs(q05) > 1e-6 else 0.0
@@ -131,7 +131,7 @@ def compute_backtest_statistics(
     win_rate_frac = win_trades / total_trades if total_trades > 0 else 0.0
     loss_rate_frac = loss_trades / total_trades if total_trades > 0 else 0.0
     expectancy = win_rate_frac * avg_profit - loss_rate_frac * avg_loss
-    payoff_ratio = (avg_profit / avg_loss) if avg_loss > 1e-9 else (999.0 if avg_profit > 0 else 0.0)
+    payoff_ratio = min(avg_profit / avg_loss, 99.99) if avg_loss > 1e-9 else (99.99 if avg_profit > 0 else 0.0)
 
     cvar_95 = 0.0
     var_95 = 0.0
@@ -178,7 +178,7 @@ def compute_backtest_statistics(
         "max_drawdown": round(max_dd, 2),
         "calmar_ratio": round(calmar_ratio, 2),
         "win_rate": round(win_rate, 2),
-        "profit_factor": round(profit_factor, 2) if profit_factor != 999 else 999,
+        "profit_factor": round(profit_factor, 2),
         "total_trades": total_trades,
         "win_trades": win_trades,
         "loss_trades": loss_trades,
@@ -191,7 +191,7 @@ def compute_backtest_statistics(
         "drawdown_curve": drawdown_curve,
         "sortino_ratio": round(sortino, 2),
         "max_consecutive_losses": max_consec_losses,
-        "omega_ratio": round(omega_ratio, 2) if omega_ratio != 999.0 else 999.0,
+        "omega_ratio": round(omega_ratio, 2),
         "tail_ratio": round(tail_ratio, 2),
         "information_ratio": round(information_ratio, 2),
         "recovery_factor": round(recovery_factor, 2),
@@ -203,5 +203,5 @@ def compute_backtest_statistics(
         "downside_deviation": round(downside_dev_val, 4),
         "monthly_returns": monthly_rets,
         "expectancy": round(float(expectancy), 2),
-        "payoff_ratio": round(float(payoff_ratio), 2) if payoff_ratio != 999 else 999,
+        "payoff_ratio": round(float(payoff_ratio), 2),
     }

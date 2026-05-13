@@ -145,7 +145,7 @@ async def _fetch_sina_stocks_fast() -> list[dict]:
 
 async def fetch_all_a_stocks_async() -> list[dict]:
     global _all_a_stocks_cache, _all_a_stocks_ts, _all_a_stocks_fetching
-    now = time.time()
+    now = time.monotonic()
     with _all_a_stocks_lock:
         if _all_a_stocks_cache and (now - _all_a_stocks_ts) < _A_STOCKS_TTL:
             return _all_a_stocks_cache
@@ -194,7 +194,7 @@ async def fetch_all_a_stocks_async() -> list[dict]:
                     })
                 with _all_a_stocks_lock:
                     _all_a_stocks_cache = result
-                    _all_a_stocks_ts = time.time()
+                    _all_a_stocks_ts = time.monotonic()
                 return result
         except Exception as e:
             logger.debug("akshare fallback error: %s", e)

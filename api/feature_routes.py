@@ -1343,7 +1343,7 @@ async def factor_registry(request: Request):
     global _factor_registry_cache, _factor_registry_cache_time
     try:
         import time
-        now = time.time()
+        now = time.monotonic()
         if _factor_registry_cache is not None and (now - _factor_registry_cache_time) < _cfg.registry_cache_ttl:
             return _json_response(True, data=_factor_registry_cache)
         from core.multi_factor_framework import FACTOR_REGISTRY, FactorCategory

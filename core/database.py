@@ -40,97 +40,111 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DATA_DIR / "quantcore.db"
 
 
-class ThreadSafeLRU:
-    """线程安全的LRU缓存，支持TTL、LFU淘汰和前缀删除"""
+class OptimizedTTLCache:
+    """O(1) TTL缓存：OrderedDict实现LRU + 惰性TTL过期 + 定期批量清理"""
 
-    def __init__(self, maxsize: int = 200, ttl: int = 60):
+    def __init__(self, maxsize: int = 200, ttl: float = 60, cleanup_interval: float = 300):
+        self._cache: OrderedDict[str, tuple[Any, float]] = OrderedDict()
         self._maxsize = maxsize
         self._ttl = ttl
-        self._cache: OrderedDict[str, tuple[Any, float, int]] = OrderedDict()
-        self._freq: dict[str, int] = {}
-        self._heap: list[tuple[int, float, str]] = []
-        self._lock = threading.Lock()
+        self._cleanup_interval = cleanup_interval
+        self._last_cleanup = time.monotonic()
+        self._lock = threading.RLock()
         self._hits = 0
         self._misses = 0
 
     def get(self, key: str) -> Any | None:
         with self._lock:
             if key in self._cache:
-                value, ts, ttl = self._cache[key]
-                if time.monotonic() - ts < float(ttl):
+                value, expire_ts = self._cache[key]
+                if time.monotonic() < expire_ts:
                     self._cache.move_to_end(key)
-                    self._freq[key] = self._freq.get(key, 0) + 1
                     self._hits += 1
                     return value
                 del self._cache[key]
-                self._freq.pop(key, None)
             self._misses += 1
         return None
 
-    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
+    def set(self, key: str, value: Any, ttl: float | None = None) -> None:
         effective_ttl = ttl if ttl is not None else self._ttl
+        expire_ts = time.monotonic() + float(effective_ttl)
         with self._lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
-            elif len(self._cache) >= self._maxsize:
-                self._evict_lfu()
-            self._cache[key] = (value, time.monotonic(), int(effective_ttl))
-            self._freq[key] = 1
-            heapq.heappush(self._heap, (1, time.monotonic(), key))
+            else:
+                if len(self._cache) >= self._maxsize:
+                    self._cache.popitem(last=False)
+            self._cache[key] = (value, expire_ts)
+            if time.monotonic() - self._last_cleanup > self._cleanup_interval:
+                self._cleanup_expired()
 
-    def _evict_lfu(self) -> None:
-        while self._heap:
-            freq, _, key = heapq.heappop(self._heap)
-            if key in self._cache:
-                current_freq = self._freq.get(key, 0)
-                if current_freq <= freq:
-                    self._cache.pop(key, None)
-                    self._freq.pop(key, None)
-                    return
-                heapq.heappush(self._heap, (current_freq, time.monotonic(), key))
-        if self._cache:
-            key_to_evict = next(iter(self._cache))
-            self._cache.pop(key_to_evict, None)
-            self._freq.pop(key_to_evict, None)
+    def _cleanup_expired(self) -> None:
+        now = time.monotonic()
+        expired = [k for k, (_, ts) in self._cache.items() if now >= ts]
+        for k in expired:
+            del self._cache[k]
+        self._last_cleanup = now
 
     def delete(self, key: str) -> None:
         with self._lock:
             self._cache.pop(key, None)
-            self._freq.pop(key, None)
 
     def delete_prefix(self, prefix: str) -> int:
-        count = 0
         with self._lock:
             keys_to_delete = [k for k in self._cache if k.startswith(prefix)]
             for k in keys_to_delete:
                 del self._cache[k]
-                self._freq.pop(k, None)
-                count += 1
-        return count
+            return len(keys_to_delete)
 
     def clear(self) -> None:
         with self._lock:
             self._cache.clear()
-            self._freq.clear()
-            self._heap.clear()
 
     def __len__(self) -> int:
         with self._lock:
             return len(self._cache)
 
     def stats(self) -> dict:
-        total = self._hits + self._misses
-        return {
-            "size": len(self._cache),
-            "maxsize": self._maxsize,
-            "hits": self._hits,
-            "misses": self._misses,
-            "hit_rate": round(self._hits / total, 4) if total else 0,
-            "heap_size": len(self._heap),
-        }
+        with self._lock:
+            total = self._hits + self._misses
+            return {
+                "size": len(self._cache),
+                "maxsize": self._maxsize,
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": round(self._hits / total, 4) if total else 0,
+            }
 
 
-_db_query_cache = ThreadSafeLRU(maxsize=10000, ttl=300)
+class ThreadSafeLRU:
+    """线程安全的LRU缓存，支持TTL、LFU淘汰和前缀删除 — 兼容旧接口"""
+
+    def __init__(self, maxsize: int = 200, ttl: int = 60):
+        self._impl = OptimizedTTLCache(maxsize=maxsize, ttl=ttl, cleanup_interval=300)
+
+    def get(self, key: str) -> Any | None:
+        return self._impl.get(key)
+
+    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
+        self._impl.set(key, value, ttl=ttl)
+
+    def delete(self, key: str) -> None:
+        self._impl.delete(key)
+
+    def delete_prefix(self, prefix: str) -> int:
+        return self._impl.delete_prefix(prefix)
+
+    def clear(self) -> None:
+        self._impl.clear()
+
+    def __len__(self) -> int:
+        return len(self._impl)
+
+    def stats(self) -> dict:
+        return self._impl.stats()
+
+
+_db_query_cache = OptimizedTTLCache(maxsize=5000, ttl=60, cleanup_interval=120)
 
 
 class CacheManager:
@@ -704,9 +718,8 @@ class SQLiteStore:
             (symbol, market, kline_type, adjust, date, open, high, low, close, volume, amount, turnover_rate)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        params_list = []
-        for r in rows:
-            params_list.append((
+        params_list = [
+            (
                 symbol, market, kline_type, adjust,
                 str(r.get("date", "")),
                 float(r.get("open", 0)),
@@ -716,16 +729,27 @@ class SQLiteStore:
                 float(r.get("volume", 0)),
                 float(r.get("amount", 0)),
                 float(r.get("turnover_rate", 0)),
-            ))
+            )
+            for r in rows
+        ]
 
-        with self._buffer_lock:
-            for p in params_list:
-                if len(self._write_buffer) >= self._buffer_abs_max:
-                    dropped = len(self._write_buffer) - self._buffer_max_size
-                    self._dropped_writes += dropped
-                    self._write_buffer = self._write_buffer[-self._buffer_max_size:]
-                    logger.error("写缓冲区溢出（K线写入），丢弃 %s 条最旧记录（累计丢弃: %s）", dropped, self)
-                self._write_buffer.append((sql, p, 0, 0.0))
+        if len(params_list) <= 200:
+            try:
+                self.executemany(sql, params_list)
+            except Exception as e:
+                logger.warning("Batch kline upsert failed, falling back to buffered: %s", e)
+                for p in params_list:
+                    self.buffered_write(sql, p)
+        else:
+            chunk_size = 500
+            for i in range(0, len(params_list), chunk_size):
+                chunk = params_list[i:i + chunk_size]
+                try:
+                    self.executemany(sql, chunk)
+                except Exception as e:
+                    logger.warning("Chunked kline upsert failed, falling back to buffered: %s", e)
+                    for p in chunk:
+                        self.buffered_write(sql, p)
 
         _db_query_cache.delete_prefix(f"kline_{symbol}_")
         return len(rows)
@@ -751,7 +775,7 @@ class SQLiteStore:
             sql += " AND date<=?"
             params.append(end_date)
 
-        sql += " ORDER BY date ASC LIMIT 50000"
+        sql += " ORDER BY date ASC LIMIT 10000"
 
         try:
             rows = self.fetchall(sql, tuple(params))

@@ -1,8 +1,11 @@
 import { useState, useCallback, useMemo, useEffect, useRef, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, type CandlestickData, type Time } from 'lightweight-charts';
+import { CandlestickSeries, type IChartApi, type ISeriesApi, type CandlestickData, type Time } from 'lightweight-charts';
+import { createQuantChart, CANDLE_STYLE } from '@/utils/chartFactory';
 import { useMarketStocks, useMarketSectors } from '@/hooks/queries/useMarketQueries';
 import { useWatchlist, useAddToWatchlist, useRemoveFromWatchlist } from '@/hooks/queries/useWatchlistQueries';
+import { useContextMenu } from '@/hooks/useContextMenu';
+import { ContextMenu } from '@/components/ui/ContextMenu';
 import { VirtualList } from '@/components/ui/VirtualList';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { apiGet } from '@/api/client';
@@ -223,29 +226,13 @@ const KlineChart = memo(function KlineChart({ symbol }: { symbol: string }) {
   useEffect(() => {
     if (!containerRef.current) return;
     let cancelled = false;
-    const chart = createChart(containerRef.current, {
+    const chart = createQuantChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 200,
-      layout: {
-        background: { color: 'transparent' as const },
-        textColor: 'rgba(255,255,255,0.35)',
-      },
-      grid: {
-        vertLines: { color: 'rgba(255,255,255,0.06)' },
-        horzLines: { color: 'rgba(255,255,255,0.06)' },
-      },
-      crosshair: { mode: 0 },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true },
+      layout: { textColor: 'rgba(255,255,255,0.35)' },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.06)' }, horzLines: { color: 'rgba(255,255,255,0.06)' } },
     });
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: '#FF1744',
-      downColor: '#00C853',
-      borderUpColor: '#FF1744',
-      borderDownColor: '#00C853',
-      wickUpColor: '#FF1744',
-      wickDownColor: '#00C853',
-    });
+    const series = chart.addSeries(CandlestickSeries, CANDLE_STYLE);
     chartRef.current = chart;
     seriesRef.current = series;
 
@@ -1234,6 +1221,13 @@ export function MarketPage() {
     }
   };
 
+  const { state: ctxState, onContextMenu, close: closeCtx, menuItems } = useContextMenu<StockQuote>(stock => [
+    { label: '查看详情', action: () => navigate(`/stock/${stock.symbol}`) },
+    { label: `${stock.symbol} 加入自选`, action: () => { toggleWatch(stock.symbol); } },
+    { type: 'separator' },
+    { label: '复制代码', action: () => navigator.clipboard.writeText(stock.symbol) },
+  ]);
+
   const sectors = useMemo(() => {
     return Object.entries(sectorsData).map(([key, val]) => ({
       name: (val as { name?: string })?.name ?? key,
@@ -1402,6 +1396,7 @@ export function MarketPage() {
         }}
         onClick={() => handleRowClick(stock)}
         onDoubleClick={() => navigate(`/stock/${stock.symbol}`)}
+        onContextMenu={(e) => onContextMenu(e, stock)}
         onMouseEnter={e => { if (!isFocused) e.currentTarget.style.background = 'var(--accent-soft)'; }}
         onMouseLeave={e => { if (!isFocused) e.currentTarget.style.background = 'transparent'; }}
       >
@@ -1730,6 +1725,7 @@ export function MarketPage() {
       {contentTab === 'moneyflow' && <MoneyFlowTab />}
       {contentTab === 'sector' && <SectorRotationTab />}
       {contentTab === 'screener' && <ScreenerTab />}
+      {ctxState && <ContextMenu x={ctxState.x} y={ctxState.y} items={menuItems} onClose={closeCtx} />}
     </div>
   );
 }

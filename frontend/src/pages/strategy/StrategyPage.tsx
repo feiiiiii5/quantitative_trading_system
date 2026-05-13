@@ -1142,7 +1142,7 @@ export function StrategyPage() {
   const runBacktest = useStrategyStore(s => s.runBacktest);
   const clearResult = useStrategyStore(s => s.clearResult);
   const { data: strategiesData } = useStrategyList();
-  const strategies = strategiesData?.strategies ?? [];
+  const strategies = useMemo(() => strategiesData?.strategies ?? [], [strategiesData]);
   const { data: factors } = useFactorRegistry();
   const { data: paramSpecsData } = useStrategyParamSpecs(selectedStrategy);
   const paramSpecs = useMemo(() => {
@@ -1208,7 +1208,7 @@ export function StrategyPage() {
     clearResult();
   }, [clearResult]);
 
-  const currentStrategy = strategies.find(s => s.name === selectedStrategy);
+  const currentStrategy = useMemo(() => strategies.find(s => s.name === selectedStrategy), [strategies, selectedStrategy]);
 
   const grouped = useMemo<Record<Difficulty, typeof strategies>>(() => {
     const g: Record<Difficulty, typeof strategies> = { BASIC: [], PRO: [], EXPERT: [] };
@@ -1218,19 +1218,19 @@ export function StrategyPage() {
     return g;
   }, [strategies]);
 
-  const inputStyle: React.CSSProperties = {
+  const inputStyle = useMemo<React.CSSProperties>(() => ({
     width: '100%', height: 40, background: 'var(--bg-overlay)',
     border: '1px solid var(--separator)', borderRadius: 'var(--r-md)',
     padding: '0 12px', color: 'var(--label-primary)', fontFamily: 'var(--font-mono)',
     fontSize: 12, outline: 'none', boxSizing: 'border-box',
     transition: 'border-color var(--dur-fast) var(--ease-apple)',
-  };
+  }), []);
 
-  const labelStyle: React.CSSProperties = {
+  const labelStyle = useMemo<React.CSSProperties>(() => ({
     display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9,
-    textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--label-tertiary)',
+    textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: 'var(--label-tertiary)',
     marginBottom: 4,
-  };
+  }), []);
 
   return (
     <div style={{ display: 'flex', height: '100%', background: 'var(--bg-base)', padding: 'var(--s6)', boxSizing: 'border-box' }}>

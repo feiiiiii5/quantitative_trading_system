@@ -41,7 +41,7 @@ async def _try_akshare(func_name: str, **kwargs):
 
 async def fetch_stock_capital_flow(symbol: str, days: int = 10) -> list[dict]:
     cache_key = f"stock_flow_{symbol}_{days}"
-    now = time.time()
+    now = time.monotonic()
     with _FLOW_CACHE_LOCK:
         if cache_key in _FLOW_CACHE:
             cached, ts = _FLOW_CACHE[cache_key]
@@ -176,7 +176,7 @@ async def fetch_capital_flow_ranking(
     direction: str = "desc",
 ) -> list[dict]:
     global _RANKING_CACHE, _RANKING_CACHE_TS
-    now = time.time()
+    now = time.monotonic()
     with _RANKING_CACHE_LOCK:
         if _RANKING_CACHE and now - _RANKING_CACHE_TS < _RANKING_CACHE_TTL:
             return _RANKING_CACHE
@@ -255,7 +255,7 @@ async def fetch_capital_flow_ranking(
 
 async def fetch_sector_capital_flow() -> list[dict]:
     global _SECTOR_FLOW_CACHE, _SECTOR_FLOW_CACHE_TS
-    now = time.time()
+    now = time.monotonic()
     with _SECTOR_FLOW_LOCK:
         if _SECTOR_FLOW_CACHE and now - _SECTOR_FLOW_CACHE_TS < _SECTOR_FLOW_CACHE_TTL:
             return _SECTOR_FLOW_CACHE

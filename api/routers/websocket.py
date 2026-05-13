@@ -46,7 +46,7 @@ async def websocket_realtime(ws: WebSocket):
                 elif msg_type == "ping":
                     await ws.send_json({"type": "pong", "ts": time.time()})
             except json.JSONDecodeError:
-                pass
+                logger.debug("WebSocket received non-JSON message")
     except WebSocketDisconnect:
         await _manager.disconnect(ws)
     except Exception as e:
@@ -125,7 +125,7 @@ async def websocket_pnl(ws: WebSocket):
                         "ts": time.time(),
                     })
             except json.JSONDecodeError:
-                pass
+                logger.debug("WebSocket received non-JSON message")
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -215,7 +215,7 @@ async def websocket_signals(ws: WebSocket):
                         "ts": time.time(),
                     })
             except json.JSONDecodeError:
-                pass
+                logger.debug("WebSocket received non-JSON message")
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -283,7 +283,7 @@ async def websocket_regime(ws: WebSocket):
                         "ts": time.time(),
                     })
             except json.JSONDecodeError:
-                pass
+                logger.debug("WebSocket received non-JSON message")
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -346,7 +346,7 @@ async def websocket_portfolio_metrics(ws: WebSocket):
             except TimeoutError:
                 await ws.send_json({"type": "keepalive", "ts": time.time()})
             except json.JSONDecodeError:
-                pass
+                logger.debug("WebSocket received non-JSON message")
     except WebSocketDisconnect:
         pass
     except Exception as e:

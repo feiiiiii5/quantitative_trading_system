@@ -254,7 +254,8 @@ async def update_alert(request: Request, alert_id: int,
         updates.append("updated_at = ?")
         params.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         params.append(alert_id)
-        db.execute(f"UPDATE price_alerts SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        set_clause = ", ".join(updates)
+        db.execute(f"UPDATE price_alerts SET {set_clause} WHERE id = ?", tuple(params))
         return _json_response(True, data={"id": alert_id})
     except Exception as e:
         return _json_response(False, error=safe_error(e))

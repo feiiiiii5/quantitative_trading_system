@@ -38,7 +38,7 @@ class SectorStrength:
 
 async def fetch_sector_list() -> list[dict]:
     global _SECTOR_CACHE, _SECTOR_CACHE_TS
-    now = time.time()
+    now = time.monotonic()
     with _SECTOR_CACHE_LOCK:
         if _SECTOR_CACHE and now - _SECTOR_CACHE_TS < _SECTOR_CACHE_TTL:
             return list(_SECTOR_CACHE)

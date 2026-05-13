@@ -719,7 +719,7 @@ async def performance_overview(
     period: str = Query("1y", max_length=5),
 ):
     cache_key = f"{symbol}:{period}"
-    now = time.time()
+    now = time.monotonic()
     if cache_key in _perf_overview_cache:
         cached_ts, cached_data = _perf_overview_cache[cache_key]
         if now - cached_ts < _PERF_CACHE_TTL:

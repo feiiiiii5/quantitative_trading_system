@@ -1,34 +1,36 @@
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime
 from functools import wraps
 from typing import Any
 
+import orjson
 from fastapi import Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 
 from api.auth import decode_token
-from core.database import ThreadSafeLRU
+from core.database import OptimizedTTLCache
 from core.market_hours import MarketHours
 from core.smart_alerts import get_smart_alert_engine
 from core.data_fetcher import SmartDataFetcher
 
 logger = logging.getLogger(__name__)
 
-_start_time = time.time()
+_start_time = time.monotonic()
 
 
 class _TTLCache:
-    __slots__ = ("_cache", "_ttl", "_maxsize", "_freq", "_hits", "_misses")
+    __slots__ = ("_cache", "_ttl", "_maxsize", "_hits", "_misses")
 
     def __init__(self, ttl: float = 3.0, maxsize: int = 5000) -> None:
-        self._cache: dict[str, tuple[float, Any]] = {}
-        self._freq: dict[str, int] = {}
+        self._cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
         self._ttl = ttl
         self._maxsize = maxsize
         self._hits = 0
@@ -39,37 +41,22 @@ class _TTLCache:
         if entry is not None:
             ts, val = entry
             if time.monotonic() - ts < self._ttl:
-                self._freq[key] = self._freq.get(key, 0) + 1
+                self._cache.move_to_end(key)
                 self._hits += 1
                 return val
             del self._cache[key]
-            self._freq.pop(key, None)
         self._misses += 1
         return None
 
     def set(self, key: str, val: Any) -> None:
-        if len(self._cache) >= self._maxsize:
-            self._evict()
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        elif len(self._cache) >= self._maxsize:
+            self._cache.popitem(last=False)
         self._cache[key] = (time.monotonic(), val)
-        self._freq[key] = 1
-
-    def _evict(self) -> None:
-        if not self._cache:
-            return
-        stale = [k for k in self._freq if k not in self._cache]
-        for k in stale:
-            del self._freq[k]
-        if not self._freq:
-            return
-        min_freq = min(self._freq.values())
-        candidates = [k for k, f in self._freq.items() if f == min_freq]
-        oldest_key = min(candidates, key=lambda k: self._cache[k][0])
-        del self._cache[oldest_key]
-        del self._freq[oldest_key]
 
     def clear(self) -> None:
         self._cache.clear()
-        self._freq.clear()
 
     def __len__(self) -> int:
         return len(self._cache)
@@ -78,7 +65,6 @@ class _TTLCache:
         total = self._hits + self._misses
         return {
             "size": len(self._cache),
-            "freq_entries": len(self._freq),
             "maxsize": self._maxsize,
             "hits": self._hits,
             "misses": self._misses,
@@ -90,7 +76,7 @@ _rt_cache = _TTLCache(ttl=8.0, maxsize=15000)
 _kline_cache = _TTLCache(ttl=60.0, maxsize=6000)
 _strategy_list_cache = _TTLCache(ttl=120.0, maxsize=200)
 
-_api_response_cache = ThreadSafeLRU(maxsize=10000, ttl=90)
+_api_response_cache = OptimizedTTLCache(maxsize=10000, ttl=90, cleanup_interval=120)
 
 
 class ConnectionManager:
@@ -100,7 +86,7 @@ class ConnectionManager:
     STALE_TIMEOUT = 300
 
     def __init__(self):
-        self.connections: list[WebSocket] = []
+        self.connections: set[WebSocket] = set()
         self._subscriptions: dict[WebSocket, set[str]] = {}
         self._last_active: dict[WebSocket, float] = {}
         self._lock = asyncio.Lock()
@@ -111,17 +97,16 @@ class ConnectionManager:
                 await ws.close(code=1013, reason="Max connections reached")
                 return False
             await ws.accept()
-            self.connections.append(ws)
+            self.connections.add(ws)
             self._subscriptions[ws] = set()
-            self._last_active[ws] = time.time()
+            self._last_active[ws] = time.monotonic()
             return True
 
     async def disconnect(self, ws: WebSocket):
         async with self._lock:
             unsubscribed_symbols = self._subscriptions.pop(ws, set())
             self._last_active.pop(ws, None)
-            if ws in self.connections:
-                self.connections.remove(ws)
+            self.connections.discard(ws)
         if unsubscribed_symbols:
             await _evict_stale_push_state(unsubscribed_symbols)
 
@@ -129,20 +114,20 @@ class ConnectionManager:
         async with self._lock:
             if ws in self._subscriptions:
                 self._subscriptions[ws].update(symbols)
-                self._last_active[ws] = time.time()
+                self._last_active[ws] = time.monotonic()
 
     async def unsubscribe(self, ws: WebSocket, symbols: list[str]):
         async with self._lock:
             if ws in self._subscriptions:
                 self._subscriptions[ws] -= set(symbols)
-                self._last_active[ws] = time.time()
+                self._last_active[ws] = time.monotonic()
 
     async def touch(self, ws: WebSocket) -> None:
         async with self._lock:
-            self._last_active[ws] = time.time()
+            self._last_active[ws] = time.monotonic()
 
     async def sweep_stale_connections(self) -> int:
-        now = time.time()
+        now = time.monotonic()
         stale_ws = []
         async with self._lock:
             for ws in list(self._last_active):
@@ -153,7 +138,6 @@ class ConnectionManager:
                 await ws.close(code=1000, reason="Idle timeout")
             except Exception as e:
                 logger.warning("WebSocket sweep stale connection failed: %s", e)
-                pass
             await self.disconnect(ws)
         return len(stale_ws)
 
@@ -312,35 +296,59 @@ def cache_response(ttl_seconds: int):
             cache_key = f"api:{request.method}:{func.__name__}:{request.url.path}:{request.url.query}"
             cached = _api_response_cache.get(cache_key)
             if cached is not None:
+                etag = hashlib.md5(
+                    orjson.dumps(cached, option=orjson.OPT_SORT_KEYS)
+                ).hexdigest()[:16]
+                if_none_match = request.headers.get("if-none-match", "")
+                if if_none_match == etag:
+                    return Response(status_code=304, headers={
+                        "ETag": f'"{etag}"',
+                        "Cache-Control": f"max-age={ttl_seconds}",
+                        "X-Cache": "HIT",
+                    })
                 return JSONResponse(
                     content=cached,
                     status_code=200,
-                    headers={"X-Cache": "HIT", "Cache-Control": f"max-age={ttl_seconds}"},
+                    headers={
+                        "X-Cache": "HIT",
+                        "Cache-Control": f"max-age={ttl_seconds}",
+                        "ETag": f'"{etag}"',
+                    },
                 )
             result = await func(request, *args, **kwargs)
             if isinstance(result, Response):
                 result.headers["Cache-Control"] = f"max-age={ttl_seconds}"
                 result.headers["X-Cache"] = "MISS"
                 try:
-                    import json as _json
                     body = getattr(result, "body", b"")
                     if isinstance(body, bytes):
-                        parsed = _json.loads(body)
+                        parsed = orjson.loads(body)
                     elif isinstance(body, dict):
                         parsed = body
                     else:
                         parsed = None
                     if parsed is not None:
                         _api_response_cache.set(cache_key, parsed, ttl=ttl_seconds)
+                        etag = hashlib.md5(
+                            orjson.dumps(parsed, option=orjson.OPT_SORT_KEYS)
+                        ).hexdigest()[:16]
+                        result.headers["ETag"] = f'"{etag}"'
                 except Exception as e:
                     logger.debug("Cache serialization failed for %s: %s", cache_key, e)
                 return result
             _api_response_cache.set(cache_key, result, ttl=ttl_seconds)
             if isinstance(result, dict):
+                etag = hashlib.md5(
+                    orjson.dumps(result, option=orjson.OPT_SORT_KEYS)
+                ).hexdigest()[:16]
                 return JSONResponse(
                     content=result,
                     status_code=200,
-                    headers={"Cache-Control": f"max-age={ttl_seconds}", "X-Cache": "MISS"},
+                    headers={
+                        "Cache-Control": f"max-age={ttl_seconds}",
+                        "X-Cache": "MISS",
+                        "ETag": f'"{etag}"',
+                    },
                 )
             return result
         return wrapper
@@ -439,7 +447,7 @@ def _build_message(msg_type: str, data: dict) -> str:
         "data": data,
         "seq": seq,
     }
-    return json.dumps(msg, ensure_ascii=False, default=str)
+    return orjson.dumps(msg, option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS).decode("utf-8")
 
 
 async def _check_price_alerts(quotes_data: dict):
@@ -530,7 +538,7 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
                 last_quote_hash_snapshot = dict(_last_quote_hash)
                 subscribed = await _manager.get_all_subscribed_symbols()
 
-            now = time.time()
+            now = time.monotonic()
             stale_symbols = [s for s, t in _symbol_last_push.items()
                              if not s.startswith("__") and now - t > 300]
             for s in stale_symbols:
@@ -539,7 +547,7 @@ async def push_realtime_data(fetcher: SmartDataFetcher):
 
             quotes_data = {}
             subscribed_list = list(subscribed)[:_MAX_PUSH_SYMBOLS]
-            now = time.time()
+            now = time.monotonic()
             fetch_tasks = []
             fetch_symbols = []
             for symbol in subscribed_list:
@@ -770,7 +778,7 @@ async def push_portfolio_metrics(fetcher: SmartDataFetcher):
         try:
             await asyncio.sleep(_PORTFOLIO_PUSH_INTERVAL)
 
-            now = time.time()
+            now = time.monotonic()
             stale_keys = [
                 k for k, ts in _portfolio_cache_timestamps.items()
                 if now - ts > _PORTFOLIO_CACHE_TTL

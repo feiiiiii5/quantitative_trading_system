@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { useCanvas } from '@/hooks/useCanvas';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { DepthChart } from '@/components/charts/DepthChart';
 import { useTerminalStore } from '@/stores/terminal';
 import { useRiskStore } from '@/stores/risk';
 import { useTradingHistory } from '@/hooks/queries';
@@ -154,7 +155,7 @@ const OrderBookCanvas = memo(function OrderBookCanvas({ bids, asks }: { bids: Or
       ctx.textAlign = 'right';
       ctx.fillText('ASK', padding.left + barW, barY + barH + 10);
       ctx.textAlign = 'center';
-      ctx.fillStyle = Math.abs(imbalance) > 0.3 ? 'var(--orange)' : 'rgba(255,255,255,0.35)';
+      ctx.fillStyle = Math.abs(imbalance) > 0.3 ? '#FF9F0A' : 'rgba(255,255,255,0.35)';
       ctx.fillText(`PRESSURE ${(imbalance * 100).toFixed(0)}%`, midX, barY + barH + 10);
     }
   }, [bids, asks]);
@@ -312,7 +313,6 @@ const QuickOrderPanel = memo(function QuickOrderPanel() {
 
   const handleSubmit = useCallback(() => {
     if (hasBlock) return;
-    console.debug('[PRE-TRADE]', { symbol, direction, qty: quantity, price: +price, checks: preTradeChecks.map(c => c.id) });
     setShowConfirm(true);
   }, [hasBlock, symbol, direction, quantity, price, preTradeChecks]);
 
@@ -959,6 +959,15 @@ export function TerminalPage() {
             <div style={{ flex: 1, minHeight: 0 }}>
               <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
                 <OrderBookCanvas bids={orderBook.bids} asks={orderBook.asks} />
+              </ErrorBoundary>
+            </div>
+          </div>
+
+          <div style={{ ...panelStyle, height: 140 }}>
+            <div style={panelTitleStyle}>深度图</div>
+            <div style={{ padding: '8px 12px' }}>
+              <ErrorBoundary fallback={<div style={{ color: 'var(--label-tertiary)', padding: 16 }}>Chart unavailable</div>}>
+                <DepthChart bids={orderBook.bids} asks={orderBook.asks} height={100} />
               </ErrorBoundary>
             </div>
           </div>

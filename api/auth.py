@@ -247,13 +247,12 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
-        now = time.time()
-        now_mono = time.monotonic()
+        now = time.monotonic()
 
         with self._rate_lock:
-            if now_mono - self._last_cleanup >= self._cleanup_interval:
+            if now - self._last_cleanup >= self._cleanup_interval:
                 self._cleanup_stale_clients(now)
-                self._last_cleanup = now_mono
+                self._last_cleanup = now
 
             if client_ip not in self._rate_limits:
                 if len(self._rate_limits) >= self._max_clients:

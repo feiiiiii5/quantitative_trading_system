@@ -419,13 +419,13 @@ async def get_stock_signals(
         step = max(1, len(df) // 50)
         signal_timeout = 10.0
         max_signals = 100
-        start_time = time.time()
+        start_time = time.monotonic()
 
         for s in composite.strategies:
             s.reset()
 
         for i in range(30, len(df), step):
-            if time.time() - start_time > signal_timeout:
+            if time.monotonic() - start_time > signal_timeout:
                 logger.warning("Signal generation timed out for %s after %d signals", symbol, len(signals))
                 break
             if len(signals) >= max_signals:
@@ -480,7 +480,7 @@ async def get_stock_signals(
                     "signals": bar_signals,
                 })
 
-        return _json_response(True, data={"symbol": symbol, "signals": signals, "truncated": time.time() - start_time > signal_timeout})
+        return _json_response(True, data={"symbol": symbol, "signals": signals, "truncated": time.monotonic() - start_time > signal_timeout})
     except Exception as e:
         return _json_response(False, error=safe_error(e))
 

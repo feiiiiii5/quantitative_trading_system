@@ -245,7 +245,7 @@ class NewsEngine:
         self._cache_ttl = 300
 
     async def fetch_latest_news(self, count: int = 40) -> list[dict]:
-        now = time.time()
+        now = time.monotonic()
         if self._cache and now - self._cache_ts < self._cache_ttl:
             return self._cache[:count]
 

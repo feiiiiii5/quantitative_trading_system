@@ -151,8 +151,8 @@ class AlertManager:
             if not self._config.enabled:
                 return None
 
-            now = time.time()
-            if self._should_throttle(now):
+            mono_now = time.monotonic()
+            if self._should_throttle(mono_now):
                 return None
 
             rule_id = f"{alert_type.value}_{symbol}"
@@ -164,7 +164,7 @@ class AlertManager:
                     if rule
                     else self._config.default_cooldown
                 )
-                if now - last < cooldown:
+                if mono_now - last < cooldown:
                     return None
 
             self._counter += 1
@@ -176,21 +176,21 @@ class AlertManager:
                 message=message,
                 value=value,
                 threshold=threshold,
-                timestamp=now,
+                timestamp=time.time(),
                 channel=channel,
                 metadata=metadata or {},
             )
 
             self._dispatch(alert)
-            self._last_triggered[rule_id] = now
+            self._last_triggered[rule_id] = mono_now
 
             if self._config.store_history:
                 self._history.append(alert)
                 if len(self._history) > self._config.max_history:
                     self._history = self._history[-self._config.max_history :]
 
-            self._minute_counts.append((now, 1))
-            cutoff = now - 60
+            self._minute_counts.append((mono_now, 1))
+            cutoff = mono_now - 60
             self._minute_counts = [(t, c) for t, c in self._minute_counts if t > cutoff]
 
             return alert

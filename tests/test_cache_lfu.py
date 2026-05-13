@@ -1,9 +1,9 @@
 import time
 
-from api.routes import _TTLCache
+from api.connection_manager import _TTLCache
 
 
-class TestTTLCacheLFU:
+class TestTTLCacheLRU:
     def test_basic_get_set(self):
         cache = _TTLCache(ttl=5.0, maxsize=10)
         cache.set("a", 1)
@@ -16,21 +16,21 @@ class TestTTLCacheLFU:
         time.sleep(0.02)
         assert cache.get("a") is None
 
-    def test_lfu_eviction_prefers_high_freq(self):
+    def test_lru_eviction_prefers_least_recently_used(self):
         cache = _TTLCache(ttl=60.0, maxsize=3)
         cache.set("cold", 1)
         cache.set("warm", 2)
         cache.set("hot", 3)
-        for _ in range(10):
-            cache.get("hot")
-        for _ in range(5):
-            cache.get("warm")
+        cache.get("cold")
+        cache.get("warm")
+        cache.get("hot")
+        cache.get("warm")
         cache.set("new1", 4)
         assert cache.get("cold") is None
         assert cache.get("warm") == 2
         assert cache.get("hot") == 3
 
-    def test_stale_freq_cleanup_on_evict(self):
+    def test_expired_entries_cleaned_on_get(self):
         cache = _TTLCache(ttl=0.01, maxsize=3)
         cache.set("a", 1)
         cache.set("b", 2)
@@ -54,19 +54,22 @@ class TestTTLCacheLFU:
         assert cache.get("a") is None
         assert len(cache) == 0
 
-    def test_freq_increments_on_hit(self):
-        cache = _TTLCache(ttl=60.0, maxsize=10)
+    def test_move_to_end_on_get(self):
+        cache = _TTLCache(ttl=60.0, maxsize=3)
         cache.set("a", 1)
+        cache.set("b", 2)
+        cache.set("c", 3)
         cache.get("a")
-        cache.get("a")
-        cache.get("a")
-        assert cache._freq["a"] == 4
+        cache.set("d", 4)
+        assert cache.get("a") == 1
+        assert cache.get("b") is None
 
-    def test_expired_entry_cleans_freq(self):
-        cache = _TTLCache(ttl=0.01, maxsize=10)
+    def test_update_existing_key_moves_to_end(self):
+        cache = _TTLCache(ttl=60.0, maxsize=3)
         cache.set("a", 1)
-        cache.get("a")
-        assert "a" in cache._freq
-        time.sleep(0.02)
-        cache.get("a")
-        assert "a" not in cache._freq
+        cache.set("b", 2)
+        cache.set("c", 3)
+        cache.set("a", 10)
+        cache.set("d", 4)
+        assert cache.get("a") == 10
+        assert cache.get("b") is None
